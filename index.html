@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Interactive LAN Game</title>
+    <link rel="icon" href="data:image/x-icon;base64,">
+    <script>
+      // Suppress specific warnings to keep console clean
+      const originalWarn = console.warn;
+      const originalLog = console.log;
+      
+      console.warn = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
+        originalWarn.apply(console, args);
+      };
+
+      console.log = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
+        originalLog.apply(console, args);
+      }
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Custom scrollbar for webkit */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #1f2937;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #4b5563;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #6b7280;
+      }
+      /* Prevent pull-to-refresh on mobile to keep app-like feel */
+      body {
+        overscroll-behavior-y: contain;
+      }
+      /* Double flash animation for buzz effect */
+      @keyframes double-flash {
+        0%, 100% { opacity: 1; }
+        25% { opacity: 0.4; }
+        50% { opacity: 1; }
+        75% { opacity: 0.4; }
+      }
+      .animate-double-flash {
+        animation: double-flash 0.6s ease-in-out;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
+    "date-fns": "https://esm.sh/date-fns@^4.1.0",
+    "qrcode.react": "https://esm.sh/qrcode.react@^4.2.0"
+  }
+}
+</script>
+</head>
+  <body class="bg-gray-950 text-gray-100 antialiased h-screen w-screen overflow-hidden">
+    <div id="root" class="h-full w-full"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "name": "SyncLink Time Check",
+  "description": "A real-time cross-device latency tester using QR codes and local network P2P connection.",
+  "requestFramePermissions": []
+}
