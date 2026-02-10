@@ -423,9 +423,13 @@ export const GamePlay = memo(({
 
       if (e.key === ' ') {
         e.preventDefault();
-        console.log('[GamePlay] Space pressed - currentRound:', currentRound?.name, 'type:', currentRound?.type);
+        // Check if current round is super by directly accessing pack.rounds array
+        // This avoids stale closure issues with useMemo
+        const roundAtIndex = pack.rounds?.[currentRoundIndex];
+        const isSuperRound = roundAtIndex?.type === 'super';
+        console.log('[GamePlay] Space pressed - currentRound:', roundAtIndex?.name, 'type:', roundAtIndex?.type, 'index:', currentRoundIndex);
+
         setCurrentScreen(prev => {
-          const isSuperRound = currentRound?.type === 'super';
           console.log('[GamePlay] isSuperRound:', isSuperRound, 'prev screen:', prev);
 
           const nextScreen = (() => {
@@ -435,10 +439,9 @@ export const GamePlay = memo(({
                 // Always show round cover (for super rounds, round will auto-transition to selectSuperThemes)
                 return 'round';
               case 'selectSuperThemes':
-                // Only proceed if one theme remains (all others disabled)
-                const remainingCount = currentRound?.themes?.length || 0;
-                const disabledCount = disabledSuperThemeIds.size;
-                return (remainingCount - disabledCount) === 1 ? 'placeBets' : 'selectSuperThemes';
+                // Always allow proceeding from selectSuperThemes with Space
+                // (user has manually reviewed themes and wants to continue)
+                return 'placeBets';
               case 'round':
                 // For super rounds, skip board and go to selectSuperThemes
                 return isSuperRound ? 'selectSuperThemes' : 'board';
@@ -453,7 +456,7 @@ export const GamePlay = memo(({
             }
           })();
 
-          console.log('[GamePlay] Screen transition:', prev, '->', nextScreen, 'selectedSuperThemeId:', selectedSuperThemeId);
+          console.log('[GamePlay] Screen transition:', prev, '->', nextScreen);
 
           return nextScreen;
         });
@@ -462,7 +465,7 @@ export const GamePlay = memo(({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeQuestion, currentRound, selectedSuperThemeId, superGameBets, teamScores]);
+  }, [activeQuestion, currentRoundIndex, pack.rounds, selectedSuperThemeId, superGameBets, teamScores]);
 
   // Handle continuous scroll with ArrowDown/ArrowUp on themes/superThemes screens
   useEffect(() => {
