@@ -38,18 +38,20 @@ export interface ClientHealth {
 
 // Discriminated Union for better type safety across different message types
 export type PeerMessage =
-  | { type: 'JOIN'; sentAt: number; messageId: string; userName: string; persistentId?: string }
+  // Connection messages with hostId
+  | { type: 'JOIN'; sentAt: number; messageId: string; userName: string; persistentId?: string; sessionVersion?: string; clientState?: ClientState }
+  | { type: 'JOIN_ACK'; hostId: string; sessionVersion?: string } // Host responds with its ID
   | { type: 'HEARTBEAT'; sentAt: number; messageId: string; userName: string }
   | { type: 'PING'; sentAt: number; messageId: string; userName: string } // Reply from phone
   | { type: 'GET_TEAMS' } // Client asks for teams
-  | { type: 'TEAM_LIST'; teams: Team[] } // Host sends teams
+  | { type: 'TEAM_LIST'; teams: Team[]; sessionVersion?: string; hostId: string } // Host sends teams with its ID
   | { type: 'CREATE_TEAM'; teamId: string; teamName: string; userName: string } // Client creates team
   | { type: 'JOIN_TEAM'; teamId: string; userName: string } // Client joins team
   // NEW: Team state synchronization - host asks clients for their current team
   | { type: 'TEAM_STATE_REQUEST' }
-  | { type: 'TEAM_STATE_RESPONSE'; clientId: string; clientName: string; teamId?: string; teamName?: string }
+  | { type: 'TEAM_STATE_RESPONSE'; clientId: string; clientName: string; teamId?: string; teamName?: string; teamScore?: number }
   // NEW: Reconnect - client reconnecting after page refresh/disconnect
-  | { type: 'RECONNECT'; userName: string; persistentId: string; teamId?: string; teamName?: string }
+  | { type: 'RECONNECT'; userName: string; persistentId: string; teamId?: string; teamName?: string; teamScore?: number }
   // NEW: Kick/remove client
   | { type: 'KICK_CLIENT'; clientId: string; reason?: string }
   // NEW: Team deleted - host tells clients this team no longer exists
@@ -78,9 +80,23 @@ export type PeerMessage =
   | { type: 'SUPER_GAME_TEAM_READY'; teamId: string } // Team submitted answer
   | { type: 'SUPER_GAME_REVEAL_ANSWERS' } // Show team answers to host
   | { type: 'SUPER_GAME_TEAM_ANSWER'; teamId: string; answer: string; clientId: string }
+  | { type: 'SUPER_GAME_ANSWER_SUBMITTED'; teamId: string } // Broadcast when team submits answer
   | { type: 'SUPER_GAME_SHOW_WINNER'; winnerTeamName: string; finalScores: { teamId: string; teamName: string; score: number }[] }
+  | { type: 'SUPER_GAME_STATE_SYNC'; phase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner'; themeId?: string; themeName?: string; questionText?: string; questionMedia?: { type: 'image' | 'video' | 'audio'; url?: string }; maxBet?: number }
   // NEW: Client requests current super game state (e.g., when pressing buzz)
-  | { type: 'GET_SUPER_GAME_STATE' };
+  | { type: 'GET_SUPER_GAME_STATE' }
+  // NEW: Clear super game state on client (e.g., when host starts new game)
+  | { type: 'SUPER_GAME_CLEAR' };
+
+// Client state that can be restored on reconnection
+export interface ClientState {
+  userName: string;
+  teamId?: string;
+  teamName?: string;
+  teamScore?: number;
+  currentScreen?: 'name' | 'team' | 'buzz';
+  superGamePhase?: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
+}
 
 export interface TimeLog {
   id: string;

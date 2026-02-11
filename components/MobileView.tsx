@@ -1,42 +1,97 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { ConnectionStatus, ConnectionQuality } from '../types';
+import { ConnectionStatus, ConnectionQuality, ClientState } from '../types';
 import { CONNECTION_CONFIG } from '../config';
 import { Wifi, AlertTriangle, User, ArrowRight, Plus, Users, Loader2, RefreshCw, Settings, Trash2, LogOut } from 'lucide-react';
 import { Button } from './Button';
 import { P2PManager, generatePeerId, getSignallingServerUrl, GameMessage } from '../utils/p2p';
 import { useBuzzerDebounce } from '../hooks/useBuzzerDebounce';
-import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
+import { storage, STORAGE_KEYS, getHostBoundKey } from '../hooks/useLocalStorage';
 import { getHealthColor, getHealthBgColor, updateQualityMetrics } from '../hooks/useConnectionQuality';
+import { flushSync } from 'react-dom';
 
 export const MobileView: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.INITIALIZING);
-  const [hostId, setHostId] = useState<string | null>(null);
+
+  // Use SINGLE source of truth for host ID - hostUniqueId from state
+  // This prevents issues where URL param and storage have different values
+  const [hostUniqueId, setHostUniqueId] = useState<string | null>(() => {
+    // Initialize from LAST_HOST to restore data binding after page refresh
+    return storage.get(STORAGE_KEYS.LAST_HOST);
+  }); // 12-char host ID for data binding
+
+  // hostId is used for connections - MUST always stay in sync with hostUniqueId
+  const [hostId, setHostId] = useState<string | null>(() => {
+    // If we have a hostUniqueId in storage, use it instead of URL param
+    const savedHostUniqueId = storage.get(STORAGE_KEYS.LAST_HOST);
+    return savedHostUniqueId || null;
+  });
+  const [hostIdReceived, setHostIdReceived] = useState<boolean>(() => {
+    // If we have a saved hostId, we already received it in a previous session
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    return !!savedHostId;
+  }); // Track if we received hostId from host
   const [ipInput, setIpInput] = useState<string>('');
   const [isIpLocked, setIsIpLocked] = useState<boolean>(false);
 
+  // Helper function to get host-bound storage key
+  const getHostKey = useCallback((baseKey: string) => {
+    return hostUniqueId ? getHostBoundKey(baseKey, hostUniqueId) : baseKey;
+  }, [hostUniqueId]);
+
   // Restore user name and team selection for automatic reconnection after page refresh
   const [userName, setUserName] = useState<string>(() => {
+    // Try to load from LAST_HOST first to get host-bound data
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      return storage.get(getHostBoundKey(STORAGE_KEYS.USER_NAME, savedHostId)) ?? '';
+    }
     return storage.get(STORAGE_KEYS.USER_NAME, '') ?? '';
   });
+  // Track name that was entered but not yet bound to a host (for migration)
+  const pendingNameRef = useRef<string | null>(null);
   const [isNameSubmitted, setIsNameSubmitted] = useState<boolean>(() => {
-    // Auto-submit if we have a saved name and host
+    // Auto-submit if we have a saved name for a known host
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      const savedName = storage.get(getHostBoundKey(STORAGE_KEYS.USER_NAME, savedHostId));
+      return !!savedName;
+    }
     return !!(storage.get(STORAGE_KEYS.USER_NAME) && storage.get(STORAGE_KEYS.LAST_HOST));
   });
   const [isTeamSelected, setIsTeamSelected] = useState<boolean>(() => {
-    // Check if we have a saved team (not just the flag)
-    const savedTeam = storage.get(STORAGE_KEYS.CURRENT_TEAM);
-    const savedTeamId = storage.get(STORAGE_KEYS.CURRENT_TEAM_ID);
-    return !!(savedTeam || savedTeamId);
+    // Check if we have a saved team (will be properly loaded after hostId is known)
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      const savedTeam = storage.get(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, savedHostId));
+      const savedTeamId = storage.get(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, savedHostId));
+      const savedTeamSelected = storage.get(getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, savedHostId));
+      return !!(savedTeam || savedTeamId || savedTeamSelected === 'true');
+    }
+    return false;
   });
   const [teams, setTeams] = useState<Array<{ id: string; name: string; createdAt: number; lastUsedAt: number }>>([]);
   const [newTeamName, setNewTeamName] = useState<string>('');
   const [currentTeam, setCurrentTeam] = useState<string | null>(() => {
-    return storage.get(STORAGE_KEYS.CURRENT_TEAM);
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      return storage.get(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, savedHostId));
+    }
+    return null;
   });
   const [currentTeamId, setCurrentTeamId] = useState<string | null>(() => {
-    return storage.get(STORAGE_KEYS.CURRENT_TEAM_ID);
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      return storage.get(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, savedHostId));
+    }
+    return null;
   });
+  const [currentTeamScore, setCurrentTeamScore] = useState<number | null>(null); // Track team score for restoration
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+
+  // Track session version to detect when host starts a new session
+  const [hostSessionVersion, setHostSessionVersion] = useState<string | null>(() => {
+    return storage.get(STORAGE_KEYS.HOST_SESSION_VERSION);
+  });
 
   // Buzzer state from host
   const [buzzerState, setBuzzerState] = useState<{
@@ -66,15 +121,43 @@ export const MobileView: React.FC = () => {
   // White flash for early buzz during reading phase
   const [showWhiteFlash, setShowWhiteFlash] = useState(false);
 
-  // Super Game state
-  const [superGamePhase, setSuperGamePhase] = useState<'idle' | 'placeBets' | 'showQuestion' | 'showWinner'>('idle');
-  const [superGameTheme, setSuperGameTheme] = useState<{ id: string; name: string } | null>(null);
-  const [superGameMaxBet, setSuperGameMaxBet] = useState(100);
-  const [superGameBet, setSuperGameBet] = useState<number>(0);
-  const [superGameQuestion, setSuperGameQuestion] = useState<{ text: string; media?: { type: string; url?: string } } | null>(null);
-  const [superGameAnswer, setSuperGameAnswer] = useState<string>('');
-  const [superGameWinner, setSuperGameWinner] = useState<{ winnerTeamName: string; finalScores: { teamId: string; teamName: string; score: number }[] } | null>(null);
-  const [betPlaced, setBetPlaced] = useState(false);
+  // Helper to get host-bound super game state
+  const getHostBoundSuperGameState = <T,>(key: string, defaultValue: T, isHostIdRequired = true): T => {
+    const savedHostId = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (savedHostId) {
+      const hostBoundKey = getHostBoundKey(key, savedHostId);
+      const saved = storage.get<T>(hostBoundKey);
+      const ttlKey = getHostBoundKey(STORAGE_KEYS.SUPER_GAME_TTL, savedHostId);
+      return saved && !storage.isExpired(ttlKey, 30 * 60 * 1000) ? saved : defaultValue;
+    }
+    return isHostIdRequired ? defaultValue : storage.get(key) ?? defaultValue;
+  };
+
+  // Super Game state - restored from hostId-bound localStorage for reconnection
+  const [superGamePhase, setSuperGamePhase] = useState<'idle' | 'placeBets' | 'showQuestion' | 'showWinner'>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_PHASE, 'idle');
+  });
+  const [superGameTheme, setSuperGameTheme] = useState<{ id: string; name: string } | null>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_THEME, null);
+  });
+  const [superGameMaxBet, setSuperGameMaxBet] = useState<number>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_MAX_BET, 100);
+  });
+  const [superGameBet, setSuperGameBet] = useState<number>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_BET, 0);
+  });
+  const [superGameQuestion, setSuperGameQuestion] = useState<{ text: string; media?: { type: string; url?: string } } | null>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_QUESTION, null);
+  });
+  const [superGameAnswer, setSuperGameAnswer] = useState<string>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_ANSWER, '');
+  });
+  const [superGameWinner, setSuperGameWinner] = useState<{ winnerTeamName: string; finalScores: { teamId: string; teamName: string; score: number }[] } | null>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_WINNER, null);
+  });
+  const [betPlaced, setBetPlaced] = useState<boolean>(() => {
+    return getHostBoundSuperGameState(STORAGE_KEYS.SUPER_GAME_BET_PLACED, false);
+  });
   // Flag to track if host sent place bets message but user hasn't opened the UI yet
   const [pendingSuperGame, setPendingSuperGame] = useState<{ maxBet: number; theme?: { id: string; name: string } } | null>(null);
 
@@ -100,6 +183,9 @@ export const MobileView: React.FC = () => {
   const heartbeatIntervalRef = useRef<number | null>(null);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingHealthCheckRef = useRef<{ messageId: string; sentAt: number } | null>(null);
+  const isRequestingStateRef = useRef<boolean>(false); // Flag to prevent duplicate GET_TEAMS requests
+  const lastVisibilityChangeRef = useRef<number>(0); // Debounce visibility changes
+  const loadedHostIdRef = useRef<string | null>(null); // Track which host's data we've loaded
 
   // Calculate health color using utility function
   const healthColor = useMemo(() => getHealthColor(connectionQuality.healthScore), [connectionQuality.healthScore]);
@@ -113,16 +199,20 @@ export const MobileView: React.FC = () => {
   // Send join/reconnect message
   const sendJoinMessage = useCallback((peerId: string, name: string, isReconnect: boolean = false) => {
     if (!p2pManagerRef.current) {
+      console.error('[MobileView] sendJoinMessage called but P2P manager not initialized!');
       return false;
     }
 
-    // Get team info from both state and storage (storage has priority for reconnection)
-    const teamIdFromState = currentTeamId;
-    const teamNameFromState = currentTeam;
-    const teamIdFromStorage = storage.get<string>(STORAGE_KEYS.CURRENT_TEAM_ID);
-    const teamNameFromStorage = storage.get<string>(STORAGE_KEYS.CURRENT_TEAM);
-    const finalTeamId = teamIdFromStorage || teamIdFromState;
-    const finalTeamName = teamNameFromStorage || teamNameFromState;
+    // Get host-bound team info from storage (using current hostId if available)
+    const currentHostId = hostUniqueId || storage.get(STORAGE_KEYS.LAST_HOST);
+    const teamIdKey = currentHostId ? getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, currentHostId) : STORAGE_KEYS.CURRENT_TEAM_ID;
+    const teamNameKey = currentHostId ? getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, currentHostId) : STORAGE_KEYS.CURRENT_TEAM;
+    const teamScoreKey = currentHostId ? getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, currentHostId) : STORAGE_KEYS.CURRENT_TEAM_SCORE;
+    const userNameKey = currentHostId ? getHostBoundKey(STORAGE_KEYS.USER_NAME, currentHostId) : STORAGE_KEYS.USER_NAME;
+
+    const finalTeamId = storage.get<string>(teamIdKey);
+    const finalTeamName = storage.get<string>(teamNameKey);
+    const finalTeamScore = storage.get<number>(teamScoreKey);
 
     // If reconnecting and we have team info, send RECONNECT message
     if (isReconnect && (finalTeamId || finalTeamName)) {
@@ -131,34 +221,69 @@ export const MobileView: React.FC = () => {
         userName: name,
         persistentId: clientId,
         teamId: finalTeamId || undefined,
-        teamName: finalTeamName || undefined
+        teamName: finalTeamName || undefined,
+        teamScore: finalTeamScore
       };
-      console.log('[MobileView] Sending RECONNECT message with team:', finalTeamName, 'id:', finalTeamId);
+      console.log('[MobileView] Sending RECONNECT message with team:', finalTeamName, 'id:', finalTeamId, 'score:', finalTeamScore);
       return p2pManagerRef.current.sendTo(peerId, payload);
     }
 
-    // Otherwise send normal JOIN message
+    // Otherwise send normal JOIN message with client state for restoration
+    const clientState: ClientState = {
+      userName: name,
+      teamId: finalTeamId || undefined,
+      teamName: finalTeamName || undefined,
+      teamScore: finalTeamScore
+    };
+
     const payload: GameMessage = {
       type: 'JOIN',
       sentAt: Date.now(),
       messageId: `join_${Date.now()}_${Math.random().toString(36).substring(7)}`,
       userName: name,
-      persistentId: clientId // Send persistent ID to recognize returning players
+      persistentId: clientId, // Send persistent ID to recognize returning players
+      clientState: clientState // Send our saved state for restoration
     };
 
+    console.log('[MobileView] Sending JOIN message:', {
+      userName: name,
+      persistentId: clientId,
+      clientState: clientState,
+      peerId: peerId
+    });
+
+    // Don't set loadedHostIdRef here - wait for TEAM_LIST response to confirm hostId
+    // This prevents state mismatch when hostId changes
+
     return p2pManagerRef.current.sendTo(peerId, payload);
-  }, [clientId, currentTeamId, currentTeam]);
+  }, [clientId, currentTeamId, currentTeam, hostUniqueId, isNameSubmitted, isTeamSelected]);
 
   // Request state sync from host
   const requestStateSync = useCallback((peerId: string) => {
+    // Prevent duplicate requests
+    if (isRequestingStateRef.current) {
+      console.log('[MobileView] Already requesting state sync, skipping duplicate request');
+      return;
+    }
+
     console.log('[MobileView] Requesting state sync from host:', peerId);
     if (p2pManagerRef.current) {
+      isRequestingStateRef.current = true;
       const sent = p2pManagerRef.current.sendTo(peerId, { type: 'GET_TEAMS' });
       console.log('[MobileView] GET_TEAMS sent:', sent);
 
+      // Clear existing timeout before creating new one
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
+
       syncTimeoutRef.current = setTimeout(() => {
         console.log('[MobileView] Retrying GET_TEAMS request');
-        p2pManagerRef.current?.sendTo(peerId, { type: 'GET_TEAMS' });
+        if (p2pManagerRef.current) {
+          p2pManagerRef.current.sendTo(peerId, { type: 'GET_TEAMS' });
+        }
+        // Reset flag after retry attempt - will be set again if response triggers another request
+        isRequestingStateRef.current = false;
       }, 5000);
     }
   }, []);
@@ -187,34 +312,204 @@ export const MobileView: React.FC = () => {
     setSuperGameWinner(null);
     setBetPlaced(false);
     setPendingSuperGame(null);
+    // Clear localStorage
+    storage.remove(STORAGE_KEYS.SUPER_GAME_PHASE);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_THEME);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_MAX_BET);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_BET);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_BET_PLACED);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_QUESTION);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_ANSWER);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_WINNER);
+    storage.remove(STORAGE_KEYS.SUPER_GAME_TTL);
   }, []);
 
   // Handle incoming game data
   const handleGameData = useCallback((data: GameMessage, peerId: string) => {
     console.log('[MobileView] Received game data:', data.type, 'from', peerId, data);
     switch (data.type) {
-      case 'TEAM_LIST':
-        console.log('[MobileView] Received TEAM_LIST with', data.teams.length, 'teams');
+      case 'TEAM_LIST': {
+        const startTime = performance.now();
+        console.log('[MobileView] Received TEAM_LIST with', data.teams.length, 'teams', 'hostId:', data.hostId, 'sessionVersion:', data.sessionVersion, 'timestamp:', startTime);
         setTeams(data.teams);
 
-        // Check if our saved team still exists (for reconnection after F5)
-        const savedTeamId = storage.get(STORAGE_KEYS.CURRENT_TEAM_ID);
-        if (savedTeamId) {
-          const teamExists = data.teams.some(t => t.id === savedTeamId);
-          if (!teamExists) {
-            console.log('[MobileView] Our saved team no longer exists, clearing team selection');
-            setCurrentTeam(null);
-            setCurrentTeamId(null);
-            setIsTeamSelected(false);
-            storage.remove(STORAGE_KEYS.CURRENT_TEAM);
-            storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
-            storage.remove(STORAGE_KEYS.TEAM_SELECTED);
-            storage.remove(STORAGE_KEYS.CURRENT_TEAM_TTL);
-            storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID_TTL);
-            storage.remove(STORAGE_KEYS.TEAM_SELECTED_TTL);
-          } else {
-            console.log('[MobileView] Our saved team still exists, keeping team selection');
+        // Handle host ID - this is critical for data binding
+        const receivedHostId = data.hostId;
+        const previousHostId = hostUniqueId;
+
+        // Scenario 1: First connection EVER (no previous hostId in memory or storage)
+        // First connection means: no previous hostId, OR loadedHostIdRef is null (meaning we haven't loaded for this host yet)
+        const isFirstConnectionEver = !previousHostId || !loadedHostIdRef.current;
+
+        // Scenario 2: Reconnecting to SAME host we were connected to
+        // Reconnect means: previous hostId equals receivedHostId AND we already loaded data for this host (loadedHostIdRef matches)
+        const isReconnectingToSameHost = previousHostId === receivedHostId && loadedHostIdRef.current === receivedHostId;
+
+        // Scenario 3: Different host (host ID changed)
+        const isDifferentHost = previousHostId && previousHostId !== receivedHostId;
+
+        console.log('[MobileView] TEAM_LIST analysis:', {
+          receivedHostId,
+          previousHostId,
+          isFirstConnectionEver,
+          isReconnectingToSameHost,
+          isDifferentHost,
+          isNameSubmitted,
+          isTeamSelected,
+          loadedHostIdRef: loadedHostIdRef.current
+        });
+
+        console.log('[MobileView] TEAM_LIST analysis:', {
+          receivedHostId,
+          previousHostId,
+          isFirstConnectionEver,
+          isReconnectingToSameHost,
+          isDifferentHost,
+          isNameSubmitted,
+          isTeamSelected,
+          loadedHostIdRef: loadedHostIdRef.current
+        });
+
+        if (isFirstConnectionEver) {
+          // Host ID changed - clear all previous host's data
+          // BUT don't clear if user just entered their name and is connecting
+          // ALSO don't clear if user already has a name entered (userName is set)
+          if (previousHostId) {
+            console.log('[MobileView] Host ID changed from', previousHostId, 'to', receivedHostId, '- clearing all previous data');
+            // Clear previous host's data using the ID before any changes
+            storage.clearHostData(previousHostId);
           }
+
+          // Set new host ID
+          setHostUniqueId(receivedHostId);
+          storage.set(STORAGE_KEYS.LAST_HOST, receivedHostId);
+
+          // Clear current state (will reload from new host's data below)
+          // BUT preserve userName if user already entered it
+          setCurrentTeam(null);
+          setCurrentTeamId(null);
+          setCurrentTeamScore(null);
+          setIsTeamSelected(false);
+          // Only reset name submission if user hasn't entered a name yet
+          if (!userName) {
+            setIsNameSubmitted(false);
+          }
+          // Don't clear userName if user already entered it - let them continue
+          // setUserName('');  // REMOVED: don't clear the name!
+
+          // Clear loaded host ID ref so we reload data
+          loadedHostIdRef.current = null;
+        } else if (isReconnectingToSameHost) {
+          // Host ID changed but user just entered their name - preserve the name!
+          console.log('[MobileView] Host ID changed from', previousHostId, 'to', receivedHostId, '- but user just entered name, preserving it');
+
+          // Move the user name from old host binding to new host binding
+          // Also handles new user (previousHostId is null) who just entered name
+          if (userName) {
+            const newUserKey = getHostBoundKey(STORAGE_KEYS.USER_NAME, receivedHostId);
+            const newTtlKey = getHostBoundKey(STORAGE_KEYS.USER_NAME_TTL, receivedHostId);
+            storage.setWithTTL(newUserKey, newTtlKey, userName);
+          }
+
+          // Set new host ID
+          setHostUniqueId(receivedHostId);
+          storage.set(STORAGE_KEYS.LAST_HOST, receivedHostId);
+
+          // Mark as loaded to prevent re-loading
+          loadedHostIdRef.current = receivedHostId;
+        }
+
+        // Always update hostUniqueId from server response (if not already set above)
+        // BUT don't update if user already has state (team selected) - this prevents resetting
+        if (receivedHostId && receivedHostId !== hostUniqueId && !isTeamSelected) {
+          setHostUniqueId(receivedHostId);
+          storage.set(STORAGE_KEYS.LAST_HOST, receivedHostId);
+        }
+
+        // Mark that we received hostId from the server
+        if (receivedHostId && !hostIdReceived) {
+          setHostIdReceived(true);
+        }
+
+        // Reset the requesting flag since we got a response
+        isRequestingStateRef.current = false;
+
+        // Check if session version changed - if so, this is a new session, clear our state
+        // BUT skip this if we're already connected and have state (tab switching scenario)
+        // OR if we just entered our name (don't clear the name we just entered!)
+        const isAlreadyConnected = isNameSubmitted && loadedHostIdRef.current === receivedHostId;
+        if (data.sessionVersion && data.sessionVersion !== hostSessionVersion && !isAlreadyConnected) {
+          console.log('[MobileView] Session version changed from', hostSessionVersion, 'to', data.sessionVersion, '- clearing stale state');
+          setHostSessionVersion(data.sessionVersion);
+          storage.set(STORAGE_KEYS.HOST_SESSION_VERSION, data.sessionVersion);
+
+          // Clear team selection if we had one
+          setCurrentTeam(null);
+          setCurrentTeamId(null);
+          setCurrentTeamScore(null);
+          setIsTeamSelected(false);
+
+          // Clear host-bound data
+          if (receivedHostId) {
+            storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, receivedHostId));
+            storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, receivedHostId));
+            storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, receivedHostId));
+            storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, receivedHostId));
+            storage.remove(getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, receivedHostId));
+          }
+
+          // Clear loaded host ID ref so we reload data
+          loadedHostIdRef.current = null;
+        } else if (!hostSessionVersion && data.sessionVersion) {
+          // First time receiving session version
+          setHostSessionVersion(data.sessionVersion);
+          storage.set(STORAGE_KEYS.HOST_SESSION_VERSION, data.sessionVersion);
+        }
+
+        // Load our saved state for this host (after checking session version)
+        // Only load if we haven't already loaded data for this host
+        if (receivedHostId && loadedHostIdRef.current !== receivedHostId) {
+          const savedUserName = storage.get<string>(getHostBoundKey(STORAGE_KEYS.USER_NAME, receivedHostId));
+          const savedTeamId = storage.get<string>(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, receivedHostId));
+          const savedTeamName = storage.get<string>(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, receivedHostId));
+          const savedTeamScore = storage.get<number>(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, receivedHostId));
+
+          console.log('[MobileView] Loading saved state for host', receivedHostId, ': name=', savedUserName, 'team=', savedTeamName, 'isNameSubmitted=', isNameSubmitted, 'isTeamSelected=', isTeamSelected);
+
+          // Only restore state if we DON'T already have it (don't override user's current actions)
+          if (savedUserName && !isNameSubmitted) {
+            setUserName(savedUserName);
+            setIsNameSubmitted(true);
+            storage.set(STORAGE_KEYS.USER_NAME, savedUserName);
+          }
+
+          if (savedTeamId && savedTeamName && !isTeamSelected) {
+            // Check if team still exists on host
+            const teamExists = data.teams.some(t => t.id === savedTeamId);
+            if (teamExists) {
+              console.log('[MobileView] Restoring team:', savedTeamName, 'with score:', savedTeamScore);
+              setCurrentTeam(savedTeamName);
+              setCurrentTeamId(savedTeamId);
+              setCurrentTeamScore(savedTeamScore ?? null);
+              setIsTeamSelected(true);
+            } else if (!teamExists) {
+              // Team doesn't exist anymore - clear saved team data
+              console.log('[MobileView] Saved team no longer exists, clearing team data');
+              storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, receivedHostId));
+              storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, receivedHostId));
+              storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, receivedHostId));
+              storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, receivedHostId));
+              storage.remove(getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, receivedHostId));
+            }
+          }
+
+          // Mark that we've loaded data for this host (even if we didn't restore anything)
+          // This prevents re-loading data on subsequent TEAM_LIST messages
+          loadedHostIdRef.current = receivedHostId;
+        } else if (receivedHostId && isTeamSelected) {
+          // User already has a team selected - just mark as loaded to prevent future reloads
+          // Don't disturb the current game state
+          loadedHostIdRef.current = receivedHostId;
         }
 
         if (syncTimeoutRef.current) {
@@ -222,6 +517,7 @@ export const MobileView: React.FC = () => {
           syncTimeoutRef.current = null;
         }
         break;
+      }
 
       case 'STATE_SYNC':
         setTeams(data.teams);
@@ -322,24 +618,89 @@ export const MobileView: React.FC = () => {
       case 'CLEAR_CACHE':
         // Host requested cache clear - reset everything
         console.log('[MobileView] Received CLEAR_CACHE from host, resetting all state');
+        setHostSessionVersion(null);
+        storage.remove(STORAGE_KEYS.HOST_SESSION_VERSION);
         resetState();
         break;
 
-      case 'SUPER_GAME_PLACE_YOUR_BETS':
+      case 'SUPER_GAME_CLEAR':
+        // Host requested super game state clear (e.g., starting new game)
+        console.log('[MobileView] Received SUPER_GAME_CLEAR from host, clearing super game state');
+        resetSuperGameState();
+        break;
+
+      case 'SUPER_GAME_STATE_SYNC': {
+        const startTime = performance.now();
+        // Host is syncing the current super game state - force client to match
+        console.log('[MobileView] Received SUPER_GAME_STATE_SYNC:', data, 'isTeamSelected:', isTeamSelected, 'timestamp:', startTime);
+
+        if (data.phase === 'placeBets') {
+          // Flush state updates immediately to avoid batching - force synchronous render
+          flushSync(() => {
+            setSuperGamePhase('placeBets');
+            setSuperGameMaxBet(data.maxBet || 100);
+            setBetPlaced(false);
+            setSuperGameBet(0);
+            if (data.themeId && data.themeName) {
+              setSuperGameTheme({ id: data.themeId, name: data.themeName });
+            }
+          });
+
+          // Force synchronous render for immediate UI update
+          requestAnimationFrame(() => {
+            console.log('[MobileView] SUPER_GAME_STATE_SYNC placeBets UI update rendered at:', performance.now() - startTime, 'ms');
+          });
+        } else if (data.phase === 'showQuestion') {
+          // Flush state updates immediately to avoid batching
+          flushSync(() => {
+            setSuperGamePhase('showQuestion');
+            if (data.themeId && data.themeName) {
+              setSuperGameTheme({ id: data.themeId, name: data.themeName });
+            }
+            if (data.questionText || data.questionMedia) {
+              setSuperGameQuestion({
+                text: data.questionText || '',
+                media: data.questionMedia
+              });
+            }
+            setSuperGameAnswer('');
+          });
+        } else if (data.phase === 'idle') {
+          // Return to BUZZ button state - clear all super game state
+          flushSync(() => {
+            setSuperGamePhase('idle');
+            setSuperGameAnswer('');
+            setPendingSuperGame(null);
+          });
+        }
+        break;
+      }
+
+      case 'SUPER_GAME_PLACE_YOUR_BETS': {
+        const startTime = performance.now();
         // Host is asking teams to place bets
-        console.log('[MobileView] SUPER_GAME_PLACE_YOUR_BETS', data);
+        console.log('[MobileView] SUPER_GAME_PLACE_YOUR_BETS', data, 'timestamp:', startTime);
+
         // If user has already selected a team, show the betting UI immediately
         if (isTeamSelected) {
-          setSuperGamePhase('placeBets');
-          setSuperGameMaxBet(data.maxBet);
-          setBetPlaced(false);
-          setSuperGameBet(0);
+          flushSync(() => {
+            setSuperGamePhase('placeBets');
+            setSuperGameMaxBet(data.maxBet);
+            setBetPlaced(false);
+            setSuperGameBet(0);
+          });
+
+          // Force synchronous render for immediate UI update
+          requestAnimationFrame(() => {
+            console.log('[MobileView] SUPER_GAME_PLACE_YOUR_BETS UI update rendered at:', performance.now() - startTime, 'ms');
+          });
         } else {
           // Store the pending super game info to show when user selects a team
           setPendingSuperGame({ maxBet: data.maxBet });
           console.log('[MobileView] Super game pending - waiting for team selection');
         }
         break;
+      }
 
       case 'SUPER_GAME_BET_ACK':
         // Host acknowledged our bet
@@ -347,34 +708,87 @@ export const MobileView: React.FC = () => {
         setBetPlaced(true);
         break;
 
-      case 'SUPER_GAME_SHOW_QUESTION':
+      case 'SUPER_GAME_SHOW_QUESTION': {
+        const startTime = performance.now();
         // Host is showing the super game question
-        console.log('[MobileView] SUPER_GAME_SHOW_QUESTION', data);
-        setSuperGamePhase('showQuestion');
-        setSuperGameTheme({ id: data.themeId, name: data.themeName });
-        setSuperGameQuestion({
-          text: data.questionText,
-          media: data.questionMedia
-        });
-        setSuperGameAnswer('');
-        break;
+        console.log('[MobileView] SUPER_GAME_SHOW_QUESTION', data, 'timestamp:', startTime);
 
-      case 'SUPER_GAME_SHOW_WINNER':
-        // Host is showing the winner
-        console.log('[MobileView] SUPER_GAME_SHOW_WINNER', data);
-        setSuperGamePhase('showWinner');
-        setSuperGameWinner({
-          winnerTeamName: data.winnerTeamName,
-          finalScores: data.finalScores
+        flushSync(() => {
+          setSuperGamePhase('showQuestion');
+          setSuperGameTheme({ id: data.themeId, name: data.themeName });
+          setSuperGameQuestion({
+            text: data.questionText,
+            media: data.questionMedia
+          });
+          setSuperGameAnswer('');
+        });
+
+        // Force synchronous render for immediate UI update
+        requestAnimationFrame(() => {
+          console.log('[MobileView] SUPER_GAME_SHOW_QUESTION UI update rendered at:', performance.now() - startTime, 'ms');
         });
         break;
+      }
+
+      case 'SUPER_GAME_ANSWER_SUBMITTED': {
+        const startTime = performance.now();
+        // A team has submitted their answer - if it's our team, close input and show BUZZ button
+        console.log('[MobileView] SUPER_GAME_ANSWER_SUBMITTED', data, 'timestamp:', startTime);
+        if (data.teamId === currentTeamId || data.teamId === currentTeam) {
+          // Clear the answer input and return to waiting state (show BUZZ button)
+          flushSync(() => {
+            setSuperGameAnswer('');
+            setSuperGamePhase('idle');
+          });
+
+          // Force synchronous render for immediate UI update
+          requestAnimationFrame(() => {
+            console.log('[MobileView] SUPER_GAME_ANSWER_SUBMITTED UI update rendered at:', performance.now() - startTime, 'ms');
+          });
+        }
+        break;
+      }
+
+      case 'SUPER_GAME_SHOW_WINNER': {
+        const startTime = performance.now();
+        // Host is showing the winner
+        console.log('[MobileView] SUPER_GAME_SHOW_WINNER', data, 'timestamp:', startTime);
+
+        flushSync(() => {
+          setSuperGamePhase('showWinner');
+          setSuperGameWinner({
+            winnerTeamName: data.winnerTeamName,
+            finalScores: data.finalScores
+          });
+        });
+
+        // Force synchronous render for immediate UI update
+        requestAnimationFrame(() => {
+          console.log('[MobileView] SUPER_GAME_SHOW_WINNER UI update rendered at:', performance.now() - startTime, 'ms');
+        });
+        break;
+      }
     }
-  }, [updateQuality, resetState, resetSuperGameState, currentTeamId, currentTeam, userName, clientId, superGamePhase]);
+  }, [updateQuality, resetState, resetSuperGameState, currentTeamId, currentTeam, userName, clientId, superGamePhase, isTeamSelected]);
 
   // Initialize state from Storage & URL
   useEffect(() => {
     // Clean up expired client data first (5 hour TTL)
     storage.cleanupExpiredClientData();
+
+    // MIGRATE: If there's a name in non-bound storage (from previous version), migrate it to host-bound storage
+    const nonBoundName = storage.get(STORAGE_KEYS.USER_NAME);
+    const lastHost = storage.get(STORAGE_KEYS.LAST_HOST);
+    if (nonBoundName && lastHost) {
+      // Move non-bound name to host-bound storage
+      const hostBoundKey = getHostBoundKey(STORAGE_KEYS.USER_NAME, lastHost);
+      const ttlKey = getHostBoundKey(STORAGE_KEYS.USER_NAME_TTL, lastHost);
+      storage.setWithTTL(hostBoundKey, ttlKey, nonBoundName);
+      // Clear non-bound storage
+      storage.remove(STORAGE_KEYS.USER_NAME);
+      storage.remove(STORAGE_KEYS.USER_NAME_TTL);
+      console.log('[MobileView] Migrated non-bound name to host-bound storage:', nonBoundName, 'for host:', lastHost);
+    }
 
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     const urlHost = params.get('host');
@@ -387,6 +801,8 @@ export const MobileView: React.FC = () => {
       const savedHost = storage.get(STORAGE_KEYS.LAST_HOST);
       if (savedHost) {
         setHostId(savedHost);
+        // Initialize loadedHostIdRef to saved host to prevent reloading data on tab switch
+        loadedHostIdRef.current = savedHost;
       }
       // If no saved host, stay in WAITING status and show IP input screen
     }
@@ -411,7 +827,9 @@ export const MobileView: React.FC = () => {
 
   // Initialize P2P connection
   useEffect(() => {
-    if (!hostId || !userName || !ipInput || !isNameSubmitted) return;
+    // Connect as soon as we have hostId and ipInput, before name is entered
+    // This allows us to receive the host's unique ID before the user enters their name
+    if (!hostId || !ipInput) return;
 
     // Only create new manager if we don't have one or if critical params changed
     // Don't recreate just because of state changes like team selection
@@ -442,15 +860,17 @@ export const MobileView: React.FC = () => {
           setStatus(ConnectionStatus.CONNECTED);
           setRetryCount(0);
 
-          // Send JOIN/RECONNECT and GET_TEAMS immediately via signalling server (RELAY fallback)
-          // This works even if P2P connection fails
+          // Always request teams first to get the host's unique ID
+          // Only send JOIN message after user has entered their name
           if (hostId) {
-            // Check if we're reconnecting (have saved team info) - read directly from storage
-            const savedTeamId = storage.get(STORAGE_KEYS.CURRENT_TEAM_ID);
-            const savedTeamName = storage.get(STORAGE_KEYS.CURRENT_TEAM);
-            const isReconnecting = !!(savedTeamId || savedTeamName);
-            sendJoinMessage(hostId, userName, isReconnecting);
             requestStateSync(hostId);
+            // If user already entered name, send JOIN now
+            if (isNameSubmitted && userName) {
+              const savedTeamId = storage.get(STORAGE_KEYS.CURRENT_TEAM_ID);
+              const savedTeamName = storage.get(STORAGE_KEYS.CURRENT_TEAM);
+              const isReconnecting = !!(savedTeamId || savedTeamName);
+              sendJoinMessage(hostId, userName, isReconnecting);
+            }
           }
         },
         onConnected: (peerId) => {
@@ -506,25 +926,99 @@ export const MobileView: React.FC = () => {
     };
   }, []);
 
-  // Visibility change handler - use hostId directly for RELAY fallback support
+  // Persist super game state to localStorage for reconnection recovery (with hostId binding)
+  useEffect(() => {
+    // Only persist if we have a hostId
+    if (!hostUniqueId) {
+      return;
+    }
+
+    if (superGamePhase === 'idle') {
+      // Clear host-bound storage when idle
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_PHASE, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_THEME, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_MAX_BET, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET_PLACED, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_QUESTION, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_ANSWER, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_WINNER, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_TTL, hostUniqueId));
+    } else {
+      // Save state with TTL (30 minutes) with hostId binding
+      const phaseKey = getHostBoundKey(STORAGE_KEYS.SUPER_GAME_PHASE, hostUniqueId);
+      const ttlKey = getHostBoundKey(STORAGE_KEYS.SUPER_GAME_TTL, hostUniqueId);
+      storage.setWithTTL(phaseKey, ttlKey, superGamePhase);
+
+      if (superGameTheme) {
+        storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_THEME, hostUniqueId), superGameTheme);
+      } else {
+        storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_THEME, hostUniqueId));
+      }
+
+      storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_MAX_BET, hostUniqueId), superGameMaxBet);
+      storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET, hostUniqueId), superGameBet);
+      storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET_PLACED, hostUniqueId), betPlaced);
+
+      if (superGameQuestion) {
+        storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_QUESTION, hostUniqueId), superGameQuestion);
+      } else {
+        storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_QUESTION, hostUniqueId));
+      }
+
+      storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_ANSWER, hostUniqueId), superGameAnswer);
+
+      if (superGameWinner) {
+        storage.set(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_WINNER, hostUniqueId), superGameWinner);
+      } else {
+        storage.remove(getHostBoundKey(STORAGE_KEYS.SUPER_GAME_WINNER, hostUniqueId));
+      }
+    }
+  }, [superGamePhase, superGameTheme, superGameMaxBet, superGameBet, betPlaced, superGameQuestion, superGameAnswer, superGameWinner, hostUniqueId]);
+
+  // Visibility change handler - improved for sleep mode recovery with debounce
   useEffect(() => {
     if (!hostId || !p2pManagerRef.current) return;
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && p2pManagerRef.current) {
+        const now = Date.now();
+        // Debounce: only process if at least 1 second has passed since last visibility change
+        if (now - lastVisibilityChangeRef.current < 1000) {
+          console.log('[MobileView] Visibility change debounced, skipping');
+          return;
+        }
+        lastVisibilityChangeRef.current = now;
+
+        console.log('[MobileView] Page became visible (returning from sleep/minimized), requesting state sync');
+
+        // Send heartbeat to confirm connection
         p2pManagerRef.current.sendTo(hostId, {
           type: 'HEARTBEAT',
           sentAt: Date.now(),
           messageId: `visibility_${Date.now()}`,
           userName: userName
         });
-        requestStateSync(hostId);
+
+        // Only request teams list if we haven't selected a team yet
+        // If we already have a team selected, don't disrupt the game state
+        if (!isTeamSelected) {
+          requestStateSync(hostId);
+        }
+
+        // Request super game state if we were in a super game phase
+        if (superGamePhase !== 'idle') {
+          console.log('[MobileView] Requesting super game state sync after visibility change');
+          p2pManagerRef.current.sendTo(hostId, {
+            type: 'GET_SUPER_GAME_STATE'
+          });
+        }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [hostId, userName, requestStateSync]);
+  }, [hostId, userName, requestStateSync, superGamePhase, isTeamSelected]);
 
   // Heartbeat to host - use hostId directly for RELAY fallback support
   useEffect(() => {
@@ -563,13 +1057,71 @@ export const MobileView: React.FC = () => {
     return () => clearInterval(interval);
   }, [status, connectionQuality, hostId]);
 
+  // Send JOIN when we have everything needed (name is already entered from previous session)
+  useEffect(() => {
+    if (status === ConnectionStatus.CONNECTED && hostId && hostUniqueId && userName && isNameSubmitted && p2pManagerRef.current) {
+      // Check if we've already sent JOIN for this host
+      if (loadedHostIdRef.current === hostUniqueId) {
+        return; // Already connected to this host
+      }
+
+      // Send JOIN message with saved name
+      console.log('[MobileView] Auto-sending JOIN message with saved name:', userName);
+      sendJoinMessage(hostId, userName, false);
+    }
+  }, [status, hostId, hostUniqueId, userName, isNameSubmitted]);
+
   // --- HANDLERS ---
   const handleNameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userName.trim()) return;
-    // Save userName to storage for reconnection after page refresh (with 5 hour TTL)
-    storage.setWithTTL(STORAGE_KEYS.USER_NAME, STORAGE_KEYS.USER_NAME_TTL, userName);
+
+    // Get value directly from the input to ensure we have the latest value
+    const input = document.getElementById('name') as HTMLInputElement;
+    const nameToSend = input ? input.value.trim() : userName.trim();
+
+    console.log('[MobileView] handleNameSubmit called:', {
+      fromInput: input?.value,
+      fromState: userName,
+      nameToSend: nameToSend,
+      hostId: hostId,
+      hostUniqueId: hostUniqueId,
+      hasP2PManager: !!p2pManagerRef.current
+    });
+
+    if (!nameToSend) {
+      console.log('[MobileView] handleNameSubmit: userName is empty, not submitting');
+      return;
+    }
+
+    // Update state if different
+    if (nameToSend !== userName) {
+      setUserName(nameToSend);
+    }
+
+    // Track this name as pending (not yet bound to host) for migration
+    pendingNameRef.current = nameToSend;
+
+    // Save userName to storage with hostId binding for reconnection
+    if (hostUniqueId) {
+      const userKey = getHostBoundKey(STORAGE_KEYS.USER_NAME, hostUniqueId);
+      const ttlKey = getHostBoundKey(STORAGE_KEYS.USER_NAME_TTL, hostUniqueId);
+      storage.setWithTTL(userKey, ttlKey, nameToSend);
+      loadedHostIdRef.current = hostUniqueId;
+      pendingNameRef.current = null; // Name is now bound, clear pending
+    } else {
+      // Fallback to non-hostId storage if we don't have hostId yet
+      storage.setWithTTL(STORAGE_KEYS.USER_NAME, STORAGE_KEYS.USER_NAME_TTL, nameToSend);
+      // Keep pendingNameRef set so we can migrate it when we get the hostId
+    }
     setIsNameSubmitted(true);
+
+    // Send JOIN message to host after entering name
+    if (hostId && p2pManagerRef.current) {
+      console.log('[MobileView] handleNameSubmit: sending JOIN message to hostId:', hostId, 'with name:', nameToSend);
+      sendJoinMessage(hostId, nameToSend, false);
+    } else {
+      console.log('[MobileView] handleNameSubmit: cannot send JOIN - hostId:', hostId, 'p2pManager:', !!p2pManagerRef.current);
+    }
   };
 
   const handleIpLock = () => {
@@ -606,25 +1158,49 @@ export const MobileView: React.FC = () => {
       userName
     });
     console.log('[CREATE_TEAM] Message sent result:', sent);
-    setCurrentTeam(newTeamName);
-    setCurrentTeamId(teamId);  // Store the team ID for BUZZ messages
-    setIsTeamSelected(true);
-    setNewTeamName('');
 
-    // Save team selection to storage for reconnection (with 5 hour TTL)
-    storage.setWithTTL(STORAGE_KEYS.CURRENT_TEAM, STORAGE_KEYS.CURRENT_TEAM_TTL, newTeamName);
-    storage.setWithTTL(STORAGE_KEYS.CURRENT_TEAM_ID, STORAGE_KEYS.CURRENT_TEAM_ID_TTL, teamId);
-    storage.setWithTTL(STORAGE_KEYS.TEAM_SELECTED, STORAGE_KEYS.TEAM_SELECTED_TTL, 'true');
+    // Flush state updates immediately to avoid batching - ensures UI updates synchronously
+    flushSync(() => {
+      setCurrentTeam(newTeamName);
+      setCurrentTeamId(teamId);  // Store the team ID for BUZZ messages
+      setIsTeamSelected(true);
+      setNewTeamName('');
+    });
 
-    // If there's a pending super game, open the betting UI
+    // Save team selection to storage with hostId binding for reconnection
+    if (hostUniqueId) {
+      const teamKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, hostUniqueId);
+      const teamIdKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, hostUniqueId);
+      const teamNameKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, hostUniqueId);
+      const teamSelectedKey = getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, hostUniqueId);
+      const userNameKey = getHostBoundKey(STORAGE_KEYS.USER_NAME, hostUniqueId);
+      const teamTtlKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_TTL, hostUniqueId);
+      const teamIdTtlKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID_TTL, hostUniqueId);
+      const teamSelectedTtlKey = getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED_TTL, hostUniqueId);
+      const userNameTtlKey = getHostBoundKey(STORAGE_KEYS.USER_NAME_TTL, hostUniqueId);
+
+      storage.setWithTTL(teamKey, teamTtlKey, newTeamName);
+      storage.setWithTTL(teamIdKey, teamIdTtlKey, teamId);
+      storage.set(teamNameKey, newTeamName);
+      storage.set(teamSelectedKey, 'true');
+      storage.setWithTTL(teamSelectedKey, teamSelectedTtlKey, 'true');
+      // Also save user name with hostId binding
+      storage.setWithTTL(userNameKey, userNameTtlKey, userName);
+      // Mark that we've loaded data for this host (since we just set it)
+      loadedHostIdRef.current = hostUniqueId;
+    }
+
+    // If there's a pending super game, open the betting UI immediately
     if (pendingSuperGame) {
       console.log('[CREATE_TEAM] Opening super game UI after team creation');
-      setSuperGamePhase('placeBets');
-      setSuperGameMaxBet(pendingSuperGame.maxBet);
-      setSuperGameTheme(pendingSuperGame.theme || null);
-      setBetPlaced(false);
-      setSuperGameBet(0);
-      setPendingSuperGame(null);
+      flushSync(() => {
+        setSuperGamePhase('placeBets');
+        setSuperGameMaxBet(pendingSuperGame.maxBet);
+        setSuperGameTheme(pendingSuperGame.theme || null);
+        setBetPlaced(false);
+        setSuperGameBet(0);
+        setPendingSuperGame(null);
+      });
     }
   };
 
@@ -644,24 +1220,47 @@ export const MobileView: React.FC = () => {
       userName
     });
     console.log('[JOIN_TEAM] Message sent result:', sent);
-    setCurrentTeam(teamName);
-    setCurrentTeamId(teamId);  // Store the team ID for BUZZ messages
-    setIsTeamSelected(true);
 
-    // Save team selection to storage for reconnection (with 5 hour TTL)
-    storage.setWithTTL(STORAGE_KEYS.CURRENT_TEAM, STORAGE_KEYS.CURRENT_TEAM_TTL, teamName);
-    storage.setWithTTL(STORAGE_KEYS.CURRENT_TEAM_ID, STORAGE_KEYS.CURRENT_TEAM_ID_TTL, teamId);
-    storage.setWithTTL(STORAGE_KEYS.TEAM_SELECTED, STORAGE_KEYS.TEAM_SELECTED_TTL, 'true');
+    // Flush state updates immediately to avoid batching - ensures UI updates synchronously
+    flushSync(() => {
+      setCurrentTeam(teamName);
+      setCurrentTeamId(teamId);  // Store the team ID for BUZZ messages
+      setIsTeamSelected(true);
+    });
 
-    // If there's a pending super game, open the betting UI
+    // Save team selection to storage with hostId binding for reconnection
+    if (hostUniqueId) {
+      const teamKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, hostUniqueId);
+      const teamIdKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, hostUniqueId);
+      const teamNameKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, hostUniqueId);
+      const teamSelectedKey = getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, hostUniqueId);
+      const userNameKey = getHostBoundKey(STORAGE_KEYS.USER_NAME, hostUniqueId);
+      const teamTtlKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_TTL, hostUniqueId);
+      const teamIdTtlKey = getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID_TTL, hostUniqueId);
+      const teamSelectedTtlKey = getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED_TTL, hostUniqueId);
+      const userNameTtlKey = getHostBoundKey(STORAGE_KEYS.USER_NAME_TTL, hostUniqueId);
+
+      storage.setWithTTL(teamKey, teamTtlKey, teamName);
+      storage.setWithTTL(teamIdKey, teamIdTtlKey, teamId);
+      storage.set(teamNameKey, teamName);
+      storage.setWithTTL(teamSelectedKey, teamSelectedTtlKey, 'true');
+      // Also save user name with hostId binding
+      storage.setWithTTL(userNameKey, userNameTtlKey, userName);
+      // Mark that we've loaded data for this host (since we just set it)
+      loadedHostIdRef.current = hostUniqueId;
+    }
+
+    // If there's a pending super game, open the betting UI immediately
     if (pendingSuperGame) {
       console.log('[JOIN_TEAM] Opening super game UI after team join');
-      setSuperGamePhase('placeBets');
-      setSuperGameMaxBet(pendingSuperGame.maxBet);
-      setSuperGameTheme(pendingSuperGame.theme || null);
-      setBetPlaced(false);
-      setSuperGameBet(0);
-      setPendingSuperGame(null);
+      flushSync(() => {
+        setSuperGamePhase('placeBets');
+        setSuperGameMaxBet(pendingSuperGame.maxBet);
+        setSuperGameTheme(pendingSuperGame.theme || null);
+        setBetPlaced(false);
+        setSuperGameBet(0);
+        setPendingSuperGame(null);
+      });
     }
   };
 
@@ -677,14 +1276,20 @@ export const MobileView: React.FC = () => {
       });
     }
 
-    // Clear team selection from storage
-    storage.remove(STORAGE_KEYS.CURRENT_TEAM);
-    storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
-    storage.remove(STORAGE_KEYS.TEAM_SELECTED);
+    // Clear team selection from storage (with hostId binding)
+    if (hostUniqueId) {
+      storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, hostUniqueId));
+      storage.remove(getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, hostUniqueId));
+    }
 
     // Reset state to initial (no storage)
     setIsTeamSelected(false);
     setCurrentTeam(null);
+    setCurrentTeamId(null);
+    setCurrentTeamScore(null);
     setUserName('');
     setIsNameSubmitted(false);
   };
@@ -771,8 +1376,19 @@ export const MobileView: React.FC = () => {
 
   // --- RENDER ---
 
-  // SCREEN 1: NAME ENTRY
+  // SCREEN 1: NAME ENTRY - only show after we received hostId from the server
   if (!isNameSubmitted) {
+    // If we haven't received hostId yet, show loading/connection screen instead
+    if (!hostIdReceived || status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.CONNECTING) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center p-6 bg-gray-950">
+          <div className="w-full max-w-md space-y-8 text-center">
+            <Loader2 className="w-16 h-16 text-blue-500 animate-spin mx-auto" />
+            <p className="text-gray-400 mt-4">Connecting to host...</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 bg-gray-950">
         <div className="w-full max-w-md space-y-8">
@@ -1056,9 +1672,9 @@ export const MobileView: React.FC = () => {
   // Show super game UI if in super game phase
   if (superGamePhase !== 'idle') {
     return (
-      <div className="h-screen flex flex-col relative bg-gray-950">
+      <div className="h-screen flex flex-col relative bg-gray-950 cursor-default">
         {/* Header */}
-        <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm">
+        <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm cursor-default">
           <div className="flex items-center space-x-2 bg-gray-800/50 rounded-full pl-3 pr-4 py-1 border border-white/10">
             <User className="w-4 h-4 text-blue-400" />
             <div className="flex flex-col text-left leading-none">
@@ -1219,9 +1835,9 @@ export const MobileView: React.FC = () => {
 
   // Regular waiting screen with buzz button
   return (
-    <div className="h-screen flex flex-col relative bg-gray-950">
+    <div className="h-screen flex flex-col relative bg-gray-950 cursor-default">
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm">
+      <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm cursor-default">
         <button
           onClick={handleLeave}
           className="p-2 bg-red-600/20 hover:bg-red-600/30 rounded-full border border-red-600/30 text-red-400 transition-colors"

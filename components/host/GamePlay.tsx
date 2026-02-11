@@ -214,6 +214,7 @@ export const GamePlay = memo(({
 }: GamePlayProps) => {
   // Game state
   const [currentScreen, setCurrentScreen] = useState<GameScreen>('cover');
+  const previousScreenRef = useRef<GameScreen>('cover');
   const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
   const [answeredQuestions, setAnsweredQuestions] = useState<Set<string>>(new Set());
   const [teamScores, setTeamScores] = useState<TeamScore[]>(
@@ -263,58 +264,37 @@ export const GamePlay = memo(({
     }
   }, [currentScreen]);
 
-  // Auto-transition from round cover to selectSuperThemes for super rounds
-  useEffect(() => {
-    if (currentScreen === 'round' && currentRound?.type === 'super') {
-      // Auto-transition to selectSuperThemes after a delay for super rounds
-      const timer = setTimeout(() => {
-        setCurrentScreen('selectSuperThemes');
-      }, 1500); // Show round cover for 1.5 seconds before auto-advancing
-      return () => clearTimeout(timer);
-    }
-  }, [currentScreen, currentRound]);
+  // Auto-transition from round cover to selectSuperThemes for super rounds - REMOVED
+  // Now requires manual Space press to advance
 
-  // Auto-select the remaining theme when only one is left
+  // Auto-select the remaining theme when only one is left - NO auto-transition
+  // Theme is selected automatically, but screen transition requires manual Space press
   useEffect(() => {
     if (currentScreen === 'selectSuperThemes' && currentRound) {
       const themeCount = currentRound.themes?.length || 0;
       const remainingCount = themeCount - disabledSuperThemeIds.size;
 
       if (remainingCount === 1 && !selectedSuperThemeId) {
-        const remainingTheme = currentRound.themes?.find(t => !disabledSuperThemeIds.has(t.id));
+        const remainingTheme = currentRound.themes?.find((t: Theme) => !disabledSuperThemeIds.has(t.id));
         if (remainingTheme) {
           setSelectedSuperThemeId(remainingTheme.id);
-          // Auto-transition to placeBets when only one theme remains
-          setTimeout(() => setCurrentScreen('placeBets'), 300);
+          // Note: No auto-transition to placeBets - user must press Space
         }
       }
     }
   }, [currentScreen, disabledSuperThemeIds, currentRound, selectedSuperThemeId]);
 
-  // Auto-transition to superQuestion when all teams have placed bets
-  useEffect(() => {
-    if (currentScreen === 'placeBets') {
-      const allTeamsReady = teamScores.length > 0 &&
-        superGameBets.length === teamScores.length &&
-        superGameBets.every(b => b.ready);
+  // Auto-transition to superQuestion when all teams have placed bets - REMOVED
+  // Now requires manual Space press to advance from placeBets to superQuestion
 
-      if (allTeamsReady) {
-        // Auto-transition to superQuestion when all teams are ready
-        setTimeout(() => setCurrentScreen('superQuestion'), 500);
-      }
-    }
-  }, [currentScreen, superGameBets, teamScores]);
-
-  // Broadcast "Place Your Bets" message to mobile clients
+  // Update parent with super game phase AND broadcast state sync
   useEffect(() => {
-    console.log('[GamePlay] placeBets useEffect check:', {
-      currentScreen,
-      hasOnBroadcastMessage: !!onBroadcastMessage,
-      hasCurrentRound: !!currentRound,
-      selectedSuperThemeId,
-      teamScoresCount: teamScores.length
-    });
-    if (currentScreen === 'placeBets' && onBroadcastMessage && currentRound) {
+    if (!onBroadcastMessage) return;
+
+    if (currentScreen === 'placeBets' && currentRound) {
+      // Update parent phase
+      onSuperGamePhaseChange?.('placeBets');
+
       // Get the selected theme
       const selectedTheme = selectedSuperThemeId
         ? currentRound.themes?.find((t: Theme) => t.id === selectedSuperThemeId)
@@ -324,29 +304,65 @@ export const GamePlay = memo(({
       const maxScore = Math.max(...teamScores.map(t => t.score), 0);
       const maxBet = maxScore > 0 ? maxScore : 100;
 
-      const message = {
-        type: 'SUPER_GAME_PLACE_YOUR_BETS' as const,
-        enabledThemes: selectedTheme ? [selectedTheme.id] : [],
+      // Broadcast state sync to clients
+      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC placeBets');
+      onBroadcastMessage({
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'placeBets',
+        themeId: selectedTheme?.id,
+        themeName: selectedTheme?.name,
         maxBet: maxBet,
-      };
-
-      console.log('[GamePlay] Broadcasting SUPER_GAME_PLACE_YOUR_BETS:', message);
-      onBroadcastMessage(message);
-
-      // Update parent with super game phase and max bet
-      onSuperGamePhaseChange?.('placeBets');
-      onSuperGameMaxBetChange?.(maxBet);
+      });
 
       // Reset bets state
       setSuperGameBets([]);
-    } else if (currentScreen === 'superQuestion') {
+    } else if (currentScreen === 'superQuestion' && currentRound && selectedSuperThemeId) {
+      // Update parent phase
       onSuperGamePhaseChange?.('showQuestion');
+
+      // Get the selected theme and question
+      const selectedTheme = currentRound.themes?.find(t => t.id === selectedSuperThemeId);
+      const question = selectedTheme?.questions?.[0];
+
+      if (selectedTheme && question) {
+        console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC showQuestion');
+        onBroadcastMessage({
+          type: 'SUPER_GAME_STATE_SYNC',
+          phase: 'showQuestion',
+          themeId: selectedTheme.id,
+          themeName: selectedTheme.name,
+          questionText: question.text || '',
+          questionMedia: question.media,
+        });
+
+        // Reset answers state
+        setSuperGameAnswers([]);
+      }
+    } else if (currentScreen === 'superAnswers') {
+      onSuperGamePhaseChange?.('showWinner');
+      // Clients go to idle when host views answers
+      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (superAnswers)');
+      onBroadcastMessage({
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'idle',
+      });
     } else if (currentScreen === 'showWinner') {
       onSuperGamePhaseChange?.('showWinner');
-    } else if (currentScreen === 'board' || currentScreen === 'cover' || currentScreen === 'themes' || currentScreen === 'round') {
+      // Clients go to idle when host views winner
+      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (showWinner)');
+      onBroadcastMessage({
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'idle',
+      });
+    } else if (['board', 'cover', 'themes', 'round', 'selectSuperThemes'].includes(currentScreen)) {
       onSuperGamePhaseChange?.('idle');
+      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (regular screens)');
+      onBroadcastMessage({
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'idle',
+      });
     }
-  }, [currentScreen, onBroadcastMessage, currentRound, selectedSuperThemeId, teamScores, onSuperGamePhaseChange, onSuperGameMaxBetChange]);
+  }, [currentScreen, onBroadcastMessage, onSuperGamePhaseChange, currentRound, selectedSuperThemeId, teamScores]);
 
   // Sync external bets from mobile clients
   useEffect(() => {
@@ -362,27 +378,40 @@ export const GamePlay = memo(({
     }
   }, [externalSuperGameAnswers]);
 
-  // Broadcast super game question to mobile clients
+  // Clear super game state on clients when transitioning away from super game screens
   useEffect(() => {
-    if (currentScreen === 'superQuestion' && onBroadcastMessage && currentRound && selectedSuperThemeId) {
-      // Get the selected theme
-      const selectedTheme = currentRound.themes?.find(t => t.id === selectedSuperThemeId);
-      const question = selectedTheme?.questions?.[0];
+    const prevScreen = previousScreenRef.current;
+    const superGameScreens: GameScreen[] = ['placeBets', 'superQuestion', 'superAnswers', 'showWinner'];
 
-      if (selectedTheme && question) {
-        onBroadcastMessage({
-          type: 'SUPER_GAME_SHOW_QUESTION',
-          themeId: selectedTheme.id,
-          themeName: selectedTheme.name,
-          questionText: question.text || '',
-          questionMedia: question.media,
-        });
+    // Valid transitions within super game (should NOT clear state)
+    const validSuperGameTransitions: Record<string, string[]> = {
+      'placeBets': ['superQuestion'],
+      'superQuestion': ['superAnswers'],
+      'superAnswers': ['showWinner'],
+      'showWinner': [],
+    };
 
-        // Reset answers state
-        setSuperGameAnswers([]);
+    // Check if we're leaving a super game screen
+    const wasInSuperGame = superGameScreens.includes(prevScreen);
+    const isInSuperGame = superGameScreens.includes(currentScreen);
+
+    if (wasInSuperGame) {
+      // Check if this is a valid transition within super game
+      const allowedTargets = validSuperGameTransitions[prevScreen] || [];
+      const isValidTransition = allowedTargets.includes(currentScreen);
+
+      // If we're leaving super game entirely (not a valid internal transition)
+      if (!isInSuperGame || !isValidTransition) {
+        if (onBroadcastMessage) {
+          console.log('[GamePlay] Leaving super game or invalid transition, clearing state on clients:', prevScreen, '->', currentScreen);
+          onBroadcastMessage({ type: 'SUPER_GAME_CLEAR' });
+        }
       }
     }
-  }, [currentScreen, onBroadcastMessage, currentRound, selectedSuperThemeId]);
+
+    // Update previous screen ref
+    previousScreenRef.current = currentScreen;
+  }, [currentScreen, onBroadcastMessage]);
 
   // Sync teamScores with teams prop - important for when new teams are created during game
   useEffect(() => {
@@ -414,6 +443,22 @@ export const GamePlay = memo(({
     });
   }, [teams]);
 
+  // Broadcast updated maxBet to clients when team scores change (during super game)
+  useEffect(() => {
+    if (currentScreen === 'placeBets') {
+      // Calculate max bet (highest score among teams)
+      const maxScore = Math.max(...teamScores.map(t => t.score), 0);
+      const maxBet = maxScore > 0 ? maxScore : 100;
+
+      console.log('[GamePlay] Broadcasting updated maxBet:', maxBet, 'based on scores:', teamScores);
+      onBroadcastMessage({
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'placeBets',
+        maxBet: maxBet,
+      });
+    }
+  }, [teamScores, currentScreen, onBroadcastMessage]);
+
   // Navigate between screens with Space
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -436,12 +481,13 @@ export const GamePlay = memo(({
             switch (prev) {
               case 'cover': return isSuperRound ? 'selectSuperThemes' : 'themes';
               case 'themes':
-                // Always show round cover (for super rounds, round will auto-transition to selectSuperThemes)
+                // Always show round cover
                 return 'round';
               case 'selectSuperThemes':
-                // Always allow proceeding from selectSuperThemes with Space
-                // (user has manually reviewed themes and wants to continue)
-                return 'placeBets';
+                // Only proceed to placeBets when exactly one theme remains (not disabled)
+                const themeCount = currentRound?.themes?.length || 0;
+                const remainingCount = themeCount - disabledSuperThemeIds.size;
+                return remainingCount === 1 ? 'placeBets' : 'selectSuperThemes';
               case 'round':
                 // For super rounds, skip board and go to selectSuperThemes
                 return isSuperRound ? 'selectSuperThemes' : 'board';
@@ -905,12 +951,14 @@ export const GamePlay = memo(({
           const isBuzzed = buzzedTeamIds?.has(team.teamId) || false;
           // Check if team has placed bet in super game
           const hasPlacedBet = currentScreen === 'placeBets' && superGameBets.find(b => b.teamId === team.teamId)?.ready;
+          // Check if team has submitted answer in super game
+          const hasSubmittedAnswer = currentScreen === 'superGameAnswers' && superGameAnswers.find((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }) => a.teamId === team.teamId)?.submitted;
 
           return (
             <div
               key={team.teamId}
               className={`px-6 py-2 rounded-lg border-2 transition-all ${
-                hasPlacedBet
+                hasPlacedBet || hasSubmittedAnswer
                   ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
                   : isAnsweringTeam
                     ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.5)] scale-105'
@@ -930,6 +978,9 @@ export const GamePlay = memo(({
               {hasPlacedBet && (
                 <div className="text-green-400 text-xs font-bold mt-1">✓ Bet Placed</div>
               )}
+              {hasSubmittedAnswer && (
+                <div className="text-green-400 text-xs font-bold mt-1">✓ Answer Sent</div>
+              )}
             </div>
           </div>
           );
@@ -937,10 +988,10 @@ export const GamePlay = memo(({
       </div>
 
       {/* Main Content */}
-      <div className="h-screen bg-gray-950 text-gray-100 overflow-hidden">
+      <div className="h-screen bg-gray-950 text-gray-100 overflow-hidden cursor-default">
       {/* Game Board Container - fixed position, starts below player panel */}
       {currentScreen === 'board' && currentRound && (
-        <div className="fixed inset-0 top-24 bottom-0 left-0 right-0">
+        <div className="fixed inset-0 top-24 bottom-0 left-0 right-0 cursor-default">
           <GameBoard
             round={currentRound}
             teamScores={teamScores}
@@ -953,7 +1004,7 @@ export const GamePlay = memo(({
 
       {/* Other Screens Container - centered overlay */}
       {currentScreen !== 'board' && (
-        <div className="fixed inset-0 top-6 flex items-center justify-center p-4">
+        <div className="fixed inset-0 top-6 flex items-center justify-center p-4 cursor-default">
           {/* Screen 1: Pack Cover */}
           {currentScreen === 'cover' && (
             <div className="text-center animate-in fade-in zoom-in duration-500 flex flex-col items-center justify-center">
@@ -963,10 +1014,10 @@ export const GamePlay = memo(({
                     <img
                       src={pack.cover.value}
                       alt={pack.name}
-                      className="h-full w-auto object-cover rounded-2xl shadow-2xl"
+                      className="h-full w-auto object-cover rounded-2xl shadow-2xl cursor-default"
                     />
                   ) : (
-                    <div className="aspect-video h-full flex items-center justify-center bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl shadow-2xl">
+                    <div className="aspect-video h-full flex items-center justify-center bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl shadow-2xl cursor-default">
                       <span className="text-8xl font-black text-white/20">?</span>
                     </div>
                   )}
@@ -980,7 +1031,7 @@ export const GamePlay = memo(({
 
           {/* Screen 2: Themes List */}
           {currentScreen === 'themes' && (
-            <div className="w-full max-w-6xl animate-in fade-in duration-500 flex flex-col items-center h-[85vh]">
+            <div className="w-full max-w-6xl animate-in fade-in duration-500 flex flex-col items-center h-[85vh] cursor-default">
               {/* Themes title at top */}
               <h2 className="text-3xl font-bold text-center text-white mb-8 mt-20 uppercase tracking-wide shrink-0">
                 Themes
@@ -992,7 +1043,7 @@ export const GamePlay = memo(({
                   round.themes?.map(theme => (
                     <div
                       key={`${round.id}-${theme.id}`}
-                      className="rounded-xl p-6 shadow-lg flex flex-col items-center relative"
+                      className="rounded-xl p-6 shadow-lg flex flex-col items-center relative cursor-default"
                       style={{
                         backgroundColor: theme.color || '#3b82f6',
                         minHeight: '120px'
@@ -1017,17 +1068,17 @@ export const GamePlay = memo(({
 
         {/* Screen 3: Round Intro */}
         {currentScreen === 'round' && currentRound && (
-          <div className="text-center animate-in fade-in zoom-in duration-500 flex flex-col items-center justify-center">
+          <div className="text-center animate-in fade-in zoom-in duration-500 flex flex-col items-center justify-center cursor-default">
             <div className="flex flex-col items-center gap-[15px]">
               <div className="h-[70vh] w-[85vw] flex items-center justify-center">
                 {currentRound.cover?.value ? (
                   <img
                     src={currentRound.cover.value}
                     alt={currentRound.name}
-                    className="h-full w-auto object-cover rounded-2xl shadow-2xl"
+                    className="h-full w-auto object-cover rounded-2xl shadow-2xl cursor-default"
                   />
                 ) : (
-                  <div className="w-64 h-64 bg-gradient-to-br from-indigo-600 to-blue-600 rounded-full flex items-center justify-center shadow-2xl">
+                  <div className="w-64 h-64 bg-gradient-to-br from-indigo-600 to-blue-600 rounded-full flex items-center justify-center shadow-2xl cursor-default">
                     <span className="text-6xl font-black text-white">{currentRound.number}</span>
                   </div>
                 )}
@@ -1137,47 +1188,19 @@ export const GamePlay = memo(({
 
       {/* Screen 6: Place Your Bets - Wait for teams to bet */}
       {currentScreen === 'placeBets' && currentRound && (() => {
-        // Auto-select the remaining theme
-        const remainingTheme = currentRound.themes?.find(t => !disabledSuperThemeIds.has(t.id));
-        if (remainingTheme && !selectedSuperThemeId) {
-          setSelectedSuperThemeId(remainingTheme.id);
-        }
+        // Get the selected theme (auto-selected when only one remains on selectSuperThemes screen)
+        const remainingTheme = selectedSuperThemeId
+          ? currentRound.themes?.find((t: Theme) => t.id === selectedSuperThemeId)
+          : null;
 
         return (
-          <div className="w-full h-screen flex flex-col items-center justify-center animate-in fade-in duration-500">
+          <div className="w-full h-full flex flex-col items-center justify-center animate-in fade-in duration-500 px-8">
             {/* Title */}
-            <h2 className="text-6xl font-bold text-center text-white mb-8 uppercase tracking-wide">
+            <h2 className="text-7xl font-bold text-center text-white mb-8 uppercase tracking-wide">
               Place Your Bets
             </h2>
-            <p className="text-3xl text-gray-300 mb-12">Theme: <span className="text-yellow-400 font-bold">{remainingTheme?.name}</span></p>
-
-            {/* Team bets status */}
-            <div className="grid grid-cols-3 gap-8 w-full max-w-6xl px-8">
-              {teamScores.map(team => {
-                const betInfo = superGameBets.find(b => b.teamId === team.teamId);
-                const hasPlaced = betInfo?.ready;
-
-                return (
-                  <div
-                    key={team.teamId}
-                    className={`rounded-2xl p-8 border-2 text-center ${
-                      hasPlaced
-                        ? 'bg-green-500/20 border-green-500'
-                        : 'bg-gray-800/50 border-gray-700'
-                    }`}
-                  >
-                    <div className="text-4xl font-bold text-white mb-4">{team.teamName}</div>
-                    <div className="text-2xl text-gray-400 mb-4">Score: {team.score}</div>
-                    {hasPlaced ? (
-                      <div className="text-green-400 font-bold text-3xl mt-4">Bet: {betInfo.bet}</div>
-                    ) : (
-                      <div className="text-gray-500 italic text-2xl mt-4">Waiting...</div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
+            <p className="text-4xl text-gray-300 mb-8">Theme: <span className="text-yellow-400 font-bold">{remainingTheme?.name}</span></p>
+            <p className="text-2xl text-gray-400">Waiting for teams to place their bets...</p>
           </div>
         );
       })()}
@@ -1188,7 +1211,6 @@ export const GamePlay = memo(({
           round={currentRound}
           selectedSuperThemeId={selectedSuperThemeId}
           teamScores={teamScores}
-          superGameBets={superGameBets}
           superGameAnswers={superGameAnswers}
           onSpacePressed={() => setCurrentScreen('superAnswers')}
         />
@@ -1285,7 +1307,7 @@ const GameBoard = memo(({ round, onQuestionClick, isQuestionAnswered, highlighte
   const numQuestions = maxQuestions;
 
   return (
-    <div className="w-full h-full animate-in fade-in duration-500 p-1">
+    <div className="w-full h-full animate-in fade-in duration-500 p-1 cursor-default">
       {/* Themes column (1/8 width) + Questions grid (7/8 width) */}
       <div className="flex h-full gap-1">
         {/* Left column: Themes - 1/8 of screen width */}
@@ -1296,7 +1318,7 @@ const GameBoard = memo(({ round, onQuestionClick, isQuestionAnswered, highlighte
             return (
               <div
                 key={theme.id}
-                className="flex-1 rounded-xl p-3 flex items-center justify-center shadow-lg"
+                className="flex-1 rounded-xl p-3 flex items-center justify-center shadow-lg cursor-default"
                 style={{ backgroundColor: themeColor }}
               >
                 <h3 className="font-bold text-center text-2xl leading-tight" style={{ color: themeTextColor }}>
@@ -1338,8 +1360,8 @@ const GameBoard = memo(({ round, onQuestionClick, isQuestionAnswered, highlighte
                         isAnswered
                           ? 'bg-gray-800/30 text-gray-700 cursor-not-allowed'
                           : isHighlighted
-                            ? 'bg-yellow-500 text-white shadow-[0_0_30px_rgba(250,204,21,0.8)] scale-105'
-                            : ''
+                            ? 'bg-yellow-500 text-white shadow-[0_0_30px_rgba(250,204,21,0.8)] scale-105 cursor-default'
+                            : 'cursor-pointer'
                       }`}
                       style={
                         !isAnswered && !isHighlighted
@@ -1350,7 +1372,7 @@ const GameBoard = memo(({ round, onQuestionClick, isQuestionAnswered, highlighte
                       {points}
                     </button>
                   ) : (
-                    <div className="w-full h-full rounded-xl bg-gray-800/30 border border-dashed border-gray-700"></div>
+                    <div className="w-full h-full rounded-xl bg-gray-800/30 border border-dashed border-gray-700 cursor-default"></div>
                   )}
                 </div>
               );
@@ -1532,7 +1554,7 @@ const QuestionModal = memo(({
   })) ?? [];
 
   return (
-    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
       <style>{`
         @media (min-width: 768px) {
           [data-qf="true"] { font-size: ${questionFontSizeDesktop}rem !important; }
@@ -1541,7 +1563,7 @@ const QuestionModal = memo(({
         }
       `}</style>
       <div
-        className="w-[90vw] mx-auto bg-gray-900 border-2 border-blue-500 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+        className="w-[90vw] mx-auto bg-gray-900 border-2 border-blue-500 rounded-2xl shadow-2xl flex flex-col overflow-hidden cursor-default"
         style={{ maxHeight: modalMaxHeight, minHeight: '48vh' }}
       >
         {/* Question Section (2/3) */}
@@ -1764,7 +1786,6 @@ interface SuperGameQuestionModalProps {
   round: Round;
   selectedSuperThemeId: string | null;
   teamScores: TeamScore[];
-  superGameBets: SuperGameBet[];
   superGameAnswers: SuperGameAnswer[];
   onSpacePressed: () => void;
 }
@@ -1773,7 +1794,6 @@ const SuperGameQuestionModal = memo(({
   round,
   selectedSuperThemeId,
   teamScores,
-  superGameBets,
   superGameAnswers,
   onSpacePressed,
 }: SuperGameQuestionModalProps) => {
@@ -1782,6 +1802,27 @@ const SuperGameQuestionModal = memo(({
 
   // Get the first question from the selected theme
   const question = selectedTheme?.questions?.[0];
+
+  // Timer state for super game (60 seconds for answering)
+  const RESPONSE_TIME = 60; // 60 seconds for teams to answer
+  const [timerRemaining, setTimerRemaining] = useState(RESPONSE_TIME);
+  const [timerActive, setTimerActive] = useState(false);
+
+  // Start timer when component mounts
+  useEffect(() => {
+    setTimerActive(true);
+    const interval = setInterval(() => {
+      setTimerRemaining((prev: number) => {
+        if (prev <= 0.1) {
+          setTimerActive(false);
+          return 0;
+        }
+        return prev - 0.1;
+      });
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Handle Space key to advance
   useEffect(() => {
@@ -1798,7 +1839,7 @@ const SuperGameQuestionModal = memo(({
 
   if (!selectedTheme || !question) {
     return (
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      <div className="fixed top-24 left-0 right-0 bottom-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm">
         <div className="text-white text-2xl">No question available</div>
       </div>
     );
@@ -1809,112 +1850,118 @@ const SuperGameQuestionModal = memo(({
 
   // Calculate dynamic font size
   const questionText = question.text || '';
-  const questionFontSize = calculateQuestionFontSize(questionText, 5);
+  const questionFontSizeMobile = calculateQuestionFontSize(questionText, 3); // 3rem base for mobile
+  const questionFontSizeDesktop = calculateQuestionFontSize(questionText, 5); // 5rem base for desktop
+
+  // Calculate timer progress
+  const timerProgress = ((RESPONSE_TIME - timerRemaining) / RESPONSE_TIME) * 100;
+
+  // Modal positioned below player panel
+  const modalMaxHeight = 'calc(100vh - 140px)';
+  const modalTop = '100px';
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-gray-950">
-      {/* Top panel - Theme info and "Super Game" */}
-      <div className="shrink-0 bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-xl font-bold text-white">{selectedTheme.name}</div>
-            <div className="text-purple-200 text-sm">Super Game</div>
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
+      <style>{`
+        @media (min-width: 768px) {
+          [data-sg-qf="true"] { font-size: ${questionFontSizeDesktop}rem !important; }
+        }
+      `}</style>
+      <div
+        className="w-[90vw] mx-auto bg-gray-900 border-2 border-purple-500 rounded-2xl shadow-2xl flex flex-col overflow-hidden cursor-default"
+        style={{ maxHeight: modalMaxHeight, minHeight: '48vh' }}
+      >
+        {/* Question Section */}
+        <div className="flex-1 flex flex-col border-b border-gray-700 min-h-0">
+          {/* Header - Theme name, Super Game label and Timer */}
+          <div className="bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-6">
+              <div className="text-xl font-bold text-white">{selectedTheme.name}</div>
+              {timerActive && (
+                <div className="text-xl font-bold text-white">
+                  <span className="text-purple-200">{timerRemaining.toFixed(1)}s</span>
+                </div>
+              )}
+            </div>
+            <div className="text-2xl font-black text-white">SUPER GAME</div>
           </div>
-          <div className="text-4xl font-black text-white">SUPER GAME</div>
-        </div>
-      </div>
 
-      {/* Question content */}
-      <div className="flex-1 flex items-center justify-center p-8 overflow-auto">
-        <div className={`w-full h-full flex ${
-          mediaUrl ? 'items-center justify-start' : 'items-center justify-center'
-        }`}>
-          {/* Media container on the left */}
-          {mediaUrl ? (
-            <div className="w-1/2 h-full flex items-center justify-center p-4">
-              {mediaType === 'image' && (
-                <img
-                  src={mediaUrl}
-                  alt="Question media"
-                  className="w-full h-auto object-contain rounded-lg shadow-xl"
-                />
-              )}
-              {mediaType === 'video' && (
-                <video
-                  src={mediaUrl}
-                  controls
-                  className="w-full h-auto object-contain rounded-lg shadow-xl"
-                />
-              )}
-              {mediaType === 'audio' && (
-                <div className="w-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg p-4">
-                  <Volume2 className="w-16 h-16 text-purple-400" />
-                  <audio src={mediaUrl} controls className="flex-1" />
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {/* Question text */}
-          {mediaUrl ? (
-            <div className="w-1/2 h-full flex items-center justify-center p-4">
-              <h2
-                className="font-bold text-white leading-[1.1] text-center"
-                style={{ fontSize: `${questionFontSize}rem` }}
-              >
-                {questionText}
-              </h2>
-            </div>
-          ) : (
-            <div className="w-3/4 h-full flex items-center justify-center p-4">
-              <h2
-                className="font-bold text-white leading-[1.1] text-center"
-                style={{ fontSize: `${questionFontSize}rem` }}
-              >
-                {questionText}
-              </h2>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Bottom panel - Team bets and ready status */}
-      <div className="shrink-0 bg-gray-800/50 px-6 py-4">
-        <div className="grid grid-cols-3 gap-4">
-          {teamScores.map(team => {
-            const betInfo = superGameBets.find(b => b.teamId === team.teamId);
-            const hasAnswer = superGameAnswers.find(a => a.teamId === team.teamId);
-            const isReady = hasAnswer !== undefined;
-
-            return (
+          {/* Timer bar */}
+          <div className="bg-gray-700 w-full overflow-hidden" style={{ height: '16px' }}>
+            {timerActive ? (
               <div
-                key={team.teamId}
-                className={`rounded-lg p-4 border-2 transition-all ${
-                  isReady
-                    ? 'bg-green-500/20 border-green-500'
-                    : 'bg-gray-700/50 border-gray-600'
-                }`}
-              >
-                <div className="text-lg font-bold text-white">{team.teamName}</div>
-                <div className="text-sm text-gray-400">Score: {team.score}</div>
-                {betInfo && (
-                  <div className="text-yellow-400 font-bold">Bet: {betInfo.bet}</div>
-                )}
-                <div className={`text-sm mt-1 ${isReady ? 'text-green-400' : 'text-gray-500'}`}>
-                  {isReady ? '✓ Answer submitted' : 'Waiting for answer...'}
+                className="h-full transition-all duration-100 ease-linear bg-gradient-to-r from-purple-500 to-pink-500"
+                style={{ width: `${timerProgress}%` }}
+              />
+            ) : null}
+          </div>
+
+          {/* Question content */}
+          <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
+            <div className={`w-full h-full flex ${
+              mediaUrl ? 'items-center justify-start' : 'items-center justify-center'
+            }`}>
+              {/* Media container on the left - 50% width when media exists */}
+              {mediaUrl ? (
+                <div className="w-1/2 h-full flex items-center justify-center p-4">
+                  {mediaType === 'image' && (
+                    <img
+                      src={mediaUrl}
+                      alt="Question media"
+                      className="w-full h-auto object-contain rounded-lg shadow-xl"
+                    />
+                  )}
+                  {mediaType === 'video' && (
+                    <video
+                      src={mediaUrl}
+                      controls
+                      className="w-full h-auto object-contain rounded-lg shadow-xl"
+                    />
+                  )}
+                  {mediaType === 'audio' && (
+                    <div className="w-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg p-4">
+                      <Volume2 className="w-16 h-16 text-purple-400" />
+                      <audio src={mediaUrl} controls className="flex-1" />
+                    </div>
+                  )}
                 </div>
-              </div>
-            );
-          })}
+              ) : null}
+
+              {/* Question text */}
+              {mediaUrl ? (
+                <div className="w-1/2 h-full flex items-center justify-center p-4">
+                  <h2
+                    className="font-bold text-white leading-[1.1] text-center"
+                    style={{ fontSize: `${questionFontSizeMobile}rem` }}
+                    data-sg-qf="true"
+                  >
+                    {questionText}
+                  </h2>
+                </div>
+              ) : (
+                <div className="w-3/4 h-full flex items-center justify-center p-4">
+                  <h2
+                    className="font-bold text-white leading-[1.1] text-center"
+                    style={{ fontSize: `${questionFontSizeMobile}rem` }}
+                    data-sg-qf="true"
+                  >
+                    {questionText}
+                  </h2>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Continue hint */}
-        <div className="text-center mt-4 text-white text-lg">
-          {superGameAnswers.length > 0 && superGameAnswers.length === teamScores.length ? (
-            <span className="text-green-400 animate-pulse">Press Space to reveal answers</span>
-          ) : (
-            <span className="text-gray-400">Waiting for all teams to answer...</span>
-          )}
+        {/* Status bar - simple status message */}
+        <div className="h-16 bg-gray-800/50 flex items-center justify-center px-6">
+          <div className="text-center text-white text-lg">
+            {superGameAnswers.length > 0 && superGameAnswers.length === teamScores.length ? (
+              <span className="text-green-400 animate-pulse">All teams answered! Press Space to reveal answers</span>
+            ) : (
+              <span className="text-gray-400">Waiting for teams to answer... ({superGameAnswers.length}/{teamScores.length})</span>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1977,7 +2024,7 @@ const SuperGameAnswersModal = memo(({
 
   if (!selectedTheme || !question) {
     return (
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      <div className="fixed top-24 left-0 right-0 bottom-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm">
         <div className="text-white text-2xl">No question available</div>
       </div>
     );
@@ -1990,134 +2037,128 @@ const SuperGameAnswersModal = memo(({
   const questionText = question.text || '';
   const questionFontSize = calculateQuestionFontSize(questionText, 4);
 
+  // Modal positioned below player panel (same as question modal)
+  const modalMaxHeight = 'calc(100vh - 140px)';
+  const modalTop = '100px';
+
+  // Filter teams that had positive scores at the start (they remain visible even if score drops)
+  // Use a ref to track initial teams when modal opens
+  const initialPositiveTeamsRef = useRef<string[]>();
+  if (!initialPositiveTeamsRef.current) {
+    initialPositiveTeamsRef.current = teamScores.filter(t => t.score > 0).map(t => t.teamId);
+  }
+  const visibleTeamIds = initialPositiveTeamsRef.current;
+
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-gray-950">
-      {/* Top panel - Theme info */}
-      <div className="shrink-0 bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-3">
-        <div className="flex items-center justify-between">
-          <div className="text-xl font-bold text-white">{selectedTheme.name}</div>
-          <div className="text-white">Super Game - Answers</div>
-        </div>
-      </div>
-
-      {/* Question section */}
-      <div className="shrink-0 bg-gray-900 px-6 py-6 border-b border-gray-700">
-        <div className="flex items-start gap-6">
-          {/* Media (smaller) */}
-          {mediaUrl && mediaType === 'image' && (
-            <img
-              src={mediaUrl}
-              alt="Question"
-              className="w-48 h-48 object-cover rounded-lg"
-            />
-          )}
-          {mediaUrl && mediaType === 'video' && (
-            <video
-              src={mediaUrl}
-              className="w-48 h-48 object-cover rounded-lg"
-            />
-          )}
-
-          {/* Question text */}
-          <div className="flex-1">
-            <h2
-              className="font-bold text-white leading-tight"
-              style={{ fontSize: `${questionFontSize}rem` }}
-            >
-              {questionText}
-            </h2>
-            {question.answerText && (
-              <div className="mt-4 p-4 bg-green-900/30 border border-green-700 rounded-lg">
-                <div className="text-sm text-green-400 mb-1">Correct Answer:</div>
-                <div className="text-lg text-white">{question.answerText}</div>
-              </div>
-            )}
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
+      <style>{`
+        @media (min-width: 768px) {
+          [data-sg-af="true"] { font-size: ${questionFontSize}rem !important; }
+        }
+      `}</style>
+      <div
+        className="w-[90vw] mx-auto bg-gray-900 border-2 border-purple-500 rounded-2xl shadow-2xl flex flex-col overflow-hidden cursor-default"
+        style={{ maxHeight: modalMaxHeight, minHeight: '48vh' }}
+      >
+        {/* Header - Theme name and Super Game label */}
+        <div className="bg-gradient-to-r from-purple-600 to-pink-600 px-6 py-3 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-6">
+            <div className="text-xl font-bold text-white">{selectedTheme.name}</div>
           </div>
+          <div className="text-2xl font-black text-white">SUPER GAME - ANSWERS</div>
         </div>
-      </div>
 
-      {/* Team answers */}
-      <div className="flex-1 p-6 overflow-auto">
-        <div className="grid grid-cols-3 gap-4">
-          {teamScores.map(team => {
-            const answer = superGameAnswers.find(a => a.teamId === team.teamId);
-            const bet = superGameBets.find(b => b.teamId === team.teamId)?.bet || 0;
-            const isSelected = selectedSuperAnswerTeam === team.teamId;
-            const isRevealed = answer?.revealed;
+        {/* Top half - Question and Answer */}
+        <div className="h-1/2 flex flex-col items-center justify-center p-6 border-b border-gray-700">
+          {/* Question text centered */}
+          <h2
+            className="font-bold text-white leading-[1.1] text-center"
+            data-sg-af="true"
+          >
+            {questionText}
+          </h2>
 
-            return (
-              <div
-                key={team.teamId}
-                onClick={() => answer && onTeamSelect(team.teamId)}
-                className={`rounded-xl p-4 border-2 cursor-pointer transition-all ${
-                  isSelected
-                    ? 'bg-yellow-500/20 border-yellow-500 shadow-[0_0_30px_rgba(234,179,8,0.5)]'
-                    : isRevealed
-                      ? 'bg-blue-500/20 border-blue-500'
-                      : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'
-                }`}
-              >
-                {/* Team name and score */}
-                <div className="flex justify-between items-center mb-3">
-                  <div className="text-lg font-bold text-white">{team.teamName}</div>
-                  <div className={`text-xl font-bold ${team.score >= 0 ? 'text-white' : 'text-red-400'}`}>
-                    {team.score}
-                  </div>
-                </div>
-
-                {/* Bet */}
-                <div className="text-sm text-gray-400 mb-3">Bet: {bet}</div>
-
-                {/* Answer section */}
-                {answer ? (
-                  <div className="min-h-[80px]">
-                    {isRevealed || isSelected ? (
-                      <>
-                        <div className="text-sm text-gray-400 mb-1">Answer:</div>
-                        <div className="text-white font-medium p-2 bg-gray-900/50 rounded">
-                          {answer.answer}
-                        </div>
-
-                        {/* Controls for selected team */}
-                        {isSelected && (
-                          <div className="mt-3 flex gap-2">
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onScoreChange(team.teamId, true); }}
-                              className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white font-bold rounded"
-                            >
-                              + ({bet})
-                            </button>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onScoreChange(team.teamId, false); }}
-                              className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded"
-                            >
-                              - ({bet})
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-gray-500 italic">Click to reveal</div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-gray-500 italic">No answer</div>
-                )}
+          {/* Correct answer in green frame */}
+          {question.answerText && (
+            <div className="mt-6 p-4 bg-green-900/30 border-2 border-green-500 rounded-xl">
+              <div className="font-bold text-white text-center" data-sg-af="true">
+                {question.answerText}
               </div>
-            );
-          })}
+            </div>
+          )}
         </div>
-      </div>
 
-      {/* Bottom panel - Instructions */}
-      <div className="shrink-0 bg-gray-800 px-6 py-4">
-        <div className="text-center text-white">
-          <p className="text-lg mb-2">
-            Click on a team card to reveal their answer, then press <kbd className="px-2 py-1 bg-gray-700 rounded">+</kbd> or <kbd className="px-2 py-1 bg-gray-700 rounded">-</kbd>
-          </p>
-          <p className="text-gray-400">
-            Press <kbd className="px-2 py-1 bg-gray-700 rounded">Space</kbd> to show winner
-          </p>
+        {/* Bottom half - Team cards (teams that had positive scores at start) */}
+        <div className="h-1/2 p-6 overflow-auto">
+          <div className="grid grid-cols-3 gap-4">
+            {teamScores.filter((team: TeamScore) => visibleTeamIds.includes(team.teamId)).map((team: TeamScore) => {
+              const answer = superGameAnswers.find(a => a.teamId === team.teamId);
+              const bet = superGameBets.find(b => b.teamId === team.teamId)?.bet || 0;
+              const isSelected = selectedSuperAnswerTeam === team.teamId;
+              const isRevealed = answer?.revealed;
+
+              return (
+                <div
+                  key={team.teamId}
+                  onClick={() => answer && onTeamSelect(team.teamId)}
+                  className={`rounded-xl p-4 border-2 cursor-pointer transition-all ${
+                    isSelected
+                      ? 'bg-yellow-500/20 border-yellow-500 shadow-[0_0_30px_rgba(234,179,8,0.5)]'
+                      : isRevealed
+                        ? 'bg-blue-500/20 border-blue-500'
+                        : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'
+                  }`}
+                >
+                  {/* Team name and score */}
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="text-lg font-bold text-white">{team.teamName}</div>
+                    <div className="text-xl font-bold text-white">
+                      {team.score}
+                    </div>
+                  </div>
+
+                  {/* Bet */}
+                  <div className="text-sm text-gray-400 mb-3">Bet: {bet}</div>
+
+                  {/* Answer section */}
+                  {answer ? (
+                    <div className="min-h-[80px]">
+                      {isRevealed || isSelected ? (
+                        <>
+                          <div className="text-sm text-gray-400 mb-1">Answer:</div>
+                          <div className="text-white font-medium p-2 bg-gray-900/50 rounded">
+                            {answer.answer}
+                          </div>
+
+                          {/* Controls for selected team */}
+                          {isSelected && (
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                onClick={(e: React.MouseEvent) => { e.stopPropagation(); onScoreChange(team.teamId, true); }}
+                                className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white font-bold rounded"
+                              >
+                                + ({bet})
+                              </button>
+                              <button
+                                onClick={(e: React.MouseEvent) => { e.stopPropagation(); onScoreChange(team.teamId, false); }}
+                                className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded"
+                              >
+                                - ({bet})
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-gray-500 italic">Click to reveal</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-gray-500 italic">No answer</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -2155,7 +2196,7 @@ const ShowWinnerScreen = memo(({
   }, [onBroadcastMessage, winners, teamScores]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gradient-to-br from-yellow-600 via-orange-600 to-red-600 animate-in fade-in duration-500">
+    <div className="fixed top-24 left-0 right-0 bottom-0 z-[60] flex items-center justify-center bg-gradient-to-br from-yellow-600 via-orange-600 to-red-600 animate-in fade-in duration-500">
       <div className="text-center">
         {/* Winner title */}
         <h1 className="text-6xl font-black text-white mb-8 animate-bounce">
@@ -2170,7 +2211,6 @@ const ShowWinnerScreen = memo(({
             </div>
           ) : (
             <div className="text-5xl font-bold text-white">
-              TIE!
               {winners.map(w => (
                 <div key={w.teamId} className="text-6xl mt-4">{w.teamName}</div>
               ))}

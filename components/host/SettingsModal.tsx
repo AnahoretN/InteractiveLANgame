@@ -4,7 +4,7 @@
  */
 
 import React, { memo, useState, useEffect } from 'react';
-import { Settings, X, Shield, Clock, Users, Trash2 } from 'lucide-react';
+import { Settings, X, Shield, Clock, Users, Trash2, RefreshCw } from 'lucide-react';
 import { Button } from '../Button';
 import { SESSION_CONFIG } from '../../config';
 import type { SessionSettings } from '../../hooks/useSessionSettings';
@@ -15,9 +15,11 @@ interface SettingsModalProps {
   settings: SessionSettings;
   onSave: (settings: SessionSettings) => void;
   onClearCache?: () => void;
+  onRegenerateHostId?: () => void;
+  hostUniqueId?: string;
 }
 
-export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearCache }: SettingsModalProps) => {
+export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearCache, onRegenerateHostId, hostUniqueId }: SettingsModalProps) => {
   // Local draft settings - only saved when user clicks Save
   const [draftSettings, setDraftSettings] = useState<SessionSettings>(settings);
 
@@ -40,8 +42,8 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-6 w-full max-w-md animate-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 cursor-default">
+      <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-6 w-full max-w-md animate-in zoom-in-95 duration-200 cursor-default">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <Settings className="w-5 h-5 text-blue-400" />
@@ -125,6 +127,35 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
           >
             <div className="h-4"></div>
           </SettingRow>
+
+          {/* Host ID */}
+          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-300">Host ID</span>
+              <span className="text-xs text-gray-500">For client data binding</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm text-green-400 font-mono tracking-wider">
+                {hostUniqueId || 'Not set'}
+              </code>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  if (onRegenerateHostId) {
+                    onRegenerateHostId();
+                  }
+                }}
+                className="shrink-0"
+                title="Generate new Host ID - all players will need to reconnect"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              This ID binds players' data to this host. Regenerating it will clear all saved player data.
+            </p>
+          </div>
         </div>
 
         {/* Danger Zone */}

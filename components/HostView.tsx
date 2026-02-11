@@ -9,7 +9,7 @@ import { getDefaultQuality, updateQualityMetrics, getHealthBgColor } from '../ho
 import { SettingsModal, GameSession, GameSelectorModal, type GamePack, type GameType } from './host';
 import type { Round, Theme, RoundType } from './host/PackEditor';
 import { TeamListItem, SimpleClientItem, NoTeamSection, ConnectedClient } from './host/ListItems';
-import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
+import { storage, STORAGE_KEYS, generateHostUniqueId } from '../hooks/useLocalStorage';
 import { CONNECTION_CONFIG } from '../config';
 
 export const HostView: React.FC = () => {
@@ -17,6 +17,13 @@ export const HostView: React.FC = () => {
     const saved = storage.get(STORAGE_KEYS.HOST_ID);
     return saved || generatePeerId();
   });
+
+  // Host unique ID (12 chars) - used for client data binding
+  const [hostUniqueId, setHostUniqueId] = useState<string>(() => {
+    const saved = storage.get<string>(STORAGE_KEYS.HOST_UNIQUE_ID);
+    return saved || generateHostUniqueId();
+  });
+
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.INITIALIZING);
   const [isSessionActive, setIsSessionActive] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
@@ -44,6 +51,16 @@ export const HostView: React.FC = () => {
   });
 
   const [clients, setClients] = useState<Map<string, ConnectedClient>>(new Map());
+
+  // Wrapper to update clients - MUTATES the existing Map in-place instead of creating new one
+  // This prevents loss of client data when setClients is called multiple times
+  const updateClients = useCallback((updater: (prev: Map<string, ConnectedClient>) => Map<string, ConnectedClient>) => {
+    setClients(prev => {
+      // Apply updates to prev and return it (same reference)
+      const updated = updater(prev);
+      return updated;
+    });
+  }, []);
 
   const [teams, setTeams] = useState<Team[]>(() => {
     const saved = storage.get<string>(STORAGE_KEYS.TEAMS);
@@ -84,9 +101,16 @@ export const HostView: React.FC = () => {
   // Track the current answering team (the team that gets to answer the question)
   const [answeringTeamId, setAnsweringTeamId] = useState<string | null>(null);
 
+  // Session version - changes when starting a new session, helps clients detect stale state
+  // Load from storage or generate new one
+  const [sessionVersion, setSessionVersion] = useState<string>(() => {
+    const saved = storage.get(STORAGE_KEYS.SESSION_VERSION);
+    return saved || `v_${Date.now()}`;
+  });
+
   // Super Game state - track bets and answers from mobile clients
   const [superGameBets, setSuperGameBets] = useState<Array<{ teamId: string; bet: number; ready: boolean }>>([]);
-  const [superGameAnswers, setSuperGameAnswers] = useState<Array<{ teamId: string; answer: string; revealed: boolean }>>([]);
+  const [superGameAnswers, setSuperGameAnswers] = useState<Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>>([]);
   // Track super game phase for responding to GET_SUPER_GAME_STATE requests
   const [superGamePhase, setSuperGamePhase] = useState<'idle' | 'placeBets' | 'showQuestion' | 'showWinner'>('idle');
   const [superGameMaxBet, setSuperGameMaxBet] = useState<number>(100);
@@ -108,23 +132,13 @@ export const HostView: React.FC = () => {
     setSelectedPacks(packs);
   }, []);
 
-  // Handle clear cache - clears host cache and broadcasts to all clients
+  // Handle clear cache - clears host cache and reloads page
   const handleClearCache = useCallback(() => {
     // Clear all storage for host
     storage.clearAll();
 
-    // Clear all teams
-    setTeams([]);
-
-    // Clear all clients
-    setClients(new Map());
-
-    // Broadcast CLEAR_CACHE to all connected clients
-    clientsRef.current.forEach((client) => {
-      p2pManagerRef.current?.sendTo(client.peerId, { type: 'CLEAR_CACHE' });
-    });
-
-    console.log('[HOST] Cache cleared - all data reset');
+    // Reload page to start fresh
+    window.location.reload();
   }, []);
 
   // Helper to merge selected packs into a single session pack
@@ -275,10 +289,13 @@ export const HostView: React.FC = () => {
     storage.set(STORAGE_KEYS.LOGS, logs);
   }, [logs]);
 
-  useEffect(() => {
-    const clientsArray = Array.from(clients.values());
-    storage.set(STORAGE_KEYS.CLIENTS, clientsArray);
-  }, [clients]);
+  // Temporarily disabled - may be causing issues
+  // useEffect(() => {
+  //   const clientsArray = Array.from(clients.values());
+  //   console.log('[Host] Saving clients to storage:', clientsArray.length, 'clients:', clientsArray.map(c => ({ id: c.id, name: c.name, teamId: c.teamId })));
+  //   console.log('[Host] clients Map size:', clients.size, 'entries:', Array.from(clients.entries()).map(([id, c]) => `${id}=${c.name}`));
+  //   storage.set(STORAGE_KEYS.CLIENTS, clientsArray);
+  // }, [clients]);
 
   // Persist teams to storage
   useEffect(() => {
@@ -298,19 +315,23 @@ export const HostView: React.FC = () => {
   // NOTE: sendTo will automatically use RELAY fallback if P2P channel is not available
   const broadcastTeams = useCallback((teamsToBroadcast?: Team[]) => {
     const teamsToSend = teamsToBroadcast ?? teamsRef.current;
+    // Use current values from state to avoid closure issues
+    const currentSessionVersion = sessionVersion;
+    const currentHostUniqueId = hostUniqueId;
+
     // Don't send teams in no-teams mode
     if (sessionSettings.noTeamsMode) {
       clientsRef.current.forEach((client) => {
         // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-        p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: [] });
+        p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: [], sessionVersion: currentSessionVersion, hostId: currentHostUniqueId });
       });
       return;
     }
     clientsRef.current.forEach((client) => {
       // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-      p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: teamsToSend });
+      p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: teamsToSend, sessionVersion: currentSessionVersion, hostId: currentHostUniqueId });
     });
-  }, [sessionSettings.noTeamsMode]); // Dependency on noTeamsMode
+  }, [sessionSettings.noTeamsMode, sessionVersion, hostUniqueId]); // Dependencies ensure we use current values
 
   // Helper function to request team state from all clients
   // Used when returning to lobby or disabling no-teams mode
@@ -357,6 +378,31 @@ export const HostView: React.FC = () => {
       p2pManagerRef.current?.sendTo(client.peerId, message);
     });
   }, []);
+
+  // Helper function to send current super game state to a specific client
+  const sendSuperGameStateToClient = useCallback((peerId: string) => {
+    console.log('[HostView] Sending super game state to client:', superGamePhase);
+
+    if (superGamePhase === 'placeBets') {
+      p2pManagerRef.current?.sendTo(peerId, {
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'placeBets',
+        maxBet: superGameMaxBet
+      });
+    } else if (superGamePhase === 'showQuestion') {
+      p2pManagerRef.current?.sendTo(peerId, {
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'showQuestion',
+        maxBet: superGameMaxBet
+      });
+    } else if (superGamePhase === 'idle') {
+      p2pManagerRef.current?.sendTo(peerId, {
+        type: 'SUPER_GAME_STATE_SYNC',
+        phase: 'idle'
+      });
+    }
+    // Note: showWinner phase doesn't need resync - game is over
+  }, [superGamePhase, superGameMaxBet]);
 
   // Track previous clients count to detect new connections
   const prevClientsCountRef = useRef(0);
@@ -505,13 +551,19 @@ export const HostView: React.FC = () => {
       peerName: 'Host',
       role: 'host'
     }, {
-      onConnected: () => {
+      onSignallingConnected: () => {
+        console.log('[Host] Registered with signalling server');
         setStatus(ConnectionStatus.CONNECTED);
       },
+      onConnected: () => {
+        // Peer connected (for future P2P use)
+      },
       onDisconnected: (disconnectedPeerId: string) => {
+        console.log('[Host] Client disconnected:', disconnectedPeerId);
         // Find the persistentId for this peerId
         const persistentId = peerToPersistentIdRef.current.get(disconnectedPeerId);
         if (persistentId) {
+          console.log('[Host] Found persistentId for disconnected peer:', persistentId);
           // Remove the peerId mapping
           peerToPersistentIdRef.current.delete(disconnectedPeerId);
 
@@ -521,26 +573,20 @@ export const HostView: React.FC = () => {
           if (!hasOtherConnection) {
             // No other connections for this client - mark as potentially disconnected
             // Will be fully removed after 30 seconds if not reconnected
+            console.log('[Host] No other connections for', persistentId, '- marking for cleanup');
             disconnectedClientsRef.current.set(persistentId, Date.now());
+          } else {
+            console.log('[Host] Client', persistentId, 'has other active connections');
           }
+        } else {
+          console.log('[Host] No persistentId found for disconnected peer:', disconnectedPeerId);
         }
       },
       onData: (data, peerId) => handleGameData(data, peerId),
       onClientConnected: (clientId, clientName) => {
-        // Map peerId to itself initially (will be updated by JOIN message with persistentId)
+        // Only map peerId to itself initially - client entry will be created by JOIN message
+        // This prevents duplicate entries (one by peerId, one by persistentId)
         peerToPersistentIdRef.current.set(clientId, clientId);
-        setClients(prev => {
-          const existing = prev.get(clientId);
-          return new Map(prev).set(clientId, {
-            id: clientId,
-            peerId: clientId,
-            name: clientName,
-            joinedAt: existing?.joinedAt || Date.now(),
-            teamId: existing?.teamId,
-            lastSeen: Date.now(),
-            connectionQuality: existing?.connectionQuality || getDefaultQuality()
-          });
-        });
       },
       onError: (error) => {
         console.error('[Host] P2P error:', error);
@@ -578,9 +624,9 @@ export const HostView: React.FC = () => {
     }
     // Remove from local state
     setClients(prev => {
-      const newMap = new Map(prev);
-      newMap.delete(clientId);
-      return newMap;
+      // Mutate prev in-place instead of creating new Map
+      prev.delete(clientId);
+      return prev;  // Return same reference
     });
     // Also remove peer mapping
     peerToPersistentIdRef.current.delete(client.peerId);
@@ -592,17 +638,26 @@ export const HostView: React.FC = () => {
     const persistentId = peerToPersistentIdRef.current.get(peerId);
     if (persistentId) {
       setClients(prev => {
+        // Mutate prev in-place instead of creating new Map
         const client = prev.get(persistentId);
         if (!client) return prev;
-        return new Map(prev).set(persistentId, {
+        prev.set(persistentId, {
           ...client,
           lastSeen: Date.now()
         });
+        return prev;  // Return same reference
       });
     }
 
     switch (data.type) {
       case 'JOIN': {
+        console.log('[Host] Received JOIN message:', {
+          peerId,
+          userName: data.userName,
+          persistentId: data.persistentId,
+          clientState: data.clientState
+        });
+
         // Client is leaving
         if (data.userName === '__LEAVING__') {
           const persistentId = peerToPersistentIdRef.current.get(peerId);
@@ -631,9 +686,9 @@ export const HostView: React.FC = () => {
             }
 
             setClients(prev => {
-              const newMap = new Map(prev);
-              newMap.delete(persistentId);
-              return newMap;
+              // Mutate prev in-place instead of creating new Map
+              prev.delete(persistentId);
+              return prev;  // Return same reference
             });
             peerToPersistentIdRef.current.delete(peerId);
           }
@@ -647,25 +702,116 @@ export const HostView: React.FC = () => {
           const existing = prev.get(persistentId);
           const oldPeerId = existing?.peerId;
 
+          // Handle client state restoration from JOIN
+          let finalTeamId: string | undefined = undefined;
+          let teamScoreToRestore: number | undefined = undefined;
+
+          if (data.clientState) {
+            // Client is reconnecting with saved state
+            // Only restore team if this is an existing client (reconnection), not a new connection
+            // New connections should start fresh without team
+            if (existing) {
+              const cs = data.clientState;
+
+              // Check if the team exists
+              if (cs.teamId && teamsRef.current.some((t: Team) => t.id === cs.teamId)) {
+                finalTeamId = cs.teamId;
+                teamScoreToRestore = cs.teamScore;
+              } else if (cs.teamName && cs.teamId) {
+                // Team doesn't exist but client has team info - recreate it
+                console.log('[Host] Recreating team for reconnecting client:', cs.teamName);
+                setTeams(prevTeams => {
+                  const newTeam: Team = {
+                    id: cs.teamId!,
+                    name: cs.teamName!,
+                    createdAt: Date.now(),
+                    lastUsedAt: Date.now()
+                  };
+                  // Also update the team score if provided
+                  if (cs.teamScore !== undefined) {
+                    // We'll update team scores separately via GamePlay
+                  }
+                  const updated = [...prevTeams, newTeam];
+                  broadcastTeams(updated);
+                  return updated;
+                });
+                finalTeamId = cs.teamId;
+                teamScoreToRestore = cs.teamScore;
+              }
+            }
+            // If this is a new client (!existing), don't restore team from clientState
+            // The client needs to select/create a team fresh
+          } else if (existing?.teamId && teamsRef.current.some((t: Team) => t.id === existing.teamId)) {
+            // Preserve existing teamId if still valid
+            finalTeamId = existing.teamId;
+          }
+
+          // If team score needs to be restored, we'll need to communicate with GamePlay
+          // For now, just log it - the score restoration will be handled via a callback
+          if (teamScoreToRestore !== undefined && finalTeamId) {
+            console.log('[Host] Client', data.userName, 'reconnecting with team score:', teamScoreToRestore, 'for team:', finalTeamId);
+            // We'll need to add a mechanism to update team scores in GamePlay
+          }
+
+          // Use userName from data, or from clientState as fallback, or generate a default name
+          // Ensure name is never empty - if all sources are empty, don't create the client yet
+          const dataUserName = data.userName?.trim();
+          const stateUserName = data.clientState?.userName?.trim();
+          const clientName = dataUserName || stateUserName || `Player_${persistentId.slice(0, 4)}`;
+
+          if (!clientName) {
+            console.warn('[Host] JOIN: Skipping client creation - userName is empty:', {
+              dataUserName: data.userName,
+              stateUserName: stateUserName,
+              persistentId: persistentId
+            });
+            return prev;
+          }
+
+          console.log('[Host] Creating client with name:', clientName, 'from data.userName:', data.userName, 'persistentId:', persistentId);
+
+          // Create new Map with updated client
           const newMap = new Map(prev);
           newMap.set(persistentId, {
             id: persistentId,
             peerId: peerId,
-            name: data.userName,
+            name: clientName,
             joinedAt: existing?.joinedAt || Date.now(),
-            teamId: existing?.teamId,
+            teamId: finalTeamId,
             lastSeen: Date.now(),
             connectionQuality: existing?.connectionQuality || getDefaultQuality()
           });
 
+          // Log client creation for debugging
+          console.log('[Host] Created client:', {
+            id: persistentId,
+            peerId: peerId,
+            name: clientName,
+            teamId: finalTeamId
+          });
+          console.log('[Host] Client added, total clients:', newMap.size, 'all client IDs:', Array.from(newMap.keys()), 'names:', Array.from(newMap.values()).map(c => c.name));
+          console.log('[Host] Client details:', JSON.stringify({
+            id: persistentId,
+            peerId: peerId,
+            name: clientName,
+            joinedAt: existing?.joinedAt || Date.now(),
+            teamId: finalTeamId,
+            fromUserName: data.userName,
+            fromClientState: data.clientState?.userName,
+            persistentId: data.persistentId
+          }));
+
           // Update peer mapping - remove old peerId mapping if this is a reconnection
           if (oldPeerId && oldPeerId !== peerId) {
+            console.log('[Host] Removing old peerId mapping:', oldPeerId, '-> new peerId:', peerId);
             peerToPersistentIdRef.current.delete(oldPeerId);
           }
           peerToPersistentIdRef.current.set(peerId, persistentId);
 
           // Remove from disconnected clients tracking if present
           disconnectedClientsRef.current.delete(persistentId);
+
+          console.log('[Host] About to return newMap with', newMap.size, 'clients, including:', Array.from(newMap.entries()).map(([id, c]) => `${id}=${c.name}`));
 
           return newMap;
         });
@@ -678,17 +824,47 @@ export const HostView: React.FC = () => {
         const persistentId = data.persistentId || peerId;
 
         setClients(prev => {
+          // Mutate prev in-place instead of creating new Map
           const existing = prev.get(persistentId);
           const oldPeerId = existing?.peerId;
-          const newMap = new Map(prev);
 
-          // If client has a saved team, restore it
-          let teamId = existing?.teamId;
+          // If client has a saved team, only restore it if the team still exists
+          let teamId: string | undefined = undefined;
+          let teamScoreToRestore: number | undefined = undefined;
+
+          // Check if existing teamId is still valid
+          if (existing?.teamId && teamsRef.current.some((t: Team) => t.id === existing.teamId)) {
+            teamId = existing.teamId;
+          }
+          // Or if client is requesting a specific team that exists
           if (data.teamId && teamsRef.current.some((t: Team) => t.id === data.teamId)) {
             teamId = data.teamId;
+            // Check if client provided a team score
+            if (data.teamScore !== undefined) {
+              teamScoreToRestore = data.teamScore;
+              console.log('[Host] Client', data.userName, 'reconnecting with team score:', teamScoreToRestore, 'for team:', teamId);
+            }
+          }
+          // If client has a team name but the team doesn't exist, recreate it
+          if (data.teamName && data.teamId && !teamsRef.current.some((t: Team) => t.id === data.teamId)) {
+            console.log('[Host] Recreating team for reconnecting client:', data.teamName);
+            const newTeam: Team = {
+              id: data.teamId,
+              name: data.teamName,
+              createdAt: Date.now(),
+              lastUsedAt: Date.now()
+            };
+            setTeams(prevTeams => {
+              const updated = [...prevTeams, newTeam];
+              broadcastTeams(updated);
+              return updated;
+            });
+            teamId = data.teamId;
+            teamScoreToRestore = data.teamScore;
           }
 
-          newMap.set(persistentId, {
+          // Mutate prev in-place (newMap is actually prev)
+          prev.set(persistentId, {
             id: persistentId,
             peerId: peerId,
             name: data.userName,
@@ -707,13 +883,16 @@ export const HostView: React.FC = () => {
           // Remove from disconnected clients tracking if present
           disconnectedClientsRef.current.delete(persistentId);
 
-          return newMap;
+          // Return prev (same reference) for mutation
+          return prev;
         });
 
         // Send current state back to client (teams, buzzer state, etc.)
         p2pManagerRef.current?.sendTo(peerId, {
           type: 'TEAM_LIST',
-          teams: teamsRef.current
+          teams: teamsRef.current,
+          sessionVersion,
+          hostId: hostUniqueId
         });
 
         // Send current buzzer state if active
@@ -728,23 +907,22 @@ export const HostView: React.FC = () => {
           });
         }
 
+        // Send super game state if in super game phase
+        if (superGamePhase !== 'idle') {
+          sendSuperGameStateToClient(peerId);
+        }
+
         break;
       }
 
       case 'GET_TEAMS':
-        p2pManagerRef.current?.sendTo(peerId, { type: 'TEAM_LIST', teams: teamsRef.current });
+        p2pManagerRef.current?.sendTo(peerId, { type: 'TEAM_LIST', teams: teamsRef.current, sessionVersion, hostId: hostUniqueId });
         break;
 
       case 'GET_SUPER_GAME_STATE':
-        // Client requesting current super game state (e.g., when they press buzz)
-        // If we're in placeBets phase, resend the PLACE_YOUR_BETS message
-        if (superGamePhase === 'placeBets') {
-          p2pManagerRef.current?.sendTo(peerId, {
-            type: 'SUPER_GAME_PLACE_YOUR_BETS',
-            enabledThemes: [],
-            maxBet: superGameMaxBet
-          });
-        }
+        // Client requesting current super game state (e.g., after reconnection or sleep)
+        // Send the appropriate state based on current phase
+        sendSuperGameStateToClient(peerId);
         break;
 
       case 'CREATE_TEAM': {
@@ -783,13 +961,15 @@ export const HostView: React.FC = () => {
         });
         const joinPersistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
         setClients(prev => {
+          // Mutate prev in-place instead of creating new Map
           const client = prev.get(joinPersistentId);
           if (!client) return prev;
-          return new Map(prev).set(joinPersistentId, {
+          prev.set(joinPersistentId, {
             ...client,
             teamId: data.teamId,
             name: data.userName
           });
+          return prev;  // Return same reference
         });
         break;
 
@@ -828,23 +1008,27 @@ export const HostView: React.FC = () => {
         }
 
         // Ensure client exists (only for new connections before JOIN)
+        // BUT don't create client if userName is empty - wait for JOIN message instead
         setClients(prev => {
-          if (!prev.has(pingPersistentId)) {
-            return new Map(prev).set(pingPersistentId, {
+          // Mutate prev in-place instead of creating new Map
+          const existing = prev.get(pingPersistentId);
+          // Also update peerId if it changed (mutate existing client directly)
+          if (existing && existing.peerId !== peerId) {
+            existing.peerId = peerId;
+          }
+          // Create new client only if userName is not empty
+          if (!prev.has(pingPersistentId) && data.userName && data.userName.trim()) {
+            console.log('[Host] PING: Creating new client from PING with name:', data.userName.trim());
+            prev.set(pingPersistentId, {
               id: pingPersistentId,
               peerId: peerId,
-              name: data.userName,
+              name: data.userName.trim(),
               joinedAt: Date.now(),
               lastSeen: Date.now(),
               connectionQuality: getDefaultQuality()
             });
           }
-          // Also update peerId if it changed
-          const existing = prev.get(pingPersistentId);
-          if (existing && existing.peerId !== peerId) {
-            return new Map(prev).set(pingPersistentId, { ...existing, peerId });
-          }
-          return prev;
+          return prev;  // Return same reference
         });
 
         setLogs(prev => [newLog, ...prev]);
@@ -857,8 +1041,11 @@ export const HostView: React.FC = () => {
         const buzzPersistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
         const client = clients.get(buzzPersistentId);
 
-        // Track buzz
-        setBuzzedClients(prev => new Map(prev).set(buzzPersistentId, receivedAt));
+        // Track buzz - mutate prev in-place
+        setBuzzedClients(prev => {
+          prev.set(buzzPersistentId, receivedAt);
+          return prev;
+        });
 
         // Determine which team ID to use for flash effect
         let teamIdToFlash: string | undefined;
@@ -872,13 +1059,13 @@ export const HostView: React.FC = () => {
             const teamById = teamsRef.current.find(t => t.id === data.teamId);
             if (teamById) {
               teamIdToFlash = teamById.id;
-              // Update client with the correct team ID
+              // Update client with the correct team ID - mutate in-place
               setClients(prev => {
                 const c = prev.get(buzzPersistentId);
                 if (c) {
-                  return new Map(prev).set(buzzPersistentId, { ...c, teamId: teamById.id });
+                  c.teamId = teamById.id;
                 }
-                return prev;
+                return prev;  // Return same reference
               });
             }
           } else {
@@ -886,13 +1073,13 @@ export const HostView: React.FC = () => {
             const teamByName = teamsRef.current.find(t => t.name === data.teamId);
             if (teamByName) {
               teamIdToFlash = teamByName.id;
-              // Update client with the correct team ID
+              // Update client with the correct team ID - mutate in-place
               setClients(prev => {
                 const c = prev.get(buzzPersistentId);
                 if (c) {
-                  return new Map(prev).set(buzzPersistentId, { ...c, teamId: teamByName.id });
+                  c.teamId = teamByName.id;
                 }
-                return prev;
+                return prev;  // Return same reference
               });
             }
           }
@@ -909,15 +1096,16 @@ export const HostView: React.FC = () => {
         // Add team to buzzed teams for visual flash effect
         if (teamIdToFlash) {
           setBuzzedTeamIds(prev => {
-            const newSet = new Set([...prev, teamIdToFlash]);
-            return newSet;
+            // Mutate prev in-place
+            prev.add(teamIdToFlash);
+            return prev;  // Return same reference
           });
           // Clear the team from buzzed teams after 600ms (flash duration - 2 quick flashes)
           setTimeout(() => {
             setBuzzedTeamIds(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(teamIdToFlash);
-              return newSet;
+              // Mutate prev in-place
+              prev.delete(teamIdToFlash);
+              return prev;  // Return same reference
             });
           }, 600);
 
@@ -962,10 +1150,11 @@ export const HostView: React.FC = () => {
 
         // Update client's team
         setClients(prev => {
+          // Mutate prev in-place
           const client = prev.get(clientId);
           if (!client) {
-            // Client might not exist yet if they just reconnected
-            return new Map(prev).set(clientId, {
+            // Client might not exist yet - create new by adding to prev
+            prev.set(clientId, {
               id: clientId,
               peerId: peerId,
               name: clientName,
@@ -974,12 +1163,12 @@ export const HostView: React.FC = () => {
               lastSeen: Date.now(),
               connectionQuality: getDefaultQuality()
             });
+          } else {
+            // Update existing client
+            client.teamId = teamId;
+            client.name = clientName;
           }
-          return new Map(prev).set(clientId, {
-            ...client,
-            teamId,
-            name: clientName
-          });
+          return prev;  // Return same reference
         });
 
         // If team exists, update its lastUsedAt
@@ -1034,11 +1223,16 @@ export const HostView: React.FC = () => {
         setSuperGameAnswers(prev => {
           const existing = prev.find(a => a.teamId === teamId);
           if (existing) {
-            // Update existing answer
-            return prev.map(a => a.teamId === teamId ? { ...a, answer } : a);
+            // Update existing answer and mark as submitted
+            return prev.map(a => a.teamId === teamId ? { ...a, answer, submitted: true } : a);
           }
-          // Add new answer
-          return [...prev, { teamId, answer, revealed: false }];
+          // Add new answer with submitted flag
+          return [...prev, { teamId, answer, revealed: false, submitted: true }];
+        });
+        // Broadcast to all clients that this team has submitted their answer
+        broadcastMessage({
+          type: 'SUPER_GAME_ANSWER_SUBMITTED',
+          teamId
         });
         break;
       }
@@ -1048,14 +1242,13 @@ export const HostView: React.FC = () => {
   // Update client quality
   const updateClientQuality = useCallback((clientId: string, rtt: number, packetLost: boolean) => {
     setClients(prev => {
+      // Mutate prev in-place
       const client = prev.get(clientId);
       if (!client) return prev;
 
       const newQuality = updateQualityMetrics(client.connectionQuality, rtt, packetLost);
-      return new Map(prev).set(clientId, {
-        ...client,
-        connectionQuality: newQuality
-      });
+      client.connectionQuality = newQuality;
+      return prev;  // Return same reference
     });
   }, []);
 
@@ -1097,15 +1290,17 @@ export const HostView: React.FC = () => {
       }
 
       if (toRemove.length > 0) {
+        console.log('[Host] Cleaning up disconnected clients:', toRemove);
         toRemove.forEach(persistentId => {
           disconnectedClientsRef.current.delete(persistentId);
         });
 
-        // Remove from clients map
+        // Remove from clients map - mutate prev in-place
         setClients(prev => {
-          const newMap = new Map(prev);
-          toRemove.forEach(id => newMap.delete(id));
-          return newMap;
+          toRemove.forEach(persistentId => {
+            prev.delete(persistentId);
+          });
+          return prev;  // Return same reference
         });
       }
     }, 10000); // Check every 10 seconds
@@ -1183,15 +1378,14 @@ export const HostView: React.FC = () => {
       });
       // Broadcast updated team list
       broadcastTeams(updated);
-      // Remove team from all clients
+      // Remove team from all clients - mutate clients in-place
       setClients(clientsPrev => {
-        const newMap = new Map(clientsPrev);
         clientsPrev.forEach((client, clientId) => {
           if (client.teamId === teamId) {
-            newMap.set(clientId, { ...client, teamId: undefined });
+            client.teamId = undefined;
           }
         });
-        return newMap;
+        return clientsPrev;  // Return same reference
       });
       return updated;
     });
@@ -1216,12 +1410,12 @@ export const HostView: React.FC = () => {
   // Move client to team (drag and drop)
   const moveClientToTeam = useCallback((clientId: string, targetTeamId: string | undefined) => {
     setClients(prev => {
-      const newMap = new Map(prev);
-      const client = newMap.get(clientId) as ConnectedClient | undefined;
+      // Mutate prev in-place
+      const client = prev.get(clientId);
       if (client) {
-        newMap.set(clientId, { ...client, teamId: targetTeamId });
+        client.teamId = targetTeamId;
       }
-      return newMap;
+      return prev;  // Return same reference
     });
   }, []);
 
@@ -1256,11 +1450,11 @@ export const HostView: React.FC = () => {
           </div>
         </header>
 
-        <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 md:gap-12 animate-in fade-in duration-500">
+        <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 md:gap-12 animate-in fade-in duration-500 cursor-default">
           {/* LEFT COLUMN: Setup & QR */}
           <div className="flex flex-col space-y-6">
             {/* IP Input */}
-            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg">
+            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">Local Network IP</label>
                <div className="flex items-center space-x-2">
                   <input
@@ -1290,7 +1484,7 @@ export const HostView: React.FC = () => {
             </div>
 
             {/* QR Code */}
-            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-8 group">
+            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-8 group cursor-default">
               <div className="absolute inset-0 bg-blue-600/5 blur-[80px] rounded-full pointer-events-none group-hover:bg-blue-600/10 transition-colors duration-500"></div>
               <div
                 className="relative z-10 bg-white p-4 rounded-lg shadow-xl transition-transform duration-300 hover:scale-105 cursor-pointer"
@@ -1330,7 +1524,7 @@ export const HostView: React.FC = () => {
 
           {/* RIGHT COLUMN: List */}
           <div className="flex flex-col h-full space-y-4">
-             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-6 flex flex-col min-h-[400px] shadow-xl">
+             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-6 flex flex-col min-h-[400px] shadow-xl cursor-default">
                 <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
                    <h2 className="text-lg font-bold text-white flex items-center gap-2">
                      <Users className="w-4 h-4 text-blue-400" /> Lobby
@@ -1354,7 +1548,7 @@ export const HostView: React.FC = () => {
                         <p>No devices connected</p>
                      </div>
                    ) : sessionSettings.noTeamsMode ? (
-                     // No Teams Mode - show all players individually (memoized)
+                     // No Teams Mode - show all players individually
                      Array.from(clients.values()).map((client: ConnectedClient) => (
                        <SimpleClientItem
                          key={client.id}
@@ -1448,7 +1642,13 @@ export const HostView: React.FC = () => {
                <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowGameSelector(true)} disabled={status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.ERROR || !isOnline || !isIpLocked}>
                   Select Game
                </Button>
-               <Button size="xl" className="flex-1 shadow-blue-900/20" onClick={() => setIsSessionActive(true)} disabled={status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.ERROR || !isOnline || !isIpLocked}>
+               <Button size="xl" className="flex-1 shadow-blue-900/20" onClick={() => {
+                 // Generate new session version to help clients detect this is a fresh session
+                 const newVersion = `v_${Date.now()}`;
+                 setSessionVersion(newVersion);
+                 storage.set(STORAGE_KEYS.SESSION_VERSION, newVersion);
+                 setIsSessionActive(true);
+               }} disabled={status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.ERROR || !isOnline || !isIpLocked}>
                   Start Session <ArrowRight className="ml-3 w-6 h-6" />
                </Button>
              </div>
@@ -1462,6 +1662,13 @@ export const HostView: React.FC = () => {
           settings={sessionSettings}
           onSave={updateSessionSettings}
           onClearCache={handleClearCache}
+          onRegenerateHostId={() => {
+            const newHostId = generateHostUniqueId();
+            setHostUniqueId(newHostId);
+            storage.set(STORAGE_KEYS.HOST_UNIQUE_ID, newHostId);
+            console.log('[Host] Regenerated hostUniqueId:', newHostId);
+          }}
+          hostUniqueId={hostUniqueId}
         />
 
         {/* Game Selector Modal */}
@@ -1481,17 +1688,7 @@ export const HostView: React.FC = () => {
   return (
     <GameSession
       teams={teams}
-      clients={new Map(
-        Array.from(clients.entries()).map(([id, client]) => [
-          id,
-          {
-            id: client.id,
-            name: client.name,
-            teamId: client.teamId,
-            joinedAt: client.joinedAt,
-          }
-        ])
-      )}
+      clients={clients}
       buzzedClients={buzzedClients}
       buzzedTeamIds={buzzedTeamIds}
       status={status}

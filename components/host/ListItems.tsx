@@ -49,9 +49,9 @@ export const ClientListItem = memo<ClientListItemProps>(({
       <div className="flex items-center gap-2">
         {isDragging && <GripVertical className="w-4 h-4 text-gray-600" />}
         <div className={`w-5 h-5 rounded-full ${showTeam ? 'bg-gray-600' : 'bg-blue-500/80'} flex items-center justify-center text-[9px] font-bold text-white`}>
-          {client.name.charAt(0).toUpperCase()}
+          {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
         </div>
-        <span className={`text-sm ${showTeam ? 'text-gray-400' : 'text-gray-300'}`}>{client.name}</span>
+        <span className={`text-sm ${showTeam ? 'text-gray-400' : 'text-gray-300'}`}>{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
         {client.connectionQuality.rtt > 0 && getHealthBgColor && (
           <span className={`text-[10px] px-1.5 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
             {client.connectionQuality.rtt}ms
@@ -88,9 +88,9 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
     <div className={`flex items-center justify-between p-2 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
       <div className="flex items-center gap-2">
         <div className="w-5 h-5 rounded-full bg-blue-500/80 flex items-center justify-center text-[9px] font-bold text-white">
-          {client.name.charAt(0).toUpperCase()}
+          {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
         </div>
-        <span className="text-sm text-gray-300">{client.name}</span>
+        <span className="text-sm text-gray-300">{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
         {client.connectionQuality.rtt > 0 && (
           <span className={`text-[10px] px-1.5 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
             {client.connectionQuality.rtt}ms
@@ -165,7 +165,7 @@ export const TeamListItem = memo<TeamListItemProps>(({
       {/* Team header with edit/delete controls */}
       <div className={`flex items-center gap-2 p-2 rounded-lg border ${isDraggingOver ? 'bg-blue-500/20 border-blue-500/50' : 'bg-gray-800/50 border-gray-700/50'} group`}>
         <div className="w-6 h-6 rounded-full bg-violet-500 flex items-center justify-center text-[10px] font-bold text-white">
-          {team.name.charAt(0).toUpperCase()}
+          {typeof team.name === 'string' && team.name.length > 0 ? team.name.charAt(0).toUpperCase() : '?'}
         </div>
         {isEditing ? (
           <input

@@ -6,6 +6,7 @@ import { useState, useCallback, useEffect } from 'react';
 export const STORAGE_KEYS = {
   // Host keys
   HOST_ID: 'ilan_host_id',
+  HOST_UNIQUE_ID: 'ilan_host_unique_id', // 12-character unique ID for host binding
   HOST_NAME: 'ilan_host_name',
   LOGS: 'ilan_logs',
   CLIENTS: 'ilan_clients',
@@ -13,16 +14,30 @@ export const STORAGE_KEYS = {
   LOCKED_IP: 'ilan_locked_ip',
   QR_URL: 'ilan_qr_url',
   SESSION_SETTINGS: 'ilan_session_settings',
+  SESSION_VERSION: 'ilan_session_version',
 
-  // Client keys
+  // Client keys - base prefixes (actual keys are generated with hostId)
   USER_NAME: 'ilan_username',
   LAST_HOST: 'ilan_last_host',
   STATE_VERSION: 'ilan_state_version',
+  HOST_SESSION_VERSION: 'ilan_host_session_version',
   LAST_IP: 'ilan_last_ip',
   TEAM_SELECTED: 'ilan_team_selected',
   CURRENT_TEAM: 'ilan_current_team',
   CURRENT_TEAM_ID: 'ilan_current_team_id',
+  CURRENT_TEAM_NAME: 'ilan_current_team_name',
+  CURRENT_TEAM_SCORE: 'ilan_current_team_score',
   CLIENT_ID: 'ilan_client_id',
+  CURRENT_SCREEN: 'ilan_current_screen',
+  // Super Game state for reconnection
+  SUPER_GAME_PHASE: 'ilan_super_game_phase',
+  SUPER_GAME_THEME: 'ilan_super_game_theme',
+  SUPER_GAME_MAX_BET: 'ilan_super_game_max_bet',
+  SUPER_GAME_BET: 'ilan_super_game_bet',
+  SUPER_GAME_BET_PLACED: 'ilan_super_game_bet_placed',
+  SUPER_GAME_QUESTION: 'ilan_super_game_question',
+  SUPER_GAME_ANSWER: 'ilan_super_game_answer',
+  SUPER_GAME_WINNER: 'ilan_super_game_winner',
 
   // TTL timestamp keys (5 hours = 18000000 ms)
   USER_NAME_TTL: 'ilan_username_ttl',
@@ -31,8 +46,29 @@ export const STORAGE_KEYS = {
   CURRENT_TEAM_ID_TTL: 'ilan_current_team_id_ttl',
   CLIENT_ID_TTL: 'ilan_client_id_ttl',
   LAST_HOST_TTL: 'ilan_last_host_ttl',
-  LAST_IP_TTL: 'ilan_last_ip_ttl'
+  LAST_IP_TTL: 'ilan_last_ip_ttl',
+  SUPER_GAME_TTL: 'ilan_super_game_ttl'
 } as const;
+
+/**
+ * Generate storage key with hostId binding
+ * All client data is stored per-host to allow different hosts
+ */
+export function getHostBoundKey(baseKey: string, hostId: string): string {
+  return `${baseKey}_${hostId}`;
+}
+
+/**
+ * Generate a random 12-character host ID (letters and numbers)
+ */
+export function generateHostUniqueId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 12; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
 
 // TTL duration: 5 hours in milliseconds
 export const CLIENT_DATA_TTL = 5 * 60 * 60 * 1000;
@@ -210,9 +246,68 @@ export const storage = {
       cleaned = true;
     }
 
+    // Check and clean super game state - shorter TTL (30 minutes) as game state changes frequently
+    const SUPER_GAME_TTL = 30 * 60 * 1000; // 30 minutes
+    if (storage.get(STORAGE_KEYS.SUPER_GAME_PHASE) && storage.isExpired(STORAGE_KEYS.SUPER_GAME_TTL, SUPER_GAME_TTL)) {
+      console.log(`[Storage] Cleaning up expired SUPER_GAME_STATE (${now})`);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_PHASE);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_THEME);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_MAX_BET);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_BET);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_BET_PLACED);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_QUESTION);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_ANSWER);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_WINNER);
+      storage.remove(STORAGE_KEYS.SUPER_GAME_TTL);
+      cleaned = true;
+    }
+
     if (cleaned) {
       console.log('[Storage] Expired client data cleaned up successfully');
     }
+  },
+
+  /**
+   * Clear all data for a specific host
+   * Called when hostId changes or user explicitly disconnects
+   */
+  clearHostData: (previousHostId: string): void => {
+    // Clear data for the PREVIOUS host (using previousHostId from before state update)
+    // This ensures we only clear data for the host we were actually connected to
+    const keysToRemove = [
+      getHostBoundKey(STORAGE_KEYS.USER_NAME, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.TEAM_SELECTED, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_ID, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_NAME, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.CURRENT_TEAM_SCORE, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.CURRENT_SCREEN, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_PHASE, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_THEME, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_MAX_BET, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_BET_PLACED, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_QUESTION, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_ANSWER, previousHostId),
+      getHostBoundKey(STORAGE_KEYS.SUPER_GAME_WINNER, previousHostId),
+    ];
+
+    keysToRemove.forEach(key => storage.remove(key));
+    console.log(`[Storage] Cleared all data for PREVIOUS host: ${previousHostId}`);
+  },
+
+  /**
+   * Get all known host IDs from localStorage
+   * Used to detect when we need to clear data
+   */
+  getKnownHosts: (): string[] => {
+    const hosts: string[] = [];
+    // Check for LAST_HOST entries which contain hostId
+    const lastHost = storage.get<string>(STORAGE_KEYS.LAST_HOST);
+    if (lastHost) {
+      hosts.push(lastHost);
+    }
+    return hosts;
   }
 };
 
