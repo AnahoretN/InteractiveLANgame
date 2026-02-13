@@ -1,28 +1,26 @@
-// Existing Team interface
+// Team interface
 export interface Team {
   id: string;
   name: string;
   createdAt: number;
   lastUsedAt: number;  // Timestamp when last player joined/left
+  score?: number;
 }
 
-// Connection Quality Metrics
+// Team score interface (for game play)
+export interface TeamScore {
+  teamId: string;
+  teamName: string;
+  score: number;
+}
+
+// Connection Quality Metrics (simplified - no network)
 export interface ConnectionQuality {
   rtt: number;           // Round-trip time in ms
   packetLoss: number;    // Percentage of lost packets
   jitter: number;        // Variance in latency
   lastPing: number;      // Timestamp of last successful ping
   healthScore: number;   // 0-100 score based on all metrics
-}
-
-// Queued message for delivery guarantee
-export interface QueuedMessage {
-  id: string;
-  payload: PeerMessage;
-  attempts: number;
-  maxAttempts: number;
-  timestamp: number;
-  priority: 'low' | 'normal' | 'high';
 }
 
 // Extended client info with health tracking
@@ -36,77 +34,7 @@ export interface ClientHealth {
   status: 'active' | 'stale' | 'disconnected';
 }
 
-// Discriminated Union for better type safety across different message types
-export type PeerMessage =
-  // Connection messages with hostId
-  | { type: 'JOIN'; sentAt: number; messageId: string; userName: string; persistentId?: string; sessionVersion?: string; clientState?: ClientState }
-  | { type: 'JOIN_ACK'; hostId: string; sessionVersion?: string } // Host responds with its ID
-  | { type: 'HEARTBEAT'; sentAt: number; messageId: string; userName: string }
-  | { type: 'PING'; sentAt: number; messageId: string; userName: string } // Reply from phone
-  | { type: 'GET_TEAMS' } // Client asks for teams
-  | { type: 'TEAM_LIST'; teams: Team[]; sessionVersion?: string; hostId: string } // Host sends teams with its ID
-  | { type: 'CREATE_TEAM'; teamId: string; teamName: string; userName: string } // Client creates team
-  | { type: 'JOIN_TEAM'; teamId: string; userName: string } // Client joins team
-  // NEW: Team state synchronization - host asks clients for their current team
-  | { type: 'TEAM_STATE_REQUEST' }
-  | { type: 'TEAM_STATE_RESPONSE'; clientId: string; clientName: string; teamId?: string; teamName?: string; teamScore?: number }
-  // NEW: Reconnect - client reconnecting after page refresh/disconnect
-  | { type: 'RECONNECT'; userName: string; persistentId: string; teamId?: string; teamName?: string; teamScore?: number }
-  // NEW: Kick/remove client
-  | { type: 'KICK_CLIENT'; clientId: string; reason?: string }
-  // NEW: Team deleted - host tells clients this team no longer exists
-  | { type: 'TEAM_DELETED'; teamId: string }
-  // NEW: Health check messages
-  | { type: 'HEALTH_CHECK'; sentAt: number; messageId: string }
-  | { type: 'HEALTH_RESPONSE'; requestSentAt: number; receivedAt: number; messageId: string }
-  // NEW: State synchronization
-  | { type: 'REQUEST_STATE_SYNC' }
-  | { type: 'STATE_SYNC'; clients: ClientHealth[]; teams: Team[] }
-  // NEW: Message acknowledgment
-  | { type: 'ACK'; messageId: string }
-  // NEW: Connection quality report
-  | { type: 'QUALITY_REPORT'; rtt: number; jitter: number }
-  // NEW: Buzzer state control
-  | { type: 'BUZZER_STATE'; active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining?: number; responseTimerRemaining?: number; handicapActive?: boolean; teamId?: string }
-  | { type: 'BUZZ'; teamId: string; teamName?: string; clientId: string; sentAt: number }
-  | { type: 'BUZZ_ACK'; buzzId: string }
-  // NEW: Clear cache - host tells clients to clear all their data
-  | { type: 'CLEAR_CACHE' }
-  // NEW: Super Game messages
-  | { type: 'SUPER_GAME_PLACE_YOUR_BETS'; enabledThemes: string[]; maxBet: number } // Show bet input on mobile
-  | { type: 'SUPER_GAME_BET'; teamId: string; bet: number; clientId: string }
-  | { type: 'SUPER_GAME_BET_ACK'; teamId: string } // Acknowledge bet received
-  | { type: 'SUPER_GAME_SHOW_QUESTION'; themeId: string; themeName: string; questionText: string; questionMedia?: { type: 'image' | 'video' | 'audio'; url?: string } }
-  | { type: 'SUPER_GAME_TEAM_READY'; teamId: string } // Team submitted answer
-  | { type: 'SUPER_GAME_REVEAL_ANSWERS' } // Show team answers to host
-  | { type: 'SUPER_GAME_TEAM_ANSWER'; teamId: string; answer: string; clientId: string }
-  | { type: 'SUPER_GAME_ANSWER_SUBMITTED'; teamId: string } // Broadcast when team submits answer
-  | { type: 'SUPER_GAME_SHOW_WINNER'; winnerTeamName: string; finalScores: { teamId: string; teamName: string; score: number }[] }
-  | { type: 'SUPER_GAME_STATE_SYNC'; phase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner'; themeId?: string; themeName?: string; questionText?: string; questionMedia?: { type: 'image' | 'video' | 'audio'; url?: string }; maxBet?: number }
-  // NEW: Client requests current super game state (e.g., when pressing buzz)
-  | { type: 'GET_SUPER_GAME_STATE' }
-  // NEW: Clear super game state on client (e.g., when host starts new game)
-  | { type: 'SUPER_GAME_CLEAR' };
-
-// Client state that can be restored on reconnection
-export interface ClientState {
-  userName: string;
-  teamId?: string;
-  teamName?: string;
-  teamScore?: number;
-  currentScreen?: 'name' | 'team' | 'buzz';
-  superGamePhase?: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
-}
-
-export interface TimeLog {
-  id: string;
-  userName: string;
-  teamName?: string; // Added team name to logs
-  sentAt: number;
-  receivedAt: number;
-  latency: number;
-}
-
+// Connection status enum
 export enum ConnectionStatus {
   DISCONNECTED = 'disconnected',
   INITIALIZING = 'initializing',
@@ -116,3 +44,254 @@ export enum ConnectionStatus {
   RECONNECTING = 'reconnecting',
   ERROR = 'error'
 }
+
+// ============================================================
+// P2P Message Types for WebRTC/PeerJS Communication
+// ============================================================
+
+// Message category - determines delivery priority and handling
+export enum MessageCategory {
+  STATE = 'state',           // State-changing messages (guaranteed delivery, ordered)
+  EVENT = 'event',           // Events like buzz, button press (low latency)
+  SYNC = 'sync',             // State synchronization (periodic, can be dropped)
+  CONTROL = 'control'        // Connection control (join, leave, ping)
+}
+
+// Base message interface
+export interface P2PMessage {
+  id: string;                // Unique message ID for deduplication
+  category: MessageCategory;
+  timestamp: number;
+  senderId: string;
+}
+
+// STATE: Client joins/leaves team
+export interface TeamStateMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'JOIN_TEAM' | 'LEAVE_TEAM';
+  payload: {
+    clientId: string;
+    clientName: string;
+    teamId?: string;
+    teamName?: string;
+  };
+}
+
+// STATE: Client confirmed by host (removed from TeamStateMessage to avoid conflict)
+export interface TeamConfirmedMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'TEAM_CONFIRMED';
+  payload: {
+    clientId: string;  // The client ID being confirmed
+  };
+}
+
+// STATE: Score updates
+export interface ScoreStateMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'UPDATE_SCORE';
+  payload: {
+    teamId: string;
+    score: number;
+    delta: number;
+  };
+}
+
+// STATE: Buzzer state changes
+export interface BuzzerStateMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'BUZZER_STATE';
+  payload: {
+    active: boolean;
+    timerPhase: 'reading' | 'response' | 'complete' | 'inactive';
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+    handicapActive: boolean;
+    handicapTeamId?: string;
+  };
+}
+
+// EVENT: Client buzzed
+export interface BuzzEventMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'BUZZ';
+  payload: {
+    clientId: string;
+    clientName: string;
+    teamId?: string;
+    teamName?: string;
+    buzzTime: number;
+  };
+}
+
+// EVENT: Super game bet placed
+export interface SuperGameBetMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'SUPER_GAME_BET';
+  payload: {
+    teamId: string;
+    teamName: string;
+    bet: number;
+  };
+}
+
+// EVENT: Super game answer submitted
+export interface SuperGameAnswerMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'SUPER_GAME_ANSWER';
+  payload: {
+    teamId: string;
+    answer: string;
+  };
+}
+
+// SYNC: Periodic state sync from host to clients
+export interface StateSyncMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'STATE_SYNC';
+  payload: {
+    buzzerState: {
+      active: boolean;
+      timerPhase: 'reading' | 'response' | 'complete' | 'inactive';
+      readingTimerRemaining: number;
+      responseTimerRemaining: number;
+      handicapActive: boolean;
+      handicapTeamId?: string;
+    };
+    sessionVersion: string;
+    teams: Array<{ id: string; name: string; score?: number }>;
+    superGamePhase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
+  };
+}
+
+// CONTROL: Client handshake
+export interface HandshakeMessage extends P2PMessage {
+  category: MessageCategory.CONTROL;
+  type: 'HANDSHAKE';
+  payload: {
+    clientId: string;
+    clientName: string;
+    protocolVersion: string;
+    persistentClientId?: string;  // Stored client ID for reconnection
+    currentTeamId?: string;         // Current team ID (if any)
+  };
+}
+
+// CONTROL: Host handshake response
+export interface HandshakeResponseMessage extends P2PMessage {
+  category: MessageCategory.CONTROL;
+  type: 'HANDSHAKE_RESPONSE';
+  payload: {
+    hostId: string;
+    sessionVersion: string;
+    teams: Team[];
+    currentTime: number;
+  };
+}
+
+// CONTROL: Ping/Pong for connection quality
+export interface PingMessage extends P2PMessage {
+  category: MessageCategory.CONTROL;
+  type: 'PING';
+  payload: {
+    timestamp: number;
+  };
+}
+
+export interface PongMessage extends P2PMessage {
+  category: MessageCategory.CONTROL;
+  type: 'PONG';
+  payload: {
+    originalTimestamp: number;
+    serverTimestamp: number;
+  };
+}
+
+// EVENT: Generic broadcast message for arbitrary data
+export interface BroadcastMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'BROADCAST';
+  payload: unknown;
+}
+
+// EVENT: Team created/updated
+export interface TeamUpdateMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'TEAM_UPDATE';
+  payload: {
+    teamId: string;
+    teamName: string;
+  };
+}
+
+// SYNC: Full teams list sync
+export interface TeamsSyncMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'TEAMS_SYNC';
+  payload: {
+    teams: Array<{ id: string; name: string }>;
+  };
+}
+
+// SYNC: Commands/Rooms list from host
+export interface CommandsListMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'COMMANDS_LIST';
+  payload: {
+    commands: Array<{ id: string; name: string }>;
+  };
+}
+
+// SYNC: Request commands list from host
+export interface GetCommandsMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'GET_COMMANDS';
+  payload: {};
+}
+
+// Union type for all P2P messages
+export type P2PSMessage =
+  | TeamStateMessage
+  | TeamConfirmedMessage
+  | ScoreStateMessage
+  | BuzzerStateMessage
+  | BuzzEventMessage
+  | SuperGameBetMessage
+  | SuperGameAnswerMessage
+  | StateSyncMessage
+  | HandshakeMessage
+  | HandshakeResponseMessage
+  | PingMessage
+  | PongMessage
+  | BroadcastMessage
+  | TeamUpdateMessage
+  | TeamsSyncMessage
+  | CommandsListMessage
+  | GetCommandsMessage;
+
+// Message handler type
+export type MessageHandler = (message: P2PSMessage, peerId: string) => void;
+
+// P2P connection configuration
+export interface P2PConfig {
+  hostId: string;
+  isHost: boolean;
+  isLanMode: boolean;
+  signallingServer?: string;  // URL of signalling server
+  onMessage?: MessageHandler;
+  onPeerConnected?: (peerId: string) => void;
+  onPeerDisconnected?: (peerId: string) => void;
+  onError?: (error: Error) => void;
+}
+
+// Connection info encoded in QR/link
+export interface ConnectionInfo {
+  hostId: string;
+  hostIp?: string;       // For LAN mode
+  signallingUrl?: string; // For Internet mode
+  mode: 'lan' | 'internet';
+  port?: number;
+}
+
+// Protocol version for compatibility checking
+export const PROTOCOL_VERSION = '1.0.0';

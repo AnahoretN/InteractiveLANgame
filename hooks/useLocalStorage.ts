@@ -11,6 +11,7 @@ export const STORAGE_KEYS = {
   LOGS: 'ilan_logs',
   CLIENTS: 'ilan_clients',
   TEAMS: 'ilan_teams',
+  COMMANDS: 'ilan_commands', // Commands/rooms for quick join
   LOCKED_IP: 'ilan_locked_ip',
   QR_URL: 'ilan_qr_url',
   SESSION_SETTINGS: 'ilan_session_settings',

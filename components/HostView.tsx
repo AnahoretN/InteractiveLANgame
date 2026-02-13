@@ -1,21 +1,42 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from './Button';
-import { Smartphone, ArrowRight, Wifi, RefreshCw, Settings, Users, AlertCircle, Activity } from 'lucide-react';
-import { P2PManager, generatePeerId, getSignallingServerUrl } from '../utils/p2p';
-import { PeerMessage, ConnectionStatus, TimeLog, Team, ConnectionQuality } from '../types';
+import { Smartphone, ArrowRight, Settings, Users, Activity, Copy, RefreshCw, Plus, Check } from 'lucide-react';
+import { Team, P2PSMessage, BuzzEventMessage, MessageCategory, BroadcastMessage, TeamsSyncMessage, CommandsListMessage, GetCommandsMessage } from '../types';
 import { useSessionSettings } from '../hooks/useSessionSettings';
-import { getDefaultQuality, updateQualityMetrics, getHealthBgColor } from '../hooks/useConnectionQuality';
+import { useP2PHost } from '../hooks/useP2PHost';
 import { SettingsModal, GameSession, GameSelectorModal, type GamePack, type GameType } from './host';
 import type { Round, Theme, RoundType } from './host/PackEditor';
 import { TeamListItem, SimpleClientItem, NoTeamSection, ConnectedClient } from './host/ListItems';
+import { TeamList, CommandsSection, HostSetupPanel } from './host';
 import { storage, STORAGE_KEYS, generateHostUniqueId } from '../hooks/useLocalStorage';
-import { CONNECTION_CONFIG } from '../config';
+import { useSyncEffects } from '../hooks/useSyncEffects';
+import { generateUUID, getHealthBgColor } from '../utils';
+
+// Helper function to get raw string from localStorage without JSON parsing
+function getRawStorageValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
 
 export const HostView: React.FC = () => {
-  const [hostId] = useState<string>(() => {
+  const [hostId, setHostId] = useState<string>(() => {
     const saved = storage.get(STORAGE_KEYS.HOST_ID);
-    return saved || generatePeerId();
+    return saved || 'host_' + Math.random().toString(36).substring(2, 10);
+  });
+
+  // Session ID (5 random chars) - displayed in lobby
+  const [sessionId, setSessionId] = useState<string>(() => {
+    const saved = storage.get<string>(STORAGE_KEYS.HOST_UNIQUE_ID);
+    if (saved) {
+      return saved.substring(0, 5);
+    }
+    const newId = generateHostUniqueId().substring(0, 5);
+    storage.set(STORAGE_KEYS.HOST_UNIQUE_ID, newId);
+    return newId;
   });
 
   // Host unique ID (12 chars) - used for client data binding
@@ -24,33 +45,34 @@ export const HostView: React.FC = () => {
     return saved || generateHostUniqueId();
   });
 
-  const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.INITIALIZING);
   const [isSessionActive, setIsSessionActive] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-
-  // IP Configuration state
+  const [isLanMode, setIsLanMode] = useState<boolean>(true);
   const [ipInput, setIpInput] = useState<string>(() => {
-    const saved = storage.get(STORAGE_KEYS.LOCKED_IP);
-    return saved ?? '';
+    return storage.get(STORAGE_KEYS.LOCKED_IP) || '';
   });
   const [isIpLocked, setIsIpLocked] = useState<boolean>(() => {
-    return storage.get(STORAGE_KEYS.LOCKED_IP) !== null;
+    const storedIp = storage.get(STORAGE_KEYS.LOCKED_IP);
+    // If IP is stored, consider it locked
+    return storedIp !== null && storedIp !== '';
   });
   const [finalQrUrl, setFinalQrUrl] = useState<string>(() => {
-    return storage.get(STORAGE_KEYS.QR_URL) ?? '';
+    const saved = storage.get(STORAGE_KEYS.QR_URL) ?? '';
+    // Validate saved URL - check for common corruptions like duplicated port
+    if (saved && (saved.includes(':3000:3000') || saved.includes('%3A3000%3A3000'))) {
+      console.warn('[HostView] Invalid URL in storage, clearing it');
+      storage.remove(STORAGE_KEYS.QR_URL);
+      return '';
+    }
+    return saved;
   });
 
   // State
-  const [logs, setLogs] = useState<TimeLog[]>(() => {
-    const saved = storage.get<string>(STORAGE_KEYS.LOGS);
-    if (!saved) return [];
-    try {
-      const parsed = JSON.parse(saved);
-      return Array.isArray(parsed) ? parsed.filter((l: TimeLog) => l && typeof l.sentAt === 'number' && typeof l.receivedAt === 'number') : [];
-    } catch { return []; }
-  });
-
   const [clients, setClients] = useState<Map<string, ConnectedClient>>(new Map());
+  // Queue for pending TEAM_CONFIRMED messages (clientId -> teamId)
+  const [pendingConfirmations, setPendingConfirmations] = useState<Map<string, string>>(new Map());
+  // Queue for pending GET_COMMANDS requests (clientId requesting commands)
+  const [pendingCommandsRequest, setPendingCommandsRequest] = useState<string | null>(null);
 
   // Wrapper to update clients - MUTATES the existing Map in-place instead of creating new one
   // This prevents loss of client data when setClients is called multiple times
@@ -72,15 +94,34 @@ export const HostView: React.FC = () => {
     } catch { return []; }
   });
 
-  // Team editing state
+  // Commands/Rooms state - for quick join feature
+  const [commands, setCommands] = useState<Array<{ id: string; name: string }>>(() => {
+    const saved = getRawStorageValue(STORAGE_KEYS.COMMANDS);
+    if (!saved || saved.trim() === '') return [];
+    try {
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.error('[HostView] Failed to parse commands from storage:', e);
+      // Clear corrupted data
+      storage.remove(STORAGE_KEYS.COMMANDS);
+      return [];
+    }
+  });
+
+  // Team/Command editing state
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [editingTeamName, setEditingTeamName] = useState<string>('');
+
+  // Create team input state
+  const [showCreateTeamInput, setShowCreateTeamInput] = useState<boolean>(false);
+  const [newTeamName, setNewTeamName] = useState<string>('');
 
   // Track which clients have buzzed (clientId -> timestamp when they buzzed)
   const [buzzedClients, setBuzzedClients] = useState<Map<string, number>>(new Map());
 
   // Track which teams have buzzed (for visual flash effect) - only tracks recent buzzes
-  const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
+  const [buzzedTeamIds] = useState<Set<string>>(new Set());
 
   // Track buzzer state from GamePlay for GameSession
   const [buzzerState, setBuzzerState] = useState<{
@@ -131,6 +172,428 @@ export const HostView: React.FC = () => {
     setSelectedPackIds(packIds);
     setSelectedPacks(packs);
   }, []);
+
+  // Define removeClient early (needed by P2P callbacks)
+  const removeClient = useCallback((clientId: string) => {
+    setClients((prev: Map<string, ConnectedClient>) => {
+      prev.delete(clientId);
+      return prev;
+    });
+  }, []);
+
+  // ============================================================
+  // P2P Network Connection (WebRTC via PeerJS)
+  // ============================================================
+
+  // Get signalling server URL based on LAN mode
+  const getSignallingServer = useCallback(() => {
+    if (isLanMode && isIpLocked && ipInput && ipInput.trim() !== '') {
+      return `ws://${ipInput}:9000`;
+    }
+    return undefined; // Use default public server
+  }, [isLanMode, isIpLocked, ipInput]);
+
+  // Initialize P2P host connection
+  const p2pHost = useP2PHost({
+    hostId: hostId,
+    isHost: true,
+    isLanMode: isLanMode,
+    signallingServer: getSignallingServer(),
+    onMessage: useCallback((message: P2PSMessage, peerId: string) => {
+      console.log('[HostView] Received message from', peerId, message.type);
+
+      // Handle incoming messages from clients
+      switch (message.type) {
+        case 'BUZZ': {
+          const buzzMsg = message as BuzzEventMessage;
+          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName);
+          setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(peerId, buzzMsg.payload.buzzTime));
+          break;
+        }
+        case 'JOIN_TEAM': {
+          // Client joined a team - add client to lobby if not already present
+          const { clientName, teamId } = message.payload;
+          console.log('[HostView] JOIN_TEAM received from', peerId, 'name:', clientName, 'team:', teamId);
+          updateClients((prev: Map<string, ConnectedClient>) => {
+            const existingClient = prev.get(peerId);
+            if (existingClient) {
+              // Client exists, just update team
+              existingClient.teamId = teamId;
+              existingClient.name = clientName;
+            } else {
+              // New client - add to lobby
+              const newClient: ConnectedClient = {
+                id: peerId,
+                peerId: peerId,
+                name: clientName,
+                joinedAt: Date.now(),
+                lastSeen: Date.now(),
+                teamId: teamId,
+                connectionQuality: {
+                  rtt: 0,
+                  packetLoss: 0,
+                  jitter: 0,
+                  lastPing: Date.now(),
+                  healthScore: 100
+                }
+              };
+              prev.set(peerId, newClient);
+            }
+            return prev;
+          });
+          // Queue confirmation to be sent via useEffect (avoid closure issue)
+          setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(peerId, teamId || ''));
+          console.log('[HostView] Queued TEAM_CONFIRMED for', peerId);
+          break;
+        }
+        case 'TEAM_UPDATE': {
+          // New team created by client
+          const { teamId, teamName } = message.payload;
+          // Check if team already exists
+          const existingTeam = teams.find(t => t.name === teamName);
+          if (!existingTeam) {
+            // Add new team
+            const newTeam: Team = {
+              id: teamId,
+              name: teamName,
+              createdAt: Date.now(),
+              lastUsedAt: Date.now()
+            };
+            setTeams(prev => [...prev, newTeam]);
+            // Broadcasting is handled by useEffect below
+          }
+          break;
+        }
+        case 'CREATE_TEAM': {
+          // Client creates a new team and joins it
+          const { clientId, clientName, teamName } = message.payload;
+          console.log('[HostView] CREATE_TEAM received from', peerId, 'clientName:', clientName, 'teamName:', teamName);
+
+          // Generate a unique team ID
+          const newTeamId = 'team_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+
+          // Check if team already exists
+          const existingTeam = teams.find(t => t.name === teamName);
+          if (!existingTeam) {
+            // Add new team
+            const newTeam: Team = {
+              id: newTeamId,
+              name: teamName,
+              createdAt: Date.now(),
+              lastUsedAt: Date.now()
+            };
+            setTeams(prev => [...prev, newTeam]);
+            console.log('[HostView] Created new team:', newTeam.name, 'id:', newTeamId);
+          } else {
+            console.log('[HostView] Team already exists:', existingTeam.name);
+          }
+
+          // Add client to lobby with the new team
+          updateClients((prev: Map<string, ConnectedClient>) => {
+            const existingClient = prev.get(peerId);
+            if (existingClient) {
+              // Client exists, update team
+              existingClient.teamId = newTeamId;
+              existingClient.name = clientName;
+            } else {
+              // New client - add to lobby
+              const newClient: ConnectedClient = {
+                id: clientId,
+                peerId: peerId,
+                name: clientName,
+                joinedAt: Date.now(),
+                lastSeen: Date.now(),
+                teamId: newTeamId,
+                connectionQuality: {
+                  rtt: 0,
+                  packetLoss: 0,
+                  jitter: 0,
+                  lastPing: Date.now(),
+                  healthScore: 100
+                }
+              };
+              prev.set(peerId, newClient);
+            }
+            return prev;
+          });
+
+          // Queue confirmation to be sent
+          setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(peerId, newTeamId));
+          console.log('[HostView] Queued TEAM_CONFIRMED for CREATE_TEAM', peerId, 'teamId:', newTeamId);
+          break;
+        }
+        case 'GET_COMMANDS': {
+          // Client requested commands list - trigger send via state
+          console.log('[HostView] GET_COMMANDS received from', peerId);
+          setPendingCommandsRequest(peerId);
+          break;
+        }
+        case 'SUPER_GAME_BET': {
+          // Client placed a bet in super game
+          const existingIndex = superGameBets.findIndex((b: { teamId: string }) => b.teamId === message.payload.teamId);
+          if (existingIndex >= 0) {
+            setSuperGameBets((prev: Array<{ teamId: string; bet: number; ready: boolean }>) => prev.map((b: { teamId: string; bet: number; ready: boolean }, i: number) =>
+              i === existingIndex ? { ...b, bet: message.payload.bet, ready: true } : b
+            ));
+          } else {
+            setSuperGameBets((prev: Array<{ teamId: string; bet: number; ready: boolean }>) => [...prev, { teamId: message.payload.teamId, bet: message.payload.bet, ready: true }]);
+          }
+          break;
+        }
+        case 'SUPER_GAME_ANSWER': {
+          // Client submitted an answer in super game
+                          const existingIndex = superGameAnswers.findIndex((a: { teamId: string }) => a.teamId === message.payload.teamId);
+          if (existingIndex >= 0) {
+                            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => prev.map((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }, i: number) =>
+              i === existingIndex ? { ...a, answer: message.payload.answer, submitted: true } : a
+            ));
+                          } else {
+                            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => [...prev, {
+              teamId: message.payload.teamId,
+              answer: message.payload.answer,
+              revealed: false,
+              submitted: true
+            }]);
+                          }
+          break;
+                        }
+        default:
+                          console.log('[HostView] Unhandled message type:', message.type);
+                      }
+                  }, [updateClients, superGameBets, superGameAnswers]),
+    onClientConnected: useCallback((clientId: string, data: { name: string; teamId?: string; persistentClientId?: string }) => {
+      console.log('[HostView] Client connected via handshake:', clientId, 'name:', data.name, 'persistentId:', data.persistentClientId, 'teamId:', data.teamId);
+
+      // Note: Sending commands to new client is handled by useEffect below
+      // to avoid circular dependency with p2pHost initialization
+
+      // Check if this is a returning client (same persistent ID)
+      if (data.persistentClientId && data.teamId) {
+        // Look for existing client with this persistent ID
+        let oldPeerId: string | null = null;
+        let existingClient: ConnectedClient | null = null;
+
+        for (const [peerId, client] of clients.entries()) {
+          if (client.id === data.persistentClientId) {
+            oldPeerId = peerId;
+            existingClient = client;
+            break;
+          }
+        }
+
+        if (existingClient && oldPeerId) {
+          console.log('[HostView] Returning client detected:', existingClient.name, 'old peerId:', oldPeerId, 'new peerId:', clientId);
+
+          // Update existing client's peer ID and last seen
+          updateClients((prev: Map<string, ConnectedClient>) => {
+            const client = prev.get(oldPeerId!);
+            if (client) {
+              // Remove from old peer ID
+              prev.delete(oldPeerId!);
+              // Add with new peer ID
+              client.peerId = clientId;
+              client.lastSeen = Date.now();
+              client.name = data.name; // Update name in case it changed
+              prev.set(clientId, client);
+            }
+            return prev;
+          });
+
+          // Queue TEAM_CONFIRMED for returning client (will be sent by useEffect)
+          setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
+          return;
+        }
+      }
+
+      // New client - will be added when JOIN_TEAM is received
+      console.log('[HostView] New client, waiting for JOIN_TEAM message');
+    }, [clients, updateClients, setPendingConfirmations]),
+                onClientDisconnected: useCallback((clientId: string) => {
+      console.log('[HostView] Client disconnected:', clientId);
+      removeClient(clientId);
+    }, [removeClient]),
+                onError: useCallback((error: Error) => {
+      console.error('[HostView] P2P error:', error);
+    }, []),
+              });
+
+  // Use sync effects for teams and commands (broadcasting and storage)
+  useSyncEffects({
+    teams,
+    commands,
+    p2pHost,
+  });
+
+  // Broadcast buzzer state to all clients
+  useEffect(() => {
+    if (p2pHost.isReady) {
+                  p2pHost.broadcast({
+        category: 'state' as MessageCategory,
+        type: 'BUZZER_STATE',
+                    payload: buzzerState
+      });
+    }
+          }, [buzzerState, p2pHost.isReady, p2pHost.broadcast]);
+
+  // Send pending TEAM_CONFIRMED messages when p2pHost is ready
+  useEffect(() => {
+    if (p2pHost.isReady && pendingConfirmations.size > 0) {
+      console.log('[HostView] Sending pending confirmations:', pendingConfirmations.size);
+      pendingConfirmations.forEach((_teamId: string, clientId: string) => {
+        const conn = p2pHost.connectedClients.find(id => id === clientId);
+        console.log('[HostView] Sending TEAM_CONFIRMED to', clientId, 'connection open:', !!conn, 'payload:', { clientId });
+        p2pHost.sendToClient(clientId, {
+          category: MessageCategory.STATE,
+          type: 'TEAM_CONFIRMED',
+          payload: {
+            clientId: clientId
+          }
+        });
+        console.log('[HostView] Sent TEAM_CONFIRMED to', clientId);
+      });
+      // Clear the queue after sending
+      setPendingConfirmations(new Map());
+    }
+  }, [p2pHost.isReady, pendingConfirmations, p2pHost.sendToClient]);
+
+  // Handle pending GET_COMMANDS requests
+  useEffect(() => {
+    if (p2pHost.isReady && pendingCommandsRequest && commands.length > 0) {
+      const commandsSync: Omit<CommandsListMessage, 'id' | 'timestamp' | 'senderId'> = {
+        category: MessageCategory.SYNC,
+        type: 'COMMANDS_LIST',
+        payload: {
+          commands: commands
+        }
+      };
+      p2pHost.sendToClient(pendingCommandsRequest, commandsSync);
+      console.log('[HostView] Sent commands list to client:', pendingCommandsRequest, commandsSync);
+      // Clear the request after sending
+      setPendingCommandsRequest(null);
+    } else if (p2pHost.isReady && pendingCommandsRequest && commands.length === 0) {
+      // Send empty commands list
+      const commandsSync: Omit<CommandsListMessage, 'id' | 'timestamp' | 'senderId'> = {
+        category: MessageCategory.SYNC,
+        type: 'COMMANDS_LIST',
+        payload: {
+          commands: []
+        }
+      };
+      p2pHost.sendToClient(pendingCommandsRequest, commandsSync);
+      console.log('[HostView] Sent empty commands list to client:', pendingCommandsRequest);
+      setPendingCommandsRequest(null);
+    }
+  }, [p2pHost.isReady, pendingCommandsRequest, commands, p2pHost.sendToClient]);
+
+  // Create command
+  const handleCreateCommand = useCallback((name: string) => {
+    const teamId = 'team_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    const newTeam: Team = {
+      id: teamId,
+      name,
+      createdAt: Date.now(),
+      lastUsedAt: Date.now()
+    };
+
+    // Add to teams array for lobby display
+    setTeams(prev => [...prev, newTeam]);
+
+    // Also add to commands array for compatibility
+    const newCommand: { id: string; name: string } = {
+      id: teamId,
+      name
+    };
+    setCommands(prev => [...prev, newCommand]);
+
+    console.log('[HostView] Created team:', newTeam.name, 'id:', teamId);
+  }, []);
+
+  // Update command name (rename)
+  const handleRenameCommand = useCallback((commandId: string, newName: string) => {
+    setCommands(prev => prev.map(c => c.id === commandId ? { ...c, name: newName } : c));
+    setTeams(prev => prev.map(t => t.id === commandId ? { ...t, name: newName } : t));
+    console.log('[HostView] Renamed team/command:', commandId, 'to', newName);
+  }, []);
+
+  // Delete command - uses deleteTeam for proper cleanup
+  const handleDeleteCommand = useCallback((commandId: string) => {
+    // Remove from clients and teams via deleteTeam logic
+    setClients(clientsPrev => {
+      const updated = new Map(clientsPrev);
+      updated.forEach((client) => {
+        if (client.teamId === commandId) {
+          client.teamId = undefined;
+        }
+      });
+      return updated;
+    });
+    // Remove from both teams and commands arrays
+    setTeams(prev => prev.filter(t => t.id !== commandId));
+    setCommands(prev => prev.filter(c => c.id !== commandId));
+    console.log('[HostView] Deleted team/command:', commandId);
+  }, []);
+
+  // Note: Teams and commands storage/broadcast effects are now handled by useSyncEffects hook
+
+  // Send commands to newly connected clients (when they connect via handshake)
+  // This is tracked by watching for clients that are in the handshake phase
+  useEffect(() => {
+    // This effect handles sending commands to clients that have connected
+    // It runs when p2pHost becomes ready and when commands change
+    if (p2pHost.isReady && commands.length > 0) {
+      // Check connected clients from p2pHost and send commands if needed
+      p2pHost.connectedClients.forEach((clientId: string) => {
+        const client = clients.get(clientId);
+        // Send commands to clients that don't have a team yet (just connected via handshake)
+        if (client && !client.teamId) {
+          const commandsSync: Omit<CommandsListMessage, 'id' | 'timestamp' | 'senderId'> = {
+            category: MessageCategory.SYNC,
+            type: 'COMMANDS_LIST',
+            payload: {
+              commands: commands
+            }
+          };
+          p2pHost.sendToClient(clientId, commandsSync);
+          console.log('[HostView] Sent commands list to newly connected client:', clientId);
+        }
+      });
+    }
+  }, [commands, p2pHost.isReady, p2pHost.sendToClient, clients]);
+
+  // Log initial commands load
+  useEffect(() => {
+    console.log('[HostView] Initial commands loaded from storage:', commands);
+  }, []);
+
+  // Update invitation URL when settings change
+  useEffect(() => {
+    if (!isIpLocked && !isLanMode) {
+      // Internet mode - use public signalling server
+      // Format: http://localhost:3000#/mobile?host=HOST_ID&session=SESSION_ID
+      // NO signalling parameter - client will use default public server
+      const inviteUrl = `${window.location.origin}#/mobile?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}`;
+      setFinalQrUrl(inviteUrl);
+      storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
+    } else if (isIpLocked && isLanMode && ipInput) {
+      // LAN mode - update URL when session ID changes
+      const inviteUrl = `http://${ipInput}:3000#/mobile?host=${encodeURIComponent(hostId)}&signalling=${encodeURIComponent(ipInput)}&session=${encodeURIComponent(sessionId)}`;
+      setFinalQrUrl(inviteUrl);
+      storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
+    }
+  }, [hostId, isLanMode, isIpLocked, sessionId, ipInput]);
+
+  // Clear old signalling parameter from storage when switching to Internet mode
+  useEffect(() => {
+    if (!isLanMode) {
+      // Switching to Internet mode - clear signalling param from URL
+      const currentUrl = window.location.href;
+      // Remove signalling parameter if present
+      const urlWithoutSignalling = currentUrl.replace(/[?&]signalling=[^&]*/g, '');
+      if (urlWithoutSignalling !== currentUrl) {
+        window.location.href = urlWithoutSignalling;
+      }
+    }
+  }, [isLanMode]);
 
   // Handle clear cache - clears host cache and reloads page
   const handleClearCache = useCallback(() => {
@@ -202,7 +665,7 @@ export const HostView: React.FC = () => {
 
       if (mergedThemes.length > 0) {
         mergedRounds.push({
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           number: roundNum,
           name: roundSettings.name || `Round ${roundNum}`,
           type: roundSettings.type,
@@ -218,7 +681,7 @@ export const HostView: React.FC = () => {
 
     // Create merged pack for session
     const sessionPack: GamePack = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: selectedPacksList.length === 1
         ? selectedPacksList[0].name
         : `Session (${selectedPacksList.map(p => p.name).join(', ')})`,
@@ -235,30 +698,15 @@ export const HostView: React.FC = () => {
   // Drag and drop state
   const [draggedClientId, setDraggedClientId] = useState<string | null>(null);
 
-  // P2P Manager
-  const p2pManagerRef = useRef<P2PManager | null>(null);
-  const healthCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const clientsRef = useRef<Map<string, ConnectedClient>>(new Map());
+  // Keep refs in sync with state
   const teamsRef = useRef<Team[]>([]);
-  // Map peerId -> persistentId for tracking reconnections
-  const peerToPersistentIdRef = useRef<Map<string, string>>(new Map());
-  // Track buzzed clients ref for cleanup
-  const buzzedClientsRef = useRef<Map<string, number>>(new Map());
-  // Track clients that disconnected but might reconnect (persistentId -> disconnect timestamp)
-  const disconnectedClientsRef = useRef<Map<string, number>>(new Map());
-  // Track previous noTeamsMode to detect when it's disabled
-  const prevNoTeamsModeRef = useRef<boolean>(false);
-  // Track buzzer state ref for real-time access in message handlers
   const buzzerStateRef = useRef(buzzerState);
 
   // Keep all refs in sync with state - combined for better performance
   useEffect(() => {
-    clientsRef.current = clients;
     teamsRef.current = teams;
-    buzzedClientsRef.current = buzzedClients;
     buzzerStateRef.current = buzzerState;
-    prevNoTeamsModeRef.current = sessionSettings.noTeamsMode;
-  }, [clients, teams, buzzedClients, buzzerState, sessionSettings.noTeamsMode]);
+  }, [teams, buzzerState]);
 
   // Clean up buzzed clients after 3 seconds
   useEffect(() => {
@@ -284,142 +732,6 @@ export const HostView: React.FC = () => {
     storage.set(STORAGE_KEYS.HOST_ID, hostId);
   }, [hostId]);
 
-  // Persistence
-  useEffect(() => {
-    storage.set(STORAGE_KEYS.LOGS, logs);
-  }, [logs]);
-
-  // Temporarily disabled - may be causing issues
-  // useEffect(() => {
-  //   const clientsArray = Array.from(clients.values());
-  //   console.log('[Host] Saving clients to storage:', clientsArray.length, 'clients:', clientsArray.map(c => ({ id: c.id, name: c.name, teamId: c.teamId })));
-  //   console.log('[Host] clients Map size:', clients.size, 'entries:', Array.from(clients.entries()).map(([id, c]) => `${id}=${c.name}`));
-  //   storage.set(STORAGE_KEYS.CLIENTS, clientsArray);
-  // }, [clients]);
-
-  // Persist teams to storage
-  useEffect(() => {
-    storage.set(STORAGE_KEYS.TEAMS, teams);
-  }, [teams]);
-
-  // Helper function to get current peerId for a persistent client ID
-  const getPeerIdForPersistentId = useCallback((persistentId: string): string | undefined => {
-    for (const [peerId, pId] of peerToPersistentIdRef.current.entries()) {
-      if (pId === persistentId) return peerId;
-    }
-    return undefined;
-  }, []);
-
-  // Helper function to broadcast teams to all connected clients
-  // Uses refs to always have access to current state without dependency issues
-  // NOTE: sendTo will automatically use RELAY fallback if P2P channel is not available
-  const broadcastTeams = useCallback((teamsToBroadcast?: Team[]) => {
-    const teamsToSend = teamsToBroadcast ?? teamsRef.current;
-    // Use current values from state to avoid closure issues
-    const currentSessionVersion = sessionVersion;
-    const currentHostUniqueId = hostUniqueId;
-
-    // Don't send teams in no-teams mode
-    if (sessionSettings.noTeamsMode) {
-      clientsRef.current.forEach((client) => {
-        // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-        p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: [], sessionVersion: currentSessionVersion, hostId: currentHostUniqueId });
-      });
-      return;
-    }
-    clientsRef.current.forEach((client) => {
-      // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-      p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_LIST', teams: teamsToSend, sessionVersion: currentSessionVersion, hostId: currentHostUniqueId });
-    });
-  }, [sessionSettings.noTeamsMode, sessionVersion, hostUniqueId]); // Dependencies ensure we use current values
-
-  // Helper function to request team state from all clients
-  // Used when returning to lobby or disabling no-teams mode
-  const requestTeamStatesFromClients = useCallback(() => {
-    clientsRef.current.forEach((client) => {
-      // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-      p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_STATE_REQUEST' });
-    });
-  }, []);
-
-  // Helper function to broadcast timer state to all connected clients
-  // Note: Buzz button is never blocked anymore, only timer info is sent
-  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string }) => {
-    // Store buzzer state locally for GameSession
-    setBuzzerState({
-      active: state.active,
-      timerPhase: state.timerPhase,
-      readingTimerRemaining: state.readingTimerRemaining,
-      responseTimerRemaining: state.responseTimerRemaining,
-      handicapActive: state.handicapActive,
-      handicapTeamId: state.handicapTeamId
-    });
-
-    // Broadcast to all connected clients
-    // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-    clientsRef.current.forEach((client) => {
-      p2pManagerRef.current?.sendTo(client.peerId, {
-        type: 'BUZZER_STATE',
-        active: false, // Never block the button
-        readingTimerRemaining: state.readingTimerRemaining,
-        responseTimerRemaining: state.responseTimerRemaining,
-        handicapActive: false, // No handicap blocking
-        teamId: undefined
-      });
-    });
-  }, []);
-
-  // Helper function to broadcast arbitrary message to all connected clients
-  const broadcastMessage = useCallback((message: PeerMessage) => {
-    if (message.type === 'SUPER_GAME_PLACE_YOUR_BETS') {
-      console.log('[HostView] Broadcasting SUPER_GAME_PLACE_YOUR_BETS to', clientsRef.current.size, 'clients:', message);
-    }
-    clientsRef.current.forEach((client) => {
-      p2pManagerRef.current?.sendTo(client.peerId, message);
-    });
-  }, []);
-
-  // Helper function to send current super game state to a specific client
-  const sendSuperGameStateToClient = useCallback((peerId: string) => {
-    console.log('[HostView] Sending super game state to client:', superGamePhase);
-
-    if (superGamePhase === 'placeBets') {
-      p2pManagerRef.current?.sendTo(peerId, {
-        type: 'SUPER_GAME_STATE_SYNC',
-        phase: 'placeBets',
-        maxBet: superGameMaxBet
-      });
-    } else if (superGamePhase === 'showQuestion') {
-      p2pManagerRef.current?.sendTo(peerId, {
-        type: 'SUPER_GAME_STATE_SYNC',
-        phase: 'showQuestion',
-        maxBet: superGameMaxBet
-      });
-    } else if (superGamePhase === 'idle') {
-      p2pManagerRef.current?.sendTo(peerId, {
-        type: 'SUPER_GAME_STATE_SYNC',
-        phase: 'idle'
-      });
-    }
-    // Note: showWinner phase doesn't need resync - game is over
-  }, [superGamePhase, superGameMaxBet]);
-
-  // Track previous clients count to detect new connections
-  const prevClientsCountRef = useRef(0);
-
-  // Broadcast teams to newly connected clients only (not on every teams change)
-  useEffect(() => {
-    const currentCount = clients.size;
-
-    if (currentCount > prevClientsCountRef.current) {
-      // New client connected - send current teams from ref
-      broadcastTeams();
-    }
-
-    prevClientsCountRef.current = currentCount;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients.size]); // Only depend on clients.size, broadcastTeams is stable
-
   // Network status
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -431,39 +743,6 @@ export const HostView: React.FC = () => {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  // Request team states when returning to lobby (session ends)
-  useEffect(() => {
-    // Only trigger when going from active session to lobby
-    if (!isSessionActive && clients.size > 0 && !sessionSettings.noTeamsMode) {
-      // Request team states from all clients to sync up
-      requestTeamStatesFromClients();
-      // After a delay, broadcast the updated teams to ensure consistency
-      // Increased delay to give clients more time to respond
-      const timeoutId = setTimeout(() => {
-        broadcastTeams();
-      }, 2000);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [isSessionActive, clients.size, sessionSettings.noTeamsMode, requestTeamStatesFromClients, broadcastTeams]);
-
-  // Request team states when disabling no-teams mode
-  useEffect(() => {
-    // Update ref for next check
-    const wasNoTeamsMode = prevNoTeamsModeRef.current;
-    prevNoTeamsModeRef.current = sessionSettings.noTeamsMode;
-
-    // Check if no-teams mode was just disabled (true -> false)
-    if (wasNoTeamsMode && !sessionSettings.noTeamsMode && clients.size > 0) {
-      // no-teams mode was just disabled - request team states from clients
-      requestTeamStatesFromClients();
-      // Broadcast teams after receiving responses
-      const timeoutId = setTimeout(() => {
-        broadcastTeams();
-      }, 1000);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [sessionSettings.noTeamsMode, clients.size, requestTeamStatesFromClients, broadcastTeams]);
 
   // Triple ESC to exit session
   useEffect(() => {
@@ -510,803 +789,38 @@ export const HostView: React.FC = () => {
   // Calculate stats
   const clientStats = useMemo(() => {
     const clientsArray = Array.from(clients.values()) as ConnectedClient[];
-    const active = clientsArray.filter(c => !isStale(c.lastSeen)).length;
-    const avgQuality = clientsArray.length > 0
-      ? clientsArray.reduce((acc, c) => acc + c.connectionQuality.healthScore, 0) / clientsArray.length
-      : 100;
+    const active = clientsArray.length;
+    const avgQuality = 100; // Default quality when no network
     return { active, total: clientsArray.length, avgQuality: Math.round(avgQuality) };
   }, [clients]);
 
-  // Handle IP lock
-  const handleLockIp = useCallback(() => {
-    if (!ipInput.trim()) return;
-    setIsIpLocked(true);
-    storage.set(STORAGE_KEYS.LOCKED_IP, ipInput);
-
-    // Generate QR URL
-    const protocol = window.location.protocol;
-    const port = window.location.port || '3000';
-    const baseUrl = `${protocol}//${ipInput}:${port}/`;
-    const qrUrl = `${baseUrl}#/mobile?host=${hostId}&ip=${ipInput}`;
-    setFinalQrUrl(qrUrl);
-    storage.set(STORAGE_KEYS.QR_URL, qrUrl);
-  }, [ipInput, hostId]);
-
-  const handleUnlockIp = useCallback(() => {
-    setIsIpLocked(false);
-    setFinalQrUrl('');
-    storage.remove(STORAGE_KEYS.LOCKED_IP);
-    storage.remove(STORAGE_KEYS.QR_URL);
-  }, []);
-
-  // Initialize P2P
-  useEffect(() => {
-    if (!isIpLocked || !ipInput) return;
-
-    const signallingUrl = getSignallingServerUrl(ipInput);
-
-    const manager = new P2PManager({
-      signallingUrl,
-      peerId: hostId,
-      peerName: 'Host',
-      role: 'host'
-    }, {
-      onSignallingConnected: () => {
-        console.log('[Host] Registered with signalling server');
-        setStatus(ConnectionStatus.CONNECTED);
-      },
-      onConnected: () => {
-        // Peer connected (for future P2P use)
-      },
-      onDisconnected: (disconnectedPeerId: string) => {
-        console.log('[Host] Client disconnected:', disconnectedPeerId);
-        // Find the persistentId for this peerId
-        const persistentId = peerToPersistentIdRef.current.get(disconnectedPeerId);
-        if (persistentId) {
-          console.log('[Host] Found persistentId for disconnected peer:', persistentId);
-          // Remove the peerId mapping
-          peerToPersistentIdRef.current.delete(disconnectedPeerId);
-
-          // Check if this persistentId has any other active peerId connections
-          const hasOtherConnection = Array.from(peerToPersistentIdRef.current.values()).includes(persistentId);
-
-          if (!hasOtherConnection) {
-            // No other connections for this client - mark as potentially disconnected
-            // Will be fully removed after 30 seconds if not reconnected
-            console.log('[Host] No other connections for', persistentId, '- marking for cleanup');
-            disconnectedClientsRef.current.set(persistentId, Date.now());
-          } else {
-            console.log('[Host] Client', persistentId, 'has other active connections');
-          }
-        } else {
-          console.log('[Host] No persistentId found for disconnected peer:', disconnectedPeerId);
-        }
-      },
-      onData: (data, peerId) => handleGameData(data, peerId),
-      onClientConnected: (clientId, clientName) => {
-        // Only map peerId to itself initially - client entry will be created by JOIN message
-        // This prevents duplicate entries (one by peerId, one by persistentId)
-        peerToPersistentIdRef.current.set(clientId, clientId);
-      },
-      onError: (error) => {
-        console.error('[Host] P2P error:', error);
-        setStatus(ConnectionStatus.ERROR);
-      }
-    });
-
-    p2pManagerRef.current = manager;
-
-    manager.connect().then(() => {
-      setStatus(ConnectionStatus.WAITING);
-    }).catch((e) => {
-      console.error('[Host] Failed to connect:', e);
-      setStatus(ConnectionStatus.ERROR);
-    });
-
-    return () => {
-      manager.destroy();
-    };
-  }, [isIpLocked, ipInput, hostId]);
-
-  // Kick a client from the session
-  const kickClient = useCallback((clientId: string) => {
-    const client = clientsRef.current.get(clientId);
-    if (!client) {
-      return;
-    }
-
-    if (p2pManagerRef.current) {
-      p2pManagerRef.current.sendTo(client.peerId, {
-        type: 'KICK_CLIENT',
-        clientId,
-        reason: 'Removed by host'
-      });
-    }
-    // Remove from local state
-    setClients(prev => {
-      // Mutate prev in-place instead of creating new Map
-      prev.delete(clientId);
-      return prev;  // Return same reference
-    });
-    // Also remove peer mapping
-    peerToPersistentIdRef.current.delete(client.peerId);
-  }, []);
-
-  // Handle game data
-  const handleGameData = useCallback((data: PeerMessage, peerId: string) => {
-    // Update last seen - find client by peerId mapping
-    const persistentId = peerToPersistentIdRef.current.get(peerId);
-    if (persistentId) {
-      setClients(prev => {
-        // Mutate prev in-place instead of creating new Map
-        const client = prev.get(persistentId);
-        if (!client) return prev;
-        prev.set(persistentId, {
-          ...client,
-          lastSeen: Date.now()
-        });
-        return prev;  // Return same reference
-      });
-    }
-
-    switch (data.type) {
-      case 'JOIN': {
-        console.log('[Host] Received JOIN message:', {
-          peerId,
-          userName: data.userName,
-          persistentId: data.persistentId,
-          clientState: data.clientState
-        });
-
-        // Client is leaving
-        if (data.userName === '__LEAVING__') {
-          const persistentId = peerToPersistentIdRef.current.get(peerId);
-          if (persistentId) {
-            const client = clientsRef.current.get(persistentId);
-
-            // Check if this client was the last one in their team
-            if (client?.teamId) {
-              const teamId = client.teamId;
-              const remainingInTeam = Array.from(clientsRef.current.values()).filter(
-                (c: ConnectedClient) => c.id !== persistentId && c.teamId === teamId
-              );
-
-              // If no other players in this team, delete the team
-              if (remainingInTeam.length === 0) {
-                setTeams(prev => {
-                  const updated = prev.filter(t => t.id !== teamId);
-                  // Broadcast updated team list
-                  broadcastTeams(updated);
-                  return updated;
-                });
-              } else {
-                // Update team's lastUsedAt since a player left
-                setTeams(prev => prev.map(t => t.id === teamId ? { ...t, lastUsedAt: Date.now() } : t));
-              }
-            }
-
-            setClients(prev => {
-              // Mutate prev in-place instead of creating new Map
-              prev.delete(persistentId);
-              return prev;  // Return same reference
-            });
-            peerToPersistentIdRef.current.delete(peerId);
-          }
-          break;
-        }
-
-        // Use persistentId if provided, otherwise use peerId as fallback
-        const persistentId = data.persistentId || peerId;
-
-        setClients(prev => {
-          const existing = prev.get(persistentId);
-          const oldPeerId = existing?.peerId;
-
-          // Handle client state restoration from JOIN
-          let finalTeamId: string | undefined = undefined;
-          let teamScoreToRestore: number | undefined = undefined;
-
-          if (data.clientState) {
-            // Client is reconnecting with saved state
-            // Only restore team if this is an existing client (reconnection), not a new connection
-            // New connections should start fresh without team
-            if (existing) {
-              const cs = data.clientState;
-
-              // Check if the team exists
-              if (cs.teamId && teamsRef.current.some((t: Team) => t.id === cs.teamId)) {
-                finalTeamId = cs.teamId;
-                teamScoreToRestore = cs.teamScore;
-              } else if (cs.teamName && cs.teamId) {
-                // Team doesn't exist but client has team info - recreate it
-                console.log('[Host] Recreating team for reconnecting client:', cs.teamName);
-                setTeams(prevTeams => {
-                  const newTeam: Team = {
-                    id: cs.teamId!,
-                    name: cs.teamName!,
-                    createdAt: Date.now(),
-                    lastUsedAt: Date.now()
-                  };
-                  // Also update the team score if provided
-                  if (cs.teamScore !== undefined) {
-                    // We'll update team scores separately via GamePlay
-                  }
-                  const updated = [...prevTeams, newTeam];
-                  broadcastTeams(updated);
-                  return updated;
-                });
-                finalTeamId = cs.teamId;
-                teamScoreToRestore = cs.teamScore;
-              }
-            }
-            // If this is a new client (!existing), don't restore team from clientState
-            // The client needs to select/create a team fresh
-          } else if (existing?.teamId && teamsRef.current.some((t: Team) => t.id === existing.teamId)) {
-            // Preserve existing teamId if still valid
-            finalTeamId = existing.teamId;
-          }
-
-          // If team score needs to be restored, we'll need to communicate with GamePlay
-          // For now, just log it - the score restoration will be handled via a callback
-          if (teamScoreToRestore !== undefined && finalTeamId) {
-            console.log('[Host] Client', data.userName, 'reconnecting with team score:', teamScoreToRestore, 'for team:', finalTeamId);
-            // We'll need to add a mechanism to update team scores in GamePlay
-          }
-
-          // Use userName from data, or from clientState as fallback, or generate a default name
-          // Ensure name is never empty - if all sources are empty, don't create the client yet
-          const dataUserName = data.userName?.trim();
-          const stateUserName = data.clientState?.userName?.trim();
-          const clientName = dataUserName || stateUserName || `Player_${persistentId.slice(0, 4)}`;
-
-          if (!clientName) {
-            console.warn('[Host] JOIN: Skipping client creation - userName is empty:', {
-              dataUserName: data.userName,
-              stateUserName: stateUserName,
-              persistentId: persistentId
-            });
-            return prev;
-          }
-
-          console.log('[Host] Creating client with name:', clientName, 'from data.userName:', data.userName, 'persistentId:', persistentId);
-
-          // Create new Map with updated client
-          const newMap = new Map(prev);
-          newMap.set(persistentId, {
-            id: persistentId,
-            peerId: peerId,
-            name: clientName,
-            joinedAt: existing?.joinedAt || Date.now(),
-            teamId: finalTeamId,
-            lastSeen: Date.now(),
-            connectionQuality: existing?.connectionQuality || getDefaultQuality()
-          });
-
-          // Log client creation for debugging
-          console.log('[Host] Created client:', {
-            id: persistentId,
-            peerId: peerId,
-            name: clientName,
-            teamId: finalTeamId
-          });
-          console.log('[Host] Client added, total clients:', newMap.size, 'all client IDs:', Array.from(newMap.keys()), 'names:', Array.from(newMap.values()).map(c => c.name));
-          console.log('[Host] Client details:', JSON.stringify({
-            id: persistentId,
-            peerId: peerId,
-            name: clientName,
-            joinedAt: existing?.joinedAt || Date.now(),
-            teamId: finalTeamId,
-            fromUserName: data.userName,
-            fromClientState: data.clientState?.userName,
-            persistentId: data.persistentId
-          }));
-
-          // Update peer mapping - remove old peerId mapping if this is a reconnection
-          if (oldPeerId && oldPeerId !== peerId) {
-            console.log('[Host] Removing old peerId mapping:', oldPeerId, '-> new peerId:', peerId);
-            peerToPersistentIdRef.current.delete(oldPeerId);
-          }
-          peerToPersistentIdRef.current.set(peerId, persistentId);
-
-          // Remove from disconnected clients tracking if present
-          disconnectedClientsRef.current.delete(persistentId);
-
-          console.log('[Host] About to return newMap with', newMap.size, 'clients, including:', Array.from(newMap.entries()).map(([id, c]) => `${id}=${c.name}`));
-
-          return newMap;
-        });
-        // TEAM_LIST will be sent by useEffect when clients.size increases
-        break;
-      }
-
-      case 'RECONNECT': {
-        // Client is reconnecting after page refresh/disconnect
-        const persistentId = data.persistentId || peerId;
-
-        setClients(prev => {
-          // Mutate prev in-place instead of creating new Map
-          const existing = prev.get(persistentId);
-          const oldPeerId = existing?.peerId;
-
-          // If client has a saved team, only restore it if the team still exists
-          let teamId: string | undefined = undefined;
-          let teamScoreToRestore: number | undefined = undefined;
-
-          // Check if existing teamId is still valid
-          if (existing?.teamId && teamsRef.current.some((t: Team) => t.id === existing.teamId)) {
-            teamId = existing.teamId;
-          }
-          // Or if client is requesting a specific team that exists
-          if (data.teamId && teamsRef.current.some((t: Team) => t.id === data.teamId)) {
-            teamId = data.teamId;
-            // Check if client provided a team score
-            if (data.teamScore !== undefined) {
-              teamScoreToRestore = data.teamScore;
-              console.log('[Host] Client', data.userName, 'reconnecting with team score:', teamScoreToRestore, 'for team:', teamId);
-            }
-          }
-          // If client has a team name but the team doesn't exist, recreate it
-          if (data.teamName && data.teamId && !teamsRef.current.some((t: Team) => t.id === data.teamId)) {
-            console.log('[Host] Recreating team for reconnecting client:', data.teamName);
-            const newTeam: Team = {
-              id: data.teamId,
-              name: data.teamName,
-              createdAt: Date.now(),
-              lastUsedAt: Date.now()
-            };
-            setTeams(prevTeams => {
-              const updated = [...prevTeams, newTeam];
-              broadcastTeams(updated);
-              return updated;
-            });
-            teamId = data.teamId;
-            teamScoreToRestore = data.teamScore;
-          }
-
-          // Mutate prev in-place (newMap is actually prev)
-          prev.set(persistentId, {
-            id: persistentId,
-            peerId: peerId,
-            name: data.userName,
-            joinedAt: existing?.joinedAt || Date.now(),
-            teamId: teamId,
-            lastSeen: Date.now(),
-            connectionQuality: existing?.connectionQuality || getDefaultQuality()
-          });
-
-          // Update peer mapping - remove old peerId mapping if this is a reconnection
-          if (oldPeerId && oldPeerId !== peerId) {
-            peerToPersistentIdRef.current.delete(oldPeerId);
-          }
-          peerToPersistentIdRef.current.set(peerId, persistentId);
-
-          // Remove from disconnected clients tracking if present
-          disconnectedClientsRef.current.delete(persistentId);
-
-          // Return prev (same reference) for mutation
-          return prev;
-        });
-
-        // Send current state back to client (teams, buzzer state, etc.)
-        p2pManagerRef.current?.sendTo(peerId, {
-          type: 'TEAM_LIST',
-          teams: teamsRef.current,
-          sessionVersion,
-          hostId: hostUniqueId
-        });
-
-        // Send current buzzer state if active
-        if (buzzerState.timerPhase !== 'inactive') {
-          p2pManagerRef.current?.sendTo(peerId, {
-            type: 'BUZZER_STATE',
-            active: false,
-            readingTimerRemaining: buzzerState.readingTimerRemaining,
-            responseTimerRemaining: buzzerState.responseTimerRemaining,
-            handicapActive: false,
-            teamId: undefined
-          });
-        }
-
-        // Send super game state if in super game phase
-        if (superGamePhase !== 'idle') {
-          sendSuperGameStateToClient(peerId);
-        }
-
-        break;
-      }
-
-      case 'GET_TEAMS':
-        p2pManagerRef.current?.sendTo(peerId, { type: 'TEAM_LIST', teams: teamsRef.current, sessionVersion, hostId: hostUniqueId });
-        break;
-
-      case 'GET_SUPER_GAME_STATE':
-        // Client requesting current super game state (e.g., after reconnection or sleep)
-        // Send the appropriate state based on current phase
-        sendSuperGameStateToClient(peerId);
-        break;
-
-      case 'CREATE_TEAM': {
-        const newTeam: Team = {
-          id: data.teamId,
-          name: data.teamName,
-          createdAt: Date.now(),
-          lastUsedAt: Date.now()
-        };
-
-        setTeams(prev => {
-          const updated = [...prev, newTeam];
-          // Broadcast immediately with new team list
-          broadcastTeams(updated);
-          return updated;
-        });
-
-        // Update client's team using persistentId
-        const persistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
-        setClients(prev => {
-          const client = prev.get(persistentId);
-          if (!client) return prev;
-          return new Map(prev).set(persistentId, {
-            ...client,
-            teamId: newTeam.id,
-            name: data.userName
-          });
-        });
-        break;
-      }
-
-      case 'JOIN_TEAM':
-        // Update team's lastUsedAt when someone joins
-        setTeams(prev => {
-          return prev.map(t => t.id === data.teamId ? { ...t, lastUsedAt: Date.now() } : t);
-        });
-        const joinPersistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
-        setClients(prev => {
-          // Mutate prev in-place instead of creating new Map
-          const client = prev.get(joinPersistentId);
-          if (!client) return prev;
-          prev.set(joinPersistentId, {
-            ...client,
-            teamId: data.teamId,
-            name: data.userName
-          });
-          return prev;  // Return same reference
-        });
-        break;
-
-      case 'PING': {
-        const receivedAt = Date.now();
-        const pingPersistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
-        const client = clients.get(pingPersistentId);
-        const team = client?.teamId ? teamsRef.current.find(t => t.id === client.teamId) : undefined;
-
-        const newLog: TimeLog = {
-          id: `ping_${receivedAt}_${peerId}`,
-          userName: data.userName,
-          teamName: team?.name,
-          sentAt: data.sentAt,
-          receivedAt,
-          latency: receivedAt - data.sentAt
-        };
-
-        // Update quality using persistentId
-        updateClientQuality(pingPersistentId, newLog.latency, false);
-
-        // Track buzz - when a client presses the Buzz button, it sends a PING
-        setBuzzedClients(prev => new Map(prev).set(pingPersistentId, Date.now()));
-
-        // Add team to buzzed teams for visual flash effect
-        if (client?.teamId) {
-          setBuzzedTeamIds(prev => new Set([...prev, client.teamId]));
-          // Clear the team from buzzed teams after 1 second (flash duration)
-          setTimeout(() => {
-            setBuzzedTeamIds(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(client.teamId);
-              return newSet;
-            });
-          }, 1000);
-        }
-
-        // Ensure client exists (only for new connections before JOIN)
-        // BUT don't create client if userName is empty - wait for JOIN message instead
-        setClients(prev => {
-          // Mutate prev in-place instead of creating new Map
-          const existing = prev.get(pingPersistentId);
-          // Also update peerId if it changed (mutate existing client directly)
-          if (existing && existing.peerId !== peerId) {
-            existing.peerId = peerId;
-          }
-          // Create new client only if userName is not empty
-          if (!prev.has(pingPersistentId) && data.userName && data.userName.trim()) {
-            console.log('[Host] PING: Creating new client from PING with name:', data.userName.trim());
-            prev.set(pingPersistentId, {
-              id: pingPersistentId,
-              peerId: peerId,
-              name: data.userName.trim(),
-              joinedAt: Date.now(),
-              lastSeen: Date.now(),
-              connectionQuality: getDefaultQuality()
-            });
-          }
-          return prev;  // Return same reference
-        });
-
-        setLogs(prev => [newLog, ...prev]);
-        break;
-      }
-
-      case 'BUZZ': {
-        // Handle buzz button press from client
-        const receivedAt = Date.now();
-        const buzzPersistentId = peerToPersistentIdRef.current.get(peerId) || peerId;
-        const client = clients.get(buzzPersistentId);
-
-        // Track buzz - mutate prev in-place
-        setBuzzedClients(prev => {
-          prev.set(buzzPersistentId, receivedAt);
-          return prev;
-        });
-
-        // Determine which team ID to use for flash effect
-        let teamIdToFlash: string | undefined;
-
-        if (client?.teamId) {
-          // Use the client's stored team ID
-          teamIdToFlash = client.teamId;
-        } else if (data.teamId) {
-          // Check if data.teamId is already a valid team ID (starts with 'team_')
-          if (data.teamId.startsWith('team_')) {
-            const teamById = teamsRef.current.find(t => t.id === data.teamId);
-            if (teamById) {
-              teamIdToFlash = teamById.id;
-              // Update client with the correct team ID - mutate in-place
-              setClients(prev => {
-                const c = prev.get(buzzPersistentId);
-                if (c) {
-                  c.teamId = teamById.id;
-                }
-                return prev;  // Return same reference
-              });
-            }
-          } else {
-            // data.teamId is actually a team name, find by name
-            const teamByName = teamsRef.current.find(t => t.name === data.teamId);
-            if (teamByName) {
-              teamIdToFlash = teamByName.id;
-              // Update client with the correct team ID - mutate in-place
-              setClients(prev => {
-                const c = prev.get(buzzPersistentId);
-                if (c) {
-                  c.teamId = teamByName.id;
-                }
-                return prev;  // Return same reference
-              });
-            }
-          }
-        }
-
-        // Also try teamName if provided
-        if (!teamIdToFlash && data.teamName) {
-          const teamByName = teamsRef.current.find(t => t.name === data.teamName);
-          if (teamByName) {
-            teamIdToFlash = teamByName.id;
-          }
-        }
-
-        // Add team to buzzed teams for visual flash effect
-        if (teamIdToFlash) {
-          setBuzzedTeamIds(prev => {
-            // Mutate prev in-place
-            prev.add(teamIdToFlash);
-            return prev;  // Return same reference
-          });
-          // Clear the team from buzzed teams after 600ms (flash duration - 2 quick flashes)
-          setTimeout(() => {
-            setBuzzedTeamIds(prev => {
-              // Mutate prev in-place
-              prev.delete(teamIdToFlash);
-              return prev;  // Return same reference
-            });
-          }, 600);
-
-          // Answering team detection: ONLY during response timer phase, NOT during reading timer
-          // Use ref to get current buzzer state (not stale state from closure)
-          const currentState = buzzerStateRef.current;
-          setAnsweringTeamId(prev => {
-            // Strict check: ONLY when timerPhase is exactly 'response' AND reading timer is NOT active
-            // NEVER set answering team during reading phase
-            const isReadingActive = currentState.readingTimerRemaining > 0 || currentState.timerPhase === 'reading';
-            const isResponseActive = currentState.timerPhase === 'response' && currentState.responseTimerRemaining > 0;
-
-            if (!prev && isResponseActive && !isReadingActive) {
-              return teamIdToFlash;
-            }
-            return prev;
-          });
-        }
-
-        // Send acknowledgment back to client
-        if (p2pManagerRef.current) {
-          p2pManagerRef.current.sendTo(peerId, {
-            type: 'BUZZ_ACK',
-            buzzId: `buzz_${receivedAt}_${peerId}`
-          });
-        }
-        break;
-      }
-
-      case 'HEALTH_RESPONSE': {
-        const rtt = data.receivedAt - data.requestSentAt;
-        updateClientQuality(peerId, rtt, false);
-        break;
-      }
-
-      case 'TEAM_STATE_RESPONSE': {
-        // Client responded with their team state
-        const clientId = data.clientId;
-        const clientName = data.clientName;
-        const teamId = data.teamId;
-        const teamName = data.teamName;
-
-        // Update client's team
-        setClients(prev => {
-          // Mutate prev in-place
-          const client = prev.get(clientId);
-          if (!client) {
-            // Client might not exist yet - create new by adding to prev
-            prev.set(clientId, {
-              id: clientId,
-              peerId: peerId,
-              name: clientName,
-              joinedAt: Date.now(),
-              teamId,
-              lastSeen: Date.now(),
-              connectionQuality: getDefaultQuality()
-            });
-          } else {
-            // Update existing client
-            client.teamId = teamId;
-            client.name = clientName;
-          }
-          return prev;  // Return same reference
-        });
-
-        // If team exists, update its lastUsedAt
-        if (teamId) {
-          setTeams(prev => {
-            const existing = prev.find(t => t.id === teamId);
-            if (existing) {
-              return prev.map(t => t.id === teamId ? { ...t, lastUsedAt: Date.now() } : t);
-            } else if (teamName) {
-              // Team doesn't exist but client claims to be in one - recreate it
-              const newTeam: Team = {
-                id: teamId,
-                name: teamName,
-                createdAt: Date.now(),
-                lastUsedAt: Date.now()
-              };
-              return [...prev, newTeam];
-            }
-            return prev;
-          });
-        }
-        break;
-      }
-
-      case 'SUPER_GAME_BET': {
-        // Client placed a bet
-        const { teamId, bet } = data;
-        setSuperGameBets(prev => {
-          const existing = prev.find(b => b.teamId === teamId);
-          if (existing) {
-            // Update existing bet
-            return prev.map(b => b.teamId === teamId ? { ...b, bet } : b);
-          }
-          // Add new bet
-          return [...prev, { teamId, bet, ready: true }];
-        });
-        // Send ACK to ALL clients in the same team
-        clients.forEach((client) => {
-          if (client.teamId === teamId) {
-            p2pManagerRef.current?.sendTo(client.peerId, {
-              type: 'SUPER_GAME_BET_ACK',
-              teamId
-            });
-          }
-        });
-        break;
-      }
-
-      case 'SUPER_GAME_TEAM_ANSWER': {
-        // Client submitted an answer
-        const { teamId, answer } = data;
-        setSuperGameAnswers(prev => {
-          const existing = prev.find(a => a.teamId === teamId);
-          if (existing) {
-            // Update existing answer and mark as submitted
-            return prev.map(a => a.teamId === teamId ? { ...a, answer, submitted: true } : a);
-          }
-          // Add new answer with submitted flag
-          return [...prev, { teamId, answer, revealed: false, submitted: true }];
-        });
-        // Broadcast to all clients that this team has submitted their answer
-        broadcastMessage({
-          type: 'SUPER_GAME_ANSWER_SUBMITTED',
-          teamId
-        });
-        break;
-      }
-    }
-  }, [clients, broadcastTeams]);
-
-  // Update client quality
-  const updateClientQuality = useCallback((clientId: string, rtt: number, packetLost: boolean) => {
-    setClients(prev => {
-      // Mutate prev in-place
-      const client = prev.get(clientId);
-      if (!client) return prev;
-
-      const newQuality = updateQualityMetrics(client.connectionQuality, rtt, packetLost);
-      client.connectionQuality = newQuality;
-      return prev;  // Return same reference
+  // Helper function to broadcast buzzer state (kept for interface compatibility)
+  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string }) => {
+    // Store buzzer state locally for GameSession
+    setBuzzerState({
+      active: state.active,
+      timerPhase: state.timerPhase,
+      readingTimerRemaining: state.readingTimerRemaining,
+      responseTimerRemaining: state.responseTimerRemaining,
+      handicapActive: state.handicapActive,
+      handicapTeamId: state.handicapTeamId
     });
   }, []);
 
-  // Health checks
-  useEffect(() => {
-    if (!isSessionActive || clients.size === 0) return;
-
-    healthCheckIntervalRef.current = setInterval(() => {
-      const now = Date.now();
-      clients.forEach((client) => {
-        // Don't check isConnected - let sendTo use RELAY fallback if P2P is down
-        p2pManagerRef.current?.sendTo(client.peerId, {
-          type: 'HEALTH_CHECK',
-          sentAt: now,
-          messageId: `health_${client.id}_${now}`
-        });
-      });
-    }, CONNECTION_CONFIG.HEALTH_CHECK_INTERVAL);
-
-    return () => {
-      if (healthCheckIntervalRef.current) {
-        clearInterval(healthCheckIntervalRef.current);
-      }
-    };
-  }, [isSessionActive, clients]);
-
-  // Clean up clients that disconnected and didn't reconnect after 30 seconds
-  useEffect(() => {
-    const DISCONNECTED_CLIENT_TIMEOUT = 30 * 1000; // 30 seconds
-
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const toRemove: string[] = [];
-
-      for (const [persistentId, disconnectTimestamp] of disconnectedClientsRef.current.entries()) {
-        if (now - disconnectTimestamp > DISCONNECTED_CLIENT_TIMEOUT) {
-          toRemove.push(persistentId);
-        }
-      }
-
-      if (toRemove.length > 0) {
-        console.log('[Host] Cleaning up disconnected clients:', toRemove);
-        toRemove.forEach(persistentId => {
-          disconnectedClientsRef.current.delete(persistentId);
-        });
-
-        // Remove from clients map - mutate prev in-place
-        setClients(prev => {
-          toRemove.forEach(persistentId => {
-            prev.delete(persistentId);
-          });
-          return prev;  // Return same reference
-        });
-      }
-    }, 10000); // Check every 10 seconds
-
-    return () => clearInterval(cleanupInterval);
-  }, []);
+  // Helper function to broadcast arbitrary message (kept for interface compatibility)
+  const broadcastMessage = useCallback((message: unknown) => {
+    // Broadcast via P2P to all connected clients
+    if (p2pHost.isReady) {
+      console.log('[HostView] Broadcasting message:', message);
+      // Convert to P2P message format
+      const broadcastMsg: Omit<BroadcastMessage, 'id' | 'timestamp' | 'senderId'> = {
+        category: MessageCategory.EVENT,
+        type: 'BROADCAST',
+        payload: message
+      };
+      p2pHost.broadcast(broadcastMsg);
+    }
+  }, [p2pHost.isReady, p2pHost.broadcast]);
 
   // Auto-cleanup empty teams after 5 minutes (300000ms)
   useEffect(() => {
@@ -1323,17 +837,12 @@ export const HostView: React.FC = () => {
           return hasPlayers || isRecent;
         });
 
-        if (filtered.length !== prev.length) {
-          // Broadcast updated team list immediately
-          broadcastTeams(filtered);
-        }
-
         return filtered;
       });
     }, 60000); // Check every minute
 
     return () => clearInterval(cleanupInterval);
-  }, [clients, broadcastTeams]);
+  }, [clients]);
 
   // Reset super game state when session starts/ends
   useEffect(() => {
@@ -1343,63 +852,30 @@ export const HostView: React.FC = () => {
     }
   }, [isSessionActive]);
 
-  // Track previous team assignments to update lastUsedAt when players leave teams
-  const prevClientTeamIdsRef = useRef<Map<string, string | undefined>>(new Map());
-  useEffect(() => {
-    const currentTeamIds = new Map(Array.from(clients.entries()).map(([id, c]) => [id, c.teamId]));
-    const prevTeamIds = prevClientTeamIdsRef.current;
-
-    // Find players who left their teams
-    for (const [clientId, prevTeamId] of prevTeamIds.entries()) {
-      const currentTeamId = currentTeamIds.get(clientId);
-      if (prevTeamId && currentTeamId !== prevTeamId) {
-        // Player left team or was removed
-        setTeams(prev => {
-          return prev.map(t => t.id === prevTeamId ? { ...t, lastUsedAt: Date.now() } : t);
-        });
-      }
-    }
-
-    prevClientTeamIdsRef.current = currentTeamIds;
-  }, [clients]);
-
-  const removeClient = useCallback((clientId: string) => {
-    // Notify client they're being removed
-    kickClient(clientId);
-  }, [kickClient]);
-
   // Delete a team
   const deleteTeam = useCallback((teamId: string) => {
     setTeams(prev => {
       const updated = prev.filter(t => t.id !== teamId);
-      // Broadcast TEAM_DELETED to all clients first
-      clientsRef.current.forEach((client) => {
-        p2pManagerRef.current?.sendTo(client.peerId, { type: 'TEAM_DELETED', teamId });
-      });
-      // Broadcast updated team list
-      broadcastTeams(updated);
-      // Remove team from all clients - mutate clients in-place
+      // Remove team from all clients
       setClients(clientsPrev => {
         clientsPrev.forEach((client, clientId) => {
           if (client.teamId === teamId) {
             client.teamId = undefined;
           }
         });
-        return clientsPrev;  // Return same reference
+        return clientsPrev;
       });
       return updated;
     });
-  }, [broadcastTeams]);
+  }, []);
 
   // Rename a team
   const renameTeam = useCallback((teamId: string, newName: string) => {
     setTeams(prev => {
       const updated = prev.map(t => t.id === teamId ? { ...t, name: newName } : t);
-      // Broadcast updated team list immediately
-      broadcastTeams(updated);
       return updated;
     });
-  }, [broadcastTeams]);
+  }, []);
 
   const getClientTeamName = useCallback((clientId: string) => {
     const client = clients.get(clientId);
@@ -1410,12 +886,11 @@ export const HostView: React.FC = () => {
   // Move client to team (drag and drop)
   const moveClientToTeam = useCallback((clientId: string, targetTeamId: string | undefined) => {
     setClients(prev => {
-      // Mutate prev in-place
       const client = prev.get(clientId);
       if (client) {
         client.teamId = targetTeamId;
       }
-      return prev;  // Return same reference
+      return prev;
     });
   }, []);
 
@@ -1439,85 +914,156 @@ export const HostView: React.FC = () => {
     setDraggedClientId(null);
   }, []);
 
+  // Connection status enum
+  enum ConnectionStatus {
+    DISCONNECTED = 'disconnected',
+    INITIALIZING = 'initializing',
+    WAITING = 'waiting',
+    CONNECTING = 'connecting',
+    CONNECTED = 'connected',
+    RECONNECTING = 'reconnecting',
+    ERROR = 'error'
+  }
+
+  // Current connection status (always CONNECTED since no network)
+  const status = ConnectionStatus.CONNECTED;
+
   // --- LOBBY VIEW ---
   if (!isSessionActive) {
     return (
       <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col p-6 items-center justify-center">
-        <header className="absolute top-6 right-6">
-          <div className={`flex items-center space-x-2 px-3 py-1 rounded-full ${isOnline ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-            <Wifi className="w-3 h-3" />
-            <span className="text-xs font-semibold uppercase">{isOnline ? 'Online' : 'Offline'}</span>
-          </div>
-        </header>
-
         <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 md:gap-12 animate-in fade-in duration-500 cursor-default">
           {/* LEFT COLUMN: Setup & QR */}
-          <div className="flex flex-col space-y-6">
-            {/* IP Input */}
+          <div className="flex flex-col space-y-4">
+            {/* First row: IP input + LAN button + OK button */}
             <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
-               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">Local Network IP</label>
-               <div className="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    placeholder="e.g., 192.168.1.5"
-                    value={ipInput}
-                    onChange={(e) => setIpInput(e.target.value)}
-                    disabled={isIpLocked}
-                    className={`flex-1 bg-gray-950 border rounded-lg px-4 py-2 text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 ${isIpLocked ? 'border-gray-600 bg-gray-900 text-gray-400 cursor-not-allowed' : 'border-gray-700'}`}
-                  />
-                  {isIpLocked ? (
-                    <button onClick={handleUnlockIp} className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300 transition-colors" title="Change IP">
-                      <Settings className="w-5 h-5" />
-                    </button>
-                  ) : (
-                    <button onClick={handleLockIp} disabled={!ipInput.trim()} className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${ipInput.trim() ? 'bg-green-600 hover:bg-green-500 text-white' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`} title="Enter IP address">
-                      OK
-                    </button>
-                  )}
-               </div>
-               {isIpLocked && status === ConnectionStatus.WAITING && (
-                 <div className="mt-2 flex items-center gap-2 text-xs">
-                   <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                   <span className="text-gray-500">Server running • Waiting for connections...</span>
-                 </div>
-               )}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={ipInput}
+                  onChange={(e) => setIpInput(e.target.value)}
+                  placeholder="192.168.1.x"
+                  disabled={!isLanMode || isIpLocked}
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <button
+                  onClick={() => setIsLanMode(!isLanMode)}
+                  className={`h-11 px-4 rounded-lg border text-sm font-medium transition-colors ${
+                    isLanMode
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
+                      : 'bg-gray-800 hover:bg-gray-700 text-gray-400 border-gray-700'
+                  }`}
+                >
+                  LAN
+                </button>
+                <button
+                  onClick={() => {
+                    if (isIpLocked) {
+                      // Unlock the IP
+                      setIsIpLocked(false);
+                      storage.remove(STORAGE_KEYS.LOCKED_IP);
+                    } else if (ipInput.trim()) {
+                      // Lock the IP
+                      setIpInput(ipInput.trim());
+                      setIsIpLocked(true);
+                      storage.set(STORAGE_KEYS.LOCKED_IP, ipInput.trim());
+
+                      // Generate invitation URL with connection parameters
+                      // Format: http://IP:3000#/mobile?host=HOST_ID&signalling=IP&session=SESSION_ID
+                      const inviteUrl = `http://${ipInput.trim()}:3000#/mobile?host=${encodeURIComponent(hostId)}&signalling=${encodeURIComponent(ipInput.trim())}&session=${encodeURIComponent(sessionId)}`;
+                      setFinalQrUrl(inviteUrl);
+                      storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
+                    }
+                  }}
+                  disabled={(!isIpLocked && !ipInput.trim()) || !isLanMode}
+                  className={`h-11 px-4 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isIpLocked
+                      ? 'bg-gray-600 hover:bg-gray-700 text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                >
+                  {isIpLocked ? 'OK' : 'OK'}
+                </button>
+              </div>
+            </div>
+
+            {/* Session ID */}
+            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Session ID</label>
+                <input
+                  key={sessionId}
+                  type="text"
+                  value={sessionId}
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2 text-white text-sm text-center font-mono text-xl tracking-widest"
+                  readOnly
+                />
+                <button
+                  onClick={() => {
+                    // Generate random letters (can be uppercase or lowercase)
+                    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+                    let newSessionId = '';
+                    for (let i = 0; i < 5; i++) {
+                      newSessionId += chars.charAt(Math.floor(Math.random() * chars.length));
+                    }
+                    setSessionId(newSessionId);
+                    // Update host unique ID and storage
+                    const newHostUniqueId = generateHostUniqueId();
+                    storage.set(STORAGE_KEYS.HOST_UNIQUE_ID, newHostUniqueId);
+                    setHostUniqueId(newHostUniqueId);
+                    // Update QR URL with new session ID
+                    if (isIpLocked && isLanMode && ipInput) {
+                      const inviteUrl = `http://${ipInput}:3000#/mobile?host=${encodeURIComponent(hostId)}&signalling=${encodeURIComponent(ipInput)}&session=${encodeURIComponent(newSessionId)}`;
+                      setFinalQrUrl(inviteUrl);
+                      storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
+                    } else if (!isLanMode) {
+                      const inviteUrl = `${window.location.origin}#/mobile?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(newSessionId)}`;
+                      setFinalQrUrl(inviteUrl);
+                      storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
+                    }
+                  }}
+                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors flex items-center gap-1.5 text-sm font-medium"
+                  title="Regenerate Session ID"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* QR Code */}
             <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-8 group cursor-default">
               <div className="absolute inset-0 bg-blue-600/5 blur-[80px] rounded-full pointer-events-none group-hover:bg-blue-600/10 transition-colors duration-500"></div>
               <div
-                className="relative z-10 bg-white p-4 rounded-lg shadow-xl transition-transform duration-300 hover:scale-105 cursor-pointer"
-                onDoubleClick={() => finalQrUrl && window.open(finalQrUrl, '_blank')}
-                title="Double-click to open link"
+                key={finalQrUrl}
+                className="relative z-10 bg-white p-4 rounded-lg shadow-xl"
               >
-                {status === ConnectionStatus.ERROR ? (
-                  <div className="w-80 h-80 bg-red-50 rounded flex flex-col items-center justify-center text-center p-6 space-y-4">
-                    <AlertCircle className="w-10 h-10 text-red-500" />
-                    <p className="text-red-900 font-bold">Connection Error</p>
-                    <p className="text-red-800 text-xs">Could not connect to signalling server</p>
-                    <p className="text-red-700 text-xs mt-2">Make sure the server is running!</p>
-                  </div>
-                ) : !isIpLocked ? (
+                {!isIpLocked ? (
                   <div className="w-[350px] h-[350px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-center p-6 space-y-3">
                     <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
                       <Settings className="w-8 h-8 text-gray-400" />
                     </div>
-                    <p className="text-gray-600 font-medium">Enter your configuration</p>
-                    <p className="text-gray-400 text-sm">Type your name and IP, then click OK</p>
-                  </div>
-                ) : status === ConnectionStatus.INITIALIZING ? (
-                  <div className="w-[350px] h-[350px] bg-gray-100 rounded flex items-center justify-center">
-                    <RefreshCw className="w-10 h-10 text-gray-400 animate-spin" />
+                    <p className="text-gray-600 font-medium">Enter IP address</p>
+                    <p className="text-gray-400 text-sm">Then confirm to generate QR code</p>
                   </div>
                 ) : (
-                  <QRCodeSVG value={finalQrUrl} size={350} level="H" includeMargin={true} />
+                  <>
+                    <QRCodeSVG value={finalQrUrl} size={350} level="H" includeMargin={true} />
+                  </>
                 )}
               </div>
-              <div className="mt-6 text-center z-10">
-                 <p className="text-gray-300 font-medium">Scan to Connect</p>
-                 <p className="text-gray-500 text-sm mt-1">Ensure devices are on the same Wi-Fi</p>
-                 <p className="text-gray-600 text-xs mt-2">Double-click QR to open link</p>
+              <div className="mt-6 text-center z-10 flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (finalQrUrl) {
+                      navigator.clipboard.writeText(finalQrUrl);
+                    }
+                  }}
+                  disabled={!finalQrUrl}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                >
+                  <Copy className="w-5 h-5" />
+                  <span className="font-medium">Copy invitation link</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1542,18 +1088,13 @@ export const HostView: React.FC = () => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
-                   {clients.size === 0 && teams.length === 0 ? (
-                     <div className="h-full flex flex-col items-center justify-center text-gray-600 opacity-60">
-                        <Smartphone className="w-12 h-12 mb-2" />
-                        <p>No devices connected</p>
-                     </div>
-                   ) : sessionSettings.noTeamsMode ? (
+                   {sessionSettings.noTeamsMode ? (
                      // No Teams Mode - show all players individually
                      Array.from(clients.values()).map((client: ConnectedClient) => (
                        <SimpleClientItem
                          key={client.id}
                          client={client}
-                         isStale={isStale}
+                         isStale={() => false}
                          hasBuzzed={buzzedClients.has(client.id)}
                          onRemove={removeClient}
                          getHealthBgColor={getHealthBgColor}
@@ -1588,7 +1129,7 @@ export const HostView: React.FC = () => {
                              onEditingNameChange={(name) => setEditingTeamName(name)}
                              onEditingIdSet={(id) => setEditingTeamId(id)}
                              buzzedClients={buzzedClients}
-                             isStale={isStale}
+                             isStale={() => false}
                              draggedClientId={draggedClientId}
                              onDragStart={handleDragStart}
                              onDragEnd={handleDragEnd}
@@ -1604,16 +1145,76 @@ export const HostView: React.FC = () => {
                          onDragOver={handleDragOver}
                          onDrop={() => handleDropOnTeam(undefined)}
                          buzzedClients={buzzedClients}
-                         isStale={isStale}
+                         isStale={() => false}
                          draggedClientId={draggedClientId}
                          onDragStart={handleDragStart}
                          onDragEnd={handleDragEnd}
                          onRemoveClient={removeClient}
                          getHealthBgColor={getHealthBgColor}
                        />
+
+                       {/* Create Team button - always visible */}
+                       <div className="bg-gray-900/50 backdrop-blur-sm rounded-lg p-4">
+                           {!showCreateTeamInput ? (
+                             <button
+                               onClick={() => setShowCreateTeamInput(true)}
+                               className="w-full p-2 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 text-sm hover:bg-gray-800/50 hover:text-gray-300 transition-colors flex items-center justify-center gap-2"
+                             >
+                               <Plus className="w-4 h-4 text-gray-400" />
+                               <span>Create Team</span>
+                             </button>
+                           ) : (
+                             <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg border-2 border-blue-500/30">
+                               <Plus className="w-4 h-4 text-blue-400" />
+                               <input
+                                 type="text"
+                                 value={newTeamName}
+                                 onChange={(e) => setNewTeamName(e.target.value)}
+                                 onKeyDown={(e) => {
+                                   if (e.key === 'Enter') {
+                                     if (newTeamName.trim()) {
+                                       handleCreateCommand(newTeamName.trim());
+                                       setNewTeamName('');
+                                       setShowCreateTeamInput(false);
+                                     }
+                                   } else if (e.key === 'Escape') {
+                                     setShowCreateTeamInput(false);
+                                     setNewTeamName('');
+                                   }
+                                 }}
+                                 placeholder="Team name..."
+                                 className="flex-1 bg-transparent text-white text-sm font-medium focus:outline-none"
+                                 autoFocus
+                               />
+                               {newTeamName.trim() && (
+                                 <button
+                                   onClick={() => {
+                                     handleCreateCommand(newTeamName.trim());
+                                     setNewTeamName('');
+                                     setShowCreateTeamInput(false);
+                                   }}
+                                   className="p-1.5 hover:bg-gray-700 rounded text-green-400"
+                                   title="Create team"
+                                 >
+                                   <Check className="w-4 h-4" />
+                                 </button>
+                               )}
+                               <button
+                                 onClick={() => {
+                                   setShowCreateTeamInput(false);
+                                   setNewTeamName('');
+                                 }}
+                                 className="p-1.5 hover:bg-gray-700 rounded text-gray-400"
+                                 title="Cancel"
+                               >
+                                 ✕
+                               </button>
+                             </div>
+                           )}
+                         </div>
                      </>
                    )}
-                </div>
+              </div>
              </div>
 
              {/* Selected game info */}
@@ -1639,7 +1240,7 @@ export const HostView: React.FC = () => {
                <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowSettingsModal(true)} title="Session Settings">
                   <Settings className="w-6 h-6" />
                </Button>
-               <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowGameSelector(true)} disabled={status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.ERROR || !isOnline || !isIpLocked}>
+               <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowGameSelector(true)} disabled={!isOnline || !isIpLocked}>
                   Select Game
                </Button>
                <Button size="xl" className="flex-1 shadow-blue-900/20" onClick={() => {
@@ -1648,7 +1249,7 @@ export const HostView: React.FC = () => {
                  setSessionVersion(newVersion);
                  storage.set(STORAGE_KEYS.SESSION_VERSION, newVersion);
                  setIsSessionActive(true);
-               }} disabled={status === ConnectionStatus.INITIALIZING || status === ConnectionStatus.ERROR || !isOnline || !isIpLocked}>
+               }} disabled={!isOnline || !isIpLocked}>
                   Start Session <ArrowRight className="ml-3 w-6 h-6" />
                </Button>
              </div>
@@ -1662,13 +1263,6 @@ export const HostView: React.FC = () => {
           settings={sessionSettings}
           onSave={updateSessionSettings}
           onClearCache={handleClearCache}
-          onRegenerateHostId={() => {
-            const newHostId = generateHostUniqueId();
-            setHostUniqueId(newHostId);
-            storage.set(STORAGE_KEYS.HOST_UNIQUE_ID, newHostId);
-            console.log('[Host] Regenerated hostUniqueId:', newHostId);
-          }}
-          hostUniqueId={hostUniqueId}
         />
 
         {/* Game Selector Modal */}
@@ -1711,8 +1305,3 @@ export const HostView: React.FC = () => {
     />
   );
 };
-
-// Helper functions
-function isStale(lastSeen: number): boolean {
-  return Date.now() - lastSeen > CONNECTION_CONFIG.CLIENT_STALE_THRESHOLD;
-}

@@ -10,12 +10,12 @@
 
 import React, { memo, useState, useCallback, lazy, Suspense } from 'react';
 import { Wifi, Gamepad2 } from 'lucide-react';
-import { Team, type PeerMessage } from '../../types';
+import { Team } from '../../types';
 import type { GamePack } from './GameSelectorModal';
 import type { Round, Theme } from './PackEditor';
+import type { BuzzerState } from './game';
 // Lazy load GamePlay to reduce initial bundle size
 const GamePlay = lazy(() => import('./GamePlay').then(m => ({ default: m.GamePlay })));
-import type { BuzzerState } from './GamePlay';
 
 // TeamPlayer interface - used internally for client data structure
 interface TeamPlayer {
@@ -42,7 +42,7 @@ interface GameSessionProps {
   buzzerState?: BuzzerState;  // Add buzzer state to track timer phase
   answeringTeamId?: string | null;  // Team that gets to answer the question
   onAnsweringTeamChange?: (teamId: string | null) => void;  // Callback to reset answering team
-  onBroadcastMessage?: (message: PeerMessage) => void;  // Broadcast message to all clients
+  onBroadcastMessage?: (message: unknown) => void;  // Broadcast message to all clients (no-op without network)
   superGameBets?: Array<{ teamId: string; bet: number; ready: boolean }>;  // Bets from mobile clients
   superGameAnswers?: Array<{ teamId: string; answer: string; revealed: boolean }>;  // Answers from mobile clients
   onSuperGamePhaseChange?: (phase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner') => void;  // Track super game phase

@@ -4,10 +4,13 @@
  */
 
 import React, { memo, useState, useEffect } from 'react';
-import { Settings, X, Shield, Clock, Users, Trash2, RefreshCw } from 'lucide-react';
+import { Settings, X, Shield, Clock, Users, Trash2, Info } from 'lucide-react';
 import { Button } from '../Button';
 import { SESSION_CONFIG } from '../../config';
 import type { SessionSettings } from '../../hooks/useSessionSettings';
+
+// App version
+const APP_VERSION = '0.1.1';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -15,11 +18,9 @@ interface SettingsModalProps {
   settings: SessionSettings;
   onSave: (settings: SessionSettings) => void;
   onClearCache?: () => void;
-  onRegenerateHostId?: () => void;
-  hostUniqueId?: string;
 }
 
-export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearCache, onRegenerateHostId, hostUniqueId }: SettingsModalProps) => {
+export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearCache }: SettingsModalProps) => {
   // Local draft settings - only saved when user clicks Save
   const [draftSettings, setDraftSettings] = useState<SessionSettings>(settings);
 
@@ -127,35 +128,6 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
           >
             <div className="h-4"></div>
           </SettingRow>
-
-          {/* Host ID */}
-          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-300">Host ID</span>
-              <span className="text-xs text-gray-500">For client data binding</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm text-green-400 font-mono tracking-wider">
-                {hostUniqueId || 'Not set'}
-              </code>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  if (onRegenerateHostId) {
-                    onRegenerateHostId();
-                  }
-                }}
-                className="shrink-0"
-                title="Generate new Host ID - all players will need to reconnect"
-              >
-                <RefreshCw className="w-4 h-4" />
-              </Button>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              This ID binds players' data to this host. Regenerating it will clear all saved player data.
-            </p>
-          </div>
         </div>
 
         {/* Danger Zone */}
@@ -165,9 +137,6 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
             Danger Zone
           </h3>
           <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-4">
-            <p className="text-sm text-gray-400 mb-3">
-              Clear all cached data for you and all connected players. Everyone will need to re-enter their name and choose a team.
-            </p>
             <Button
               variant="danger"
               className="w-full"
@@ -183,13 +152,19 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
           </div>
         </div>
 
-        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-800">
-          <Button variant="secondary" onClick={onClose}>
-            Close
-          </Button>
-          <Button onClick={handleSave}>
-            Save
-          </Button>
+        <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-800 gap-3">
+          <div className="flex items-center gap-2 text-gray-500 text-sm">
+            <Info className="w-4 h-4" />
+            <span>v{APP_VERSION}</span>
+          </div>
+          <div className="flex gap-3">
+            <Button variant="secondary" onClick={onClose}>
+              Close
+            </Button>
+            <Button onClick={handleSave}>
+              Save
+            </Button>
+          </div>
         </div>
       </div>
     </div>

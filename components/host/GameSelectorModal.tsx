@@ -12,6 +12,8 @@
 import React, { memo, useState, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
 import { X, Upload, Plus, FolderOpen, FileText, Gamepad2, Check, ChevronDown, Layers } from 'lucide-react';
 import { Button } from '../Button';
+import { generateUUID } from '../../utils';
+
 // Lazy load PackEditor to reduce initial bundle size
 const PackEditor = lazy(() => import('./PackEditor').then(m => ({ default: m.PackEditor })));
 // Import types only (no code execution)
@@ -349,7 +351,7 @@ export const GameSelectorModal = memo(({
     // Initialize rounds from settings
     for (const [roundNum, settings] of roundSettings) {
       roundsMap.set(roundNum, {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         number: roundNum,
         name: settings.name || `Round ${roundNum}`,
         type: settings.type,
@@ -369,7 +371,7 @@ export const GameSelectorModal = memo(({
         // Get round settings if they exist, otherwise use defaults
         const roundSettingsData = roundSettings.get(q.roundNum);
         round = {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           number: q.roundNum,
           name: roundSettingsData?.name || `Round ${q.roundNum}`,
           type: roundSettingsData?.type,
@@ -389,7 +391,7 @@ export const GameSelectorModal = memo(({
         const themeSettingsData = themeSettings.get(themeKey)?.data || {};
 
         theme = {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           name: q.themeName,
           color: themeSettingsData.color,
           textColor: themeSettingsData.textColor,
@@ -399,7 +401,7 @@ export const GameSelectorModal = memo(({
       }
 
       const question: PackQuestion = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         text: q.text,
         points: q.points,
         answerText: q.answerText,
@@ -425,7 +427,7 @@ export const GameSelectorModal = memo(({
     }
 
     const finalPack: GamePack = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: packName,
       cover: packCover,
       gameType: 'custom',
@@ -452,7 +454,7 @@ export const GameSelectorModal = memo(({
         if (file.name.endsWith('.json') || content.trim().startsWith('{')) {
           // Old JSON format
           const parsed = JSON.parse(content) as GamePack | PackGamePack;
-          const packId = parsed.id || crypto.randomUUID();
+          const packId = parsed.id || generateUUID();
 
           // Normalize rounds to ensure they have all required fields with defaults
           const normalizedRounds = ('rounds' in parsed ? parsed.rounds : []).map((round: any) => ({

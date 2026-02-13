@@ -1,14 +1,24 @@
 /**
  * TeamManager Component
- * Displays teams and clients with drag-and-drop support
+ * Displays teams, commands, and clients with drag-and-drop support
  */
-
 import React, { memo, useCallback } from 'react';
 import { Users, Settings, Trash2, GripVertical } from 'lucide-react';
 import { Team, ConnectionQuality } from '../../types';
-import { getHealthBgColor } from '../../hooks/useConnectionQuality';
 import { isStale } from '../../hooks';
-import { CONNECTION_CONFIG } from '../../config';
+
+// Command type (same structure as Team for quick rooms)
+export interface Command {
+  id: string;
+  name: string;
+}
+
+// Local health color function (since useConnectionQuality hook was removed)
+const getHealthBgColor = (score: number): string => {
+  if (score >= 80) return 'bg-green-500/20 text-green-400 border-green-500/20';
+  if (score >= 50) return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/20';
+  return 'bg-red-500/20 text-red-400 border-red-500/20';
+};
 
 interface Client {
   id: string;
@@ -20,6 +30,7 @@ interface Client {
 
 interface TeamManagerProps {
   teams: Team[];
+  commands: Command[];
   clients: Map<string, Client>;
   buzzedClients: Map<string, number>;
   draggedClientId: string | null;
@@ -34,10 +45,13 @@ interface TeamManagerProps {
   onRemoveClient: (clientId: string) => void;
   onSetEditingTeamId: (teamId: string | null) => void;
   onSetEditingTeamName: (name: string) => void;
+  onCreateCommand: (name: string) => void;
+  onDeleteCommand: (commandId: string) => void;
 }
 
 export const TeamManager = memo(({
   teams,
+  commands,
   clients,
   buzzedClients,
   draggedClientId,
@@ -52,6 +66,8 @@ export const TeamManager = memo(({
   onRemoveClient,
   onSetEditingTeamId,
   onSetEditingTeamName,
+  onCreateCommand,
+  onDeleteCommand,
 }: TeamManagerProps) => {
   const handleRenameSubmit = useCallback((teamId: string) => {
     if (editingTeamName.trim()) {
@@ -174,6 +190,9 @@ export const TeamManager = memo(({
     </div>
   );
 });
+
+// Export main component for use in HostView
+export const TeamList = TeamManager;
 
 TeamManager.displayName = 'TeamManager';
 

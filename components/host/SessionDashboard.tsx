@@ -1,14 +1,14 @@
 /**
  * SessionDashboard Component
- * Displays the active game session with live feed and stats
+ * Displays active game session with live feed and stats
  */
 
-import React, { memo, useMemo } from 'react';
-import { Smartphone, Monitor, ArrowRight, Wifi, Clock, Users, Trash2, Activity, Shield, StopCircle, Flag } from 'lucide-react';
+import React, { memo, useMemo, useCallback } from 'react';
+import { Smartphone, Monitor, ArrowRight, Wifi, Clock, Users, Trash2, Activity, StopCircle, Flag } from 'lucide-react';
 import { format, isValid } from 'date-fns';
 import { Button } from '../Button';
-import { TimeLog, ConnectionStatus } from '../../types';
-import { getHealthColor, getHealthBgColor } from '../../hooks';
+import { ConnectionStatus } from '../../types';
+import { getHealthBgColor } from '../../utils';
 
 interface ClientStats {
   active: number;
@@ -18,7 +18,7 @@ interface ClientStats {
 
 interface SessionDashboardProps {
   clients: Map<string, unknown>;
-  logs: TimeLog[];
+  logs: unknown[];
   clientStats: ClientStats;
   avgLatency: number;
   status: ConnectionStatus;
@@ -102,12 +102,12 @@ export const SessionDashboard = memo(({
             valueColor={latencyColor}
           />
           <StatCard
-            icon={<Shield className="w-6 h-6" />}
+            icon={<Activity className="w-6 h-6" />}
             bgColor={getHealthBgColor(clientStats.avgQuality).split(' ')[0] as string}
-            iconColor={getHealthColor(clientStats.avgQuality)}
+            iconColor={clientStats.avgQuality >= 80 ? 'text-green-400' : clientStats.avgQuality >= 50 ? 'text-yellow-400' : 'text-red-400'}
             label="Health Score"
             value={`${clientStats.avgQuality}%`}
-            valueColor={getHealthColor(clientStats.avgQuality)}
+            valueColor={clientStats.avgQuality >= 80 ? 'text-green-400' : clientStats.avgQuality >= 50 ? 'text-yellow-400' : 'text-red-400'}
           />
         </div>
 
@@ -161,7 +161,7 @@ StatCard.displayName = 'StatCard';
 
 // Live Feed sub-component
 interface LiveFeedProps {
-  logs: TimeLog[];
+  logs: unknown[];
 }
 
 const LiveFeed = memo(({ logs }: LiveFeedProps) => {
@@ -171,21 +171,21 @@ const LiveFeed = memo(({ logs }: LiveFeedProps) => {
         <div className="w-16 h-16 border-2 border-dashed border-gray-700 rounded-full flex items-center justify-center">
           <Wifi className="w-8 h-8" />
         </div>
-        <p className="text-sm">Waiting for incoming replies...</p>
+        <p className="text-sm">No activity yet</p>
       </div>
     );
   }
 
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-3">
-      {logs.map((log, index) => {
+      {(logs as Array<{ userName: string; sentAt: number; receivedAt: number; latency: number; teamName?: string }>).map((log, index) => {
         const isLatest = index === 0;
         const logLatencyColor = log.latency < 50 ? 'text-green-400' : log.latency < 150 ? 'text-yellow-400' : 'text-red-400';
         const logLatencyBg = log.latency < 50 ? 'bg-green-500/10 border-green-500/40' : log.latency < 150 ? 'bg-yellow-500/10 border-yellow-500/40' : 'bg-red-500/10 border-red-500/40';
 
         return (
           <LogEntry
-            key={log.id}
+            key={index}
             log={log}
             isLatest={isLatest}
             latencyColor={logLatencyColor}
@@ -201,14 +201,13 @@ LiveFeed.displayName = 'LiveFeed';
 
 // Log Entry sub-component
 interface LogEntryProps {
-  log: TimeLog;
+  log: { userName: string; sentAt: number; receivedAt: number; latency: number; teamName?: string };
   isLatest: boolean;
   latencyColor: string;
   latencyBg: string;
 }
 
 const LogEntry = memo(({ log, isLatest, latencyColor, latencyBg }: LogEntryProps) => {
-  // Using a simple user icon instead of User which doesn't exist in lucide-react
   return (
     <div className={`flex justify-between items-center p-4 rounded-xl border transition-all duration-300 ${
       isLatest ? latencyBg + ' shadow-[0_0_15px_-5px_rgba(59,130,246,0.3)] scale-[1.01]' : 'bg-gray-800/20 border-gray-800'

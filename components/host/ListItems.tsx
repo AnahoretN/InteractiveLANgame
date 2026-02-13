@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 import { GripVertical, Settings, Trash2, Signal, Users } from 'lucide-react';
 import { Team, ConnectionQuality } from '../../types';
-import { getHealthBgColor } from '../../hooks/useConnectionQuality';
+import { getHealthBgColor } from '../../utils';
 
 // ConnectedClient interface - defined here since it's HostView-specific
 export interface ConnectedClient {
