@@ -30,10 +30,10 @@ import {
   type SuperGameAnswer,
   type BuzzerState,
   GameBoardExtended,
-  QuestionModal as ModalQuestionModal,
   ShowWinnerScreen as ModalShowWinnerScreen,
   type TeamScore as ModalTeamScore
 } from './game';
+import { QuestionModal as ModalQuestionModal } from './game/modals';
 import { SuperGameQuestionModal, SuperGameAnswersModal } from './game/SuperGameModals';
 
 interface TeamScore {
@@ -102,6 +102,7 @@ export const GamePlay = memo(({
     question: Question;
     theme: Theme;
     points: number;
+    roundName?: string;
   } | null>(null);
   const [showAnswer, setShowAnswer] = useState(false);
   const [, setBuzzerActive] = useState(false);
@@ -799,11 +800,11 @@ export const GamePlay = memo(({
     setHighlightedQuestion(key);
     setTimeout(() => {
       setHighlightedQuestion(null);
-      setActiveQuestion({ question, theme, points });
+      setActiveQuestion({ question, theme, points, roundName: currentRound?.name });
       setShowAnswer(false);
       setBuzzerActive(false);
     }, 1000);
-  }, []);
+  }, [currentRound?.name]);
 
   // Check if question is answered
   const isQuestionAnswered = useCallback((questionId: string, themeId: string) => {
@@ -1133,6 +1134,7 @@ export const GamePlay = memo(({
           handicapEnabled={currentRound?.handicapEnabled ?? false}
           handicapDelay={currentRound?.handicapDelay ?? 1}
           answeringTeamId={answeringTeamId}
+          roundName={activeQuestion.roundName}
         />
       )}
       </div>

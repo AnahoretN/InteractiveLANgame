@@ -35,6 +35,7 @@ interface QuestionModalProps {
   handicapEnabled: boolean;
   handicapDelay: number;
   answeringTeamId?: string | null;  // Team that gets to answer question
+  roundName?: string;
 }
 
 export const QuestionModal = memo(({
@@ -52,6 +53,7 @@ export const QuestionModal = memo(({
   handicapEnabled,
   handicapDelay,
   answeringTeamId,
+  roundName,
 }: QuestionModalProps) => {
   const mediaUrl = question.media?.url;
   const mediaType = question.media?.type;
@@ -200,10 +202,16 @@ export const QuestionModal = memo(({
       >
         {/* Question Section (2/3) */}
         <div className="flex-1 flex flex-col border-b border-gray-700 min-h-0">
-          {/* Header - Theme name, Points and Timer */}
+          {/* Header - Round name, Theme name, Points and Timer */}
           <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-6">
-              <div className="text-xl font-bold text-white">{theme.name}</div>
+            <div className="flex items-center gap-3">
+              {roundName && (
+                <>
+                  <div className="text-lg font-bold text-white">{roundName}</div>
+                  <div className="text-white/50">—</div>
+                </>
+              )}
+              <div className="text-lg font-bold text-white">{theme.name}</div>
               {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTime > 0) || (timerPhase === 'response' && responseWindow > 0)) && (
                 <div className="text-xl font-bold text-white">
                   {timerPhase === 'reading' && (

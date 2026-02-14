@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { P2PSMessage, BuzzEventMessage } from '../types';
+import { P2PSMessage, BuzzEventMessage, Team } from '../types';
 
 export interface SuperGameBet {
   teamId: string;
@@ -25,11 +25,31 @@ export interface Command {
   name: string;
 }
 
+export interface ConnectedClient {
+  id: string;
+  peerId: string;
+  name: string;
+  joinedAt: number;
+  lastSeen: number;
+  teamId?: string;
+}
+
+export interface P2PHost {
+  isReady: boolean;
+  broadcast: (data: {
+    category: string;
+    type: string;
+    payload: unknown;
+  }) => void;
+  connectedClients: string[];
+  sendToClient: (clientId: string, message: unknown) => void;
+}
+
 interface UseP2PMessageHandlersOptions {
-  teams: any[];
-  setTeams: React.Dispatch<React.SetStateAction<any[]>>;
-  clients: Map<string, any>;
-  setClients: React.Dispatch<React.SetStateAction<Map<string, any>>>;
+  teams: Team[];
+  setTeams: React.Dispatch<React.SetStateAction<Team[]>>;
+  clients: Map<string, ConnectedClient>;
+  setClients: React.Dispatch<React.SetStateAction<Map<string, ConnectedClient>>>;
   superGameBets: SuperGameBet[];
   setSuperGameBets: React.Dispatch<React.SetStateAction<SuperGameBet[]>>;
   superGameAnswers: SuperGameAnswer[];
@@ -42,7 +62,7 @@ interface UseP2PMessageHandlersOptions {
   setPendingConfirmations: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   pendingCommandsRequest: string | null;
   setPendingCommandsRequest: React.Dispatch<React.SetStateAction<string | null>>;
-  p2pHost?: any;
+  p2pHost?: P2PHost;
 }
 
 export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => {
@@ -71,9 +91,9 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
 
   const deleteTeam = useCallback((teamId: string) => {
     setTeams((prev) => {
-      const updated = prev.filter((t: any) => t.id !== teamId);
+      const updated = prev.filter((t: Team) => t.id !== teamId);
       // Remove team from all clients
-      setClients((clientsPrev: Map<string, any>) => {
+      setClients((clientsPrev: Map<string, ConnectedClient>) => {
         const updated = new Map(clientsPrev);
         updated.forEach((client, clientId) => {
           if (client?.teamId === teamId) {
@@ -87,7 +107,7 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
   }, [setClients]);
 
   const renameTeam = useCallback((teamId: string, newName: string) => {
-    setTeams((prev) => prev.map((t: any) => t.id === teamId ? { ...t, name: newName } : t));
+    setTeams((prev) => prev.map((t: Team) => t.id === teamId ? { ...t, name: newName } : t));
   }, []);
 
   // ============================================================
@@ -125,13 +145,13 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
       }
       case 'JOIN_TEAM': {
         const { clientName, teamId } = message.payload;
-        updateClients((prev: Map<string, any>) => {
+        updateClients((prev: Map<string, ConnectedClient>) => {
           const existingClient = prev.get(peerId);
           if (existingClient) {
             existingClient.teamId = teamId;
             existingClient.name = clientName;
           } else {
-            const newClient = {
+            const newClient: ConnectedClient = {
               id: peerId,
               peerId: peerId,
               name: clientName,
@@ -148,15 +168,15 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
       }
       case 'TEAM_UPDATE': {
         const { teamId, teamName } = message.payload;
-        const existingTeam = teams.find((t: any) => t.name === teamName);
+        const existingTeam = teams.find((t: Team) => t.name === teamName);
         if (!existingTeam) {
-          const newTeam = {
+          const newTeam: Team = {
             id: teamId,
             name: teamName,
             createdAt: Date.now(),
             lastUsedAt: Date.now()
           };
-          setTeams((prev: any[]) => [...prev, newTeam]);
+          setTeams((prev: Team[]) => [...prev, newTeam]);
         }
         break;
       }
@@ -197,7 +217,7 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
   }, [teams, superGameBets, superGameAnswers]);
 
   // Wrapper to update clients - MUTATES existing Map in-place
-  const updateClients = useCallback((updater: (prev: Map<string, any>) => Map<string, any>) => {
+  const updateClients = useCallback((updater: (prev: Map<string, ConnectedClient>) => Map<string, ConnectedClient>) => {
     setClients(prev => {
       const updated = updater(prev);
       return updated;
@@ -214,7 +234,7 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
         category: 'SYNC',
         type: 'TEAMS_SYNC',
         payload: {
-          teams: teams.map((t: any) => ({ id: t.id, name: t.name }))
+          teams: teams.map((t: Team) => ({ id: t.id, name: t.name }))
         }
       };
       p2pHost.broadcast(teamsSync);
@@ -242,7 +262,7 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
   useEffect(() => {
     if (p2pHost?.isReady && pendingConfirmations.size > 0) {
       pendingConfirmations.forEach((_teamId: string, clientId: string) => {
-        const conn = p2pHost?.connectedClients.find((id: string) => id === clientId);
+        const conn = p2pHost?.connectedClients.includes(clientId);
         if (conn && p2pHost.sendToClient) {
           p2pHost.sendToClient(clientId, {
             category: 'STATE',

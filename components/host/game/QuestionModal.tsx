@@ -12,6 +12,7 @@ interface QuestionModalProps {
   question: Question;
   showAnswer: boolean;
   themeName?: string;
+  roundName?: string;
   onClose: () => void;
   onRevealAnswer: () => void;
   onCorrect: () => void;
@@ -28,6 +29,7 @@ export const QuestionModal = memo(({
   question,
   showAnswer,
   themeName,
+  roundName,
   onClose,
   onRevealAnswer,
   onCorrect,
@@ -40,7 +42,7 @@ export const QuestionModal = memo(({
   totalQuestions = 1
 }: QuestionModalProps) => {
   const questionFontSize = useMemo(
-    () => calculateQuestionFontSize(question.text, 7),
+    () => calculateQuestionFontSize(question.text, 7 / 1.5),
     [question.text]
   );
 
@@ -85,17 +87,13 @@ export const QuestionModal = memo(({
         {/* Header */}
         <div className="flex justify-between items-center p-6 border-b border-gray-700">
           <div className="flex items-center gap-4">
-            {themeName && (
-              <span className="text-blue-400 font-semibold">{themeName}</span>
+            {roundName && (
+              <span className="text-white font-semibold">{roundName}</span>
             )}
-            <span className="text-gray-500">Вопрос {questionIndex + 1} из {totalQuestions}</span>
+            {themeName && (
+              <span className="text-white font-semibold">{themeName}</span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors"
-          >
-            <X className="w-6 h-6" />
-          </button>
         </div>
 
         {/* Content */}
@@ -185,47 +183,6 @@ export const QuestionModal = memo(({
                 ))}
               </div>
             )}
-
-            {/* Control buttons */}
-            <div className="flex gap-3">
-              {!showAnswer ? (
-                <>
-                  <button
-                    onClick={onPrev}
-                    className="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-semibold transition-colors"
-                  >
-                    ← Предыдущий
-                  </button>
-                  <button
-                    onClick={onRevealAnswer}
-                    className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold transition-colors"
-                  >
-                    Space: Показать ответ
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={onWrong}
-                    className="px-6 py-3 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold transition-colors"
-                  >
-                    W: Неверно
-                  </button>
-                  <button
-                    onClick={onCorrect}
-                    className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg font-semibold transition-colors"
-                  >
-                    C: Верно
-                  </button>
-                  <button
-                    onClick={onNext}
-                    className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold transition-colors"
-                  >
-                    Space: Следующий
-                  </button>
-                </>
-              )}
-            </div>
           </div>
         </div>
       </div>

@@ -120,8 +120,14 @@ export const HostView: React.FC = () => {
   // Track which clients have buzzed (clientId -> timestamp when they buzzed)
   const [buzzedClients, setBuzzedClients] = useState<Map<string, number>>(new Map());
 
+  // Track which clients are currently buzzing (for lobby list visual flash effect)
+  const [buzzingClientIds, setBuzingClientIds] = useState<Set<string>>(new Set());
+
+  // Link copy animation state
+  const [linkCopied, setLinkCopied] = useState<boolean>(false);
+
   // Track which teams have buzzed (for visual flash effect) - only tracks recent buzzes
-  const [buzzedTeamIds] = useState<Set<string>>(new Set());
+  const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
 
   // Track buzzer state from GamePlay for GameSession
   const [buzzerState, setBuzzerState] = useState<{
@@ -206,8 +212,31 @@ export const HostView: React.FC = () => {
       switch (message.type) {
         case 'BUZZ': {
           const buzzMsg = message as BuzzEventMessage;
-          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName);
-          setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(peerId, buzzMsg.payload.buzzTime));
+          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName, 'clientId:', buzzMsg.payload.clientId, 'teamId:', buzzMsg.payload.teamId);
+          // Use clientId from payload instead of peerId to match the client's actual ID
+          setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(buzzMsg.payload.clientId, buzzMsg.payload.buzzTime));
+
+          // Add peerId to buzzingClientIds for lobby list visual flash effect (clears after 500ms)
+          setBuzingClientIds(prev => new Set(prev).add(peerId));
+          setTimeout(() => {
+            setBuzingClientIds(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(peerId);
+              return newSet;
+            });
+          }, 500);
+
+          // Add teamId to buzzedTeamIds for team panel visual flash effect (clears after 500ms)
+          if (buzzMsg.payload.teamId) {
+            setBuzzedTeamIds(prev => new Set(prev).add(buzzMsg.payload.teamId!));
+            setTimeout(() => {
+              setBuzzedTeamIds(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(buzzMsg.payload.teamId!);
+                return newSet;
+              });
+            }, 500);
+          }
           break;
         }
         case 'JOIN_TEAM': {
@@ -1056,13 +1085,20 @@ export const HostView: React.FC = () => {
                   onClick={() => {
                     if (finalQrUrl) {
                       navigator.clipboard.writeText(finalQrUrl);
+                      setLinkCopied(true);
+                      setTimeout(() => setLinkCopied(false), 2000);
                     }
                   }}
                   disabled={!finalQrUrl}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  className={`relative flex items-center justify-center px-4 py-3 rounded-lg transition-all duration-200 pl-10 ${
+                    linkCopied
+                      ? 'bg-white text-blue-600'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
+                  }`}
+                  style={{ minWidth: '210px' }}
                 >
-                  <Copy className="w-5 h-5" />
-                  <span className="font-medium">Copy invitation link</span>
+                  <Copy className="absolute left-3 w-5 h-5" />
+                  <span className="font-medium">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
                 </button>
               </div>
             </div>
@@ -1096,6 +1132,7 @@ export const HostView: React.FC = () => {
                          client={client}
                          isStale={() => false}
                          hasBuzzed={buzzedClients.has(client.id)}
+                         isBuzzing={buzzingClientIds.has(client.peerId)}
                          onRemove={removeClient}
                          getHealthBgColor={getHealthBgColor}
                        />
@@ -1129,6 +1166,7 @@ export const HostView: React.FC = () => {
                              onEditingNameChange={(name) => setEditingTeamName(name)}
                              onEditingIdSet={(id) => setEditingTeamId(id)}
                              buzzedClients={buzzedClients}
+                             buzzingClientIds={buzzingClientIds}
                              isStale={() => false}
                              draggedClientId={draggedClientId}
                              onDragStart={handleDragStart}

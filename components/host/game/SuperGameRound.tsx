@@ -91,15 +91,6 @@ export const SuperGameRound = memo(({
               </div>
             )}
 
-            {/* Action button */}
-            <div className="mt-8 text-center">
-              <button
-                onClick={onAdvance}
-                className="px-8 py-4 bg-yellow-500 hover:bg-yellow-400 text-gray-900 rounded-xl font-bold text-xl transition-colors"
-              >
-                Space: Продолжить
-              </button>
-            </div>
           </div>
         ) : (
           /* Theme selection */
@@ -135,16 +126,6 @@ export const SuperGameRound = memo(({
                 </div>
               ))}
             </div>
-            {allBetsPlaced && (
-              <div className="mt-4 text-center">
-                <button
-                  onClick={onAdvance}
-                  className="px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-gray-900 rounded-lg font-semibold transition-colors"
-                >
-                  Space: Показать вопрос
-                </button>
-              </div>
-            )}
           </div>
         )}
       </div>

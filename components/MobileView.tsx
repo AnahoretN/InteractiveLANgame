@@ -4,7 +4,7 @@ import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp } f
 import { Button } from './Button';
 import { useBuzzerDebounce } from '../hooks/useBuzzerDebounce';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
-import { storage, STORAGE_KEYS, getHostBoundKey } from '../hooks/useLocalStorage';
+import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
 
 export const MobileView: React.FC = () => {
   // Setup step - now just name input + team selection on one screen
@@ -185,6 +185,16 @@ export const MobileView: React.FC = () => {
             name: t.name
           }));
 
+          // Update currentTeamId if we have a temp ID (teamName) but now have the real ID from host
+          if (currentTeam && currentTeamId) {
+            const matchedTeam = newTeamsCommands.find(c => c.name === currentTeam);
+            if (matchedTeam && matchedTeam.id !== currentTeamId) {
+              console.log('[MobileView] Updating currentTeamId from temp to real ID:', currentTeamId, '->', matchedTeam.id);
+              setCurrentTeamId(matchedTeam.id);
+              storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
+            }
+          }
+
           // Check if current team still exists
           if (currentTeamId && currentTeam) {
             const currentTeamExists = newTeamsCommands.some(c => c.id === currentTeamId || c.name === currentTeam);
@@ -209,6 +219,16 @@ export const MobileView: React.FC = () => {
             id: c.id,
             name: c.name
           }));
+
+          // Update currentTeamId if we have a temp ID (teamName) but now have the real ID from host
+          if (currentTeam && currentTeamId) {
+            const matchedTeam = newCommands.find(c => c.name === currentTeam);
+            if (matchedTeam && matchedTeam.id !== currentTeamId) {
+              console.log('[MobileView] Updating currentTeamId from temp to real ID:', currentTeamId, '->', matchedTeam.id);
+              setCurrentTeamId(matchedTeam.id);
+              storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
+            }
+          }
 
           // Check if current team still exists in the updated list
           if (currentTeamId && currentTeam) {
@@ -637,7 +657,7 @@ export const MobileView: React.FC = () => {
           </div>
 
           {/* Main Content */}
-          <div className="flex-1 flex items-center justify-center p-6 w-full">
+          <div className="flex-1 flex items-start justify-center pt-[20vh] p-6 w-full">
             {isSetupComplete ? (
               <div className="flex items-center justify-center w-full animate-in zoom-in duration-300">
                 <button

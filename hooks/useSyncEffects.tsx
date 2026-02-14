@@ -7,13 +7,32 @@
 import { useEffect } from 'react';
 import { storage, STORAGE_KEYS } from './useLocalStorage';
 
+export interface Team {
+  id: string;
+  name: string;
+  createdAt?: number;
+  lastUsedAt?: number;
+  score?: number;
+}
+
+export interface Command {
+  id: string;
+  name: string;
+}
+
+interface P2PHost {
+  isReady: boolean;
+  broadcast: (data: {
+    category: string;
+    type: string;
+    payload: unknown;
+  }) => void;
+}
+
 interface UseSyncEffectsOptions {
-  teams: any[];
-  commands: any[];
-  p2pHost?: {
-    isReady: boolean;
-    broadcast: (data: any) => void;
-  };
+  teams: Team[];
+  commands: Command[];
+  p2pHost?: P2PHost;
 }
 
 export const useSyncEffects = ({
@@ -30,7 +49,7 @@ export const useSyncEffects = ({
         category: 'SYNC',
         type: 'COMMANDS_LIST',
         payload: {
-          commands: teams.map((t: any) => ({ id: t.id, name: t.name }))
+          commands: teams.map((t: Team) => ({ id: t.id, name: t.name }))
         }
       };
       p2pHost.broadcast(commandsSync);

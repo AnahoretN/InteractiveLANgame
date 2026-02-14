@@ -6,15 +6,40 @@
 import { useEffect, useCallback, useRef } from 'react';
 import type { GameScreen } from '@components/host/game/types';
 
+export interface SuperGameBet {
+  teamId: string;
+  bet: number;
+  ready: boolean;
+}
+
+export interface PackRound {
+  id: string;
+  name: string;
+  themes: PackTheme[];
+}
+
+export interface PackTheme {
+  id: string;
+  name: string;
+  questions: number;
+  superGame?: boolean;
+}
+
+export interface ActiveQuestion {
+  text: string;
+  answer?: string;
+  media?: { type: string; url: string };
+}
+
 export interface KeyboardNavigationOptions {
-  activeQuestion: any;
+  activeQuestion: ActiveQuestion | null;
   currentRoundIndex: number;
   totalRounds: number;
   currentRoundType?: 'normal' | 'super';
   selectedSuperThemeId: string | null;
   disabledSuperThemeIds: Set<string>;
-  superGameBets: any[];
-  packRounds: any[];
+  superGameBets: SuperGameBet[];
+  packRounds: PackRound[];
   onScreenChange: (screen: GameScreen) => void;
   onRoundIndexChange: (index: number) => void;
 }

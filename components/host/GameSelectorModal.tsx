@@ -17,7 +17,7 @@ import { generateUUID } from '../../utils';
 // Lazy load PackEditor to reduce initial bundle size
 const PackEditor = lazy(() => import('./PackEditor').then(m => ({ default: m.PackEditor })));
 // Import types only (no code execution)
-import type { GamePack as PackGamePack, Round, Theme, Question as PackQuestion, RoundType } from './PackEditor';
+import type { GamePack as PackGamePack, Round, Theme, Question as PackQuestion, RoundType } from './packeditor/types';
 
 export type GameType = 'custom' | 'quiz' | 'trivia';
 
@@ -457,7 +457,7 @@ export const GameSelectorModal = memo(({
           const packId = parsed.id || generateUUID();
 
           // Normalize rounds to ensure they have all required fields with defaults
-          const normalizedRounds = ('rounds' in parsed ? parsed.rounds : []).map((round: any) => ({
+          const normalizedRounds = ('rounds' in parsed ? parsed.rounds : []).map((round: Round) => ({
             ...round,
             readingTimePerLetter: round.readingTimePerLetter ?? 0.05,
             responseWindow: round.responseWindow ?? 30,

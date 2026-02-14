@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useState, useRef } from 'react';
-import { P2PSMessage, Team } from '../types';
+import { P2PSMessage, Team, BuzzEventMessage } from '../types';
 import type { P2PHostResult } from './useP2PHost';
 
 export interface SuperGameBet {
@@ -21,11 +21,20 @@ export interface SuperGameAnswer {
   submitted: boolean;
 }
 
+export interface ConnectedClient {
+  id: string;
+  peerId: string;
+  name: string;
+  joinedAt: number;
+  lastSeen: number;
+  teamId?: string;
+}
+
 interface UseHostStateManagerProps {
   teams: Team[];
   setTeams: React.Dispatch<React.SetStateAction<Team[]>>;
-  clients: Map<string, any>;
-  setClients: React.Dispatch<React.SetStateAction<Map<string, any>>>;
+  clients: Map<string, ConnectedClient>;
+  setClients: React.Dispatch<React.SetStateAction<Map<string, ConnectedClient>>>;
   p2pHost?: P2PHostResult;
   onBroadcastMessage?: (message: unknown) => void;
   onBroadcastTeamsList?: () => void;
@@ -46,7 +55,7 @@ export const useHostStateManager = ({
     setTeams(prev => {
       const updated = prev.filter(t => t.id !== teamId);
       // Remove team from all clients
-      setClients((clientsPrev: Map<string, any>) => {
+      setClients((clientsPrev: Map<string, ConnectedClient>) => {
         const updated = new Map(clientsPrev);
         updated.forEach((client, clientId) => {
           if (client?.teamId === teamId) {
@@ -97,19 +106,19 @@ export const useHostStateManager = ({
 
     switch (message.type) {
       case 'BUZZ': {
-        const buzzMsg = message as any; // BuzzEventMessage
+        const buzzMsg = message as BuzzEventMessage;
         setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(peerId, buzzMsg.payload.buzzTime));
         break;
       }
       case 'JOIN_TEAM': {
         const { clientName, teamId } = message.payload;
-        updateClients((prev: Map<string, any>) => {
+        updateClients((prev: Map<string, ConnectedClient>) => {
           const existingClient = prev.get(peerId);
           if (existingClient) {
             existingClient.teamId = teamId;
             existingClient.name = clientName;
           } else {
-            const newClient = {
+            const newClient: ConnectedClient = {
               id: peerId,
               peerId: peerId,
               name: clientName,
@@ -175,7 +184,7 @@ export const useHostStateManager = ({
   }, [teams, superGameBets, superGameAnswers]);
 
   // Wrapper to update clients - MUTATES existing Map in-place
-  const updateClients = useCallback((updater: (prev: Map<string, any>) => Map<string, any>) => {
+  const updateClients = useCallback((updater: (prev: Map<string, ConnectedClient>) => Map<string, ConnectedClient>) => {
     setClients(prev => {
       const updated = updater(prev);
       return updated;

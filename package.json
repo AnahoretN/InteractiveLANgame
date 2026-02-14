@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "server": "node --watch server/signalling-server.js",
     "start": "npm run server",
-    "start:all": "concurrently --kill-others --kill-signal SIGTERM \"npm run server\" \"npm run dev\""
+    "start:all": "concurrently --kill-others --kill-signal SIGTERM \"npm run server\" \"npm run dev\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint ."
   },
   "dependencies": {
     "date-fns": "^4.1.0",

@@ -18,6 +18,7 @@ interface ClientListItemProps {
   client: ConnectedClient;
   isStale: (lastSeen: number) => boolean;
   hasBuzzed: boolean;
+  isBuzzing?: boolean;  // New prop for lobby buzz flash effect
   isDragging: boolean;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
@@ -30,6 +31,7 @@ export const ClientListItem = memo<ClientListItemProps>(({
   client,
   isStale,
   hasBuzzed,
+  isBuzzing = false,
   isDragging,
   onDragStart,
   onDragEnd,
@@ -44,7 +46,7 @@ export const ClientListItem = memo<ClientListItemProps>(({
       draggable
       onDragStart={() => onDragStart(client.id)}
       onDragEnd={onDragEnd}
-      className={`flex items-center justify-between p-2 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${hasBuzzed ? 'ring-2 ring-blue-400/50' : ''} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
+      className={`flex items-center justify-between p-2 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
     >
       <div className="flex items-center gap-2">
         {isDragging && <GripVertical className="w-4 h-4 text-gray-600" />}
@@ -57,7 +59,11 @@ export const ClientListItem = memo<ClientListItemProps>(({
             {client.connectionQuality.rtt}ms
           </span>
         )}
-        {hasBuzzed && (
+        {isBuzzing ? (
+          <div className="ml-1">
+            <div className="w-3 h-3 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+          </div>
+        ) : hasBuzzed && (
           <div className="ml-1">
             <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
@@ -77,15 +83,16 @@ interface SimpleClientItemProps {
   client: ConnectedClient;
   isStale: (lastSeen: number) => boolean;
   hasBuzzed: boolean;
+  isBuzzing?: boolean;
   onRemove: (id: string) => void;
   getHealthBgColor: (score: number) => string;
 }
 
-export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, hasBuzzed, onRemove, getHealthBgColor }) => {
+export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, hasBuzzed, isBuzzing = false, onRemove, getHealthBgColor }) => {
   const stale = isStale(client.lastSeen);
 
   return (
-    <div className={`flex items-center justify-between p-2 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
+    <div className={`flex items-center justify-between p-2 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
       <div className="flex items-center gap-2">
         <div className="w-5 h-5 rounded-full bg-blue-500/80 flex items-center justify-center text-[9px] font-bold text-white">
           {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
@@ -96,7 +103,11 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
             {client.connectionQuality.rtt}ms
           </span>
         )}
-        {hasBuzzed && (
+        {isBuzzing ? (
+          <div className="ml-1">
+            <div className="w-3 h-3 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+          </div>
+        ) : hasBuzzed && (
           <div className="ml-1">
             <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
@@ -125,6 +136,7 @@ interface TeamListItemProps {
   onEditingNameChange: (name: string) => void;
   onEditingIdSet: (id: string | null) => void;
   buzzedClients: Set<string>;
+  buzzingClientIds: Set<string>;
   isStale: (lastSeen: number) => boolean;
   draggedClientId: string | null;
   onDragStart: (id: string) => void;
@@ -149,6 +161,7 @@ export const TeamListItem = memo<TeamListItemProps>(({
   onEditingNameChange,
   onEditingIdSet,
   buzzedClients,
+  buzzingClientIds,
   isStale,
   draggedClientId,
   onDragStart,
@@ -223,6 +236,7 @@ export const TeamListItem = memo<TeamListItemProps>(({
               client={client}
               isStale={isStale}
               hasBuzzed={buzzedClients.has(client.id)}
+              isBuzzing={buzzingClientIds.has(client.peerId)}
               isDragging={draggedClientId === client.id}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
@@ -244,6 +258,7 @@ interface NoTeamSectionProps {
   onDragOver: (e: React.DragEvent) => void;
   onDrop: () => void;
   buzzedClients: Set<string>;
+  buzzingClientIds: Set<string>;
   isStale: (lastSeen: number) => boolean;
   draggedClientId: string | null;
   onDragStart: (id: string) => void;
@@ -258,6 +273,7 @@ export const NoTeamSection = memo<NoTeamSectionProps>(({
   onDragOver,
   onDrop,
   buzzedClients,
+  buzzingClientIds,
   isStale,
   draggedClientId,
   onDragStart,
@@ -284,6 +300,7 @@ export const NoTeamSection = memo<NoTeamSectionProps>(({
             client={client}
             isStale={isStale}
             hasBuzzed={buzzedClients.has(client.id)}
+            isBuzzing={buzzingClientIds.has(client.peerId)}
             isDragging={draggedClientId === client.id}
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}

@@ -3,7 +3,7 @@
  * Panel displaying connection info and QR code
  */
 
-import React, { memo, useCallback, useMemo } from 'react';
+import React, { memo, useCallback, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Wifi, Users, Copy, RefreshCw, Lock } from 'lucide-react';
 
@@ -26,6 +26,9 @@ export const ConnectionPanel = memo(({
   onUnlockIp,
   isIpLocked
 }: ConnectionPanelProps) => {
+  // Link copy animation state
+  const [linkCopied, setLinkCopied] = useState<boolean>(false);
+
   // Generate QR code URL
   const qrUrl = useMemo(() => {
     const url = new URL(window.location.href);
@@ -33,6 +36,13 @@ export const ConnectionPanel = memo(({
     url.searchParams.set('session', sessionId);
     return url.toString();
   }, [hostId, sessionId]);
+
+  // Handle copy link with animation
+  const handleCopyLink = useCallback(() => {
+    onCopyLink?.();
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }, [onCopyLink]);
 
   return (
     <div className="bg-gray-900 rounded-xl p-6 border border-gray-700">
@@ -47,7 +57,6 @@ export const ConnectionPanel = memo(({
             {isOnline ? 'Online' : 'Offline'}
           </span>
         </div>
-
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
           <Users className="w-4 h-4" />
           <span className="text-xs font-bold">{connectedClients}</span>
@@ -83,11 +92,16 @@ export const ConnectionPanel = memo(({
       {/* Copy link button */}
       {onCopyLink && (
         <button
-          onClick={onCopyLink}
-          className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold transition-colors"
+          onClick={handleCopyLink}
+          className={`relative w-full flex items-center justify-center px-4 py-3 rounded-lg font-semibold transition-all duration-200 pl-10 ${
+            linkCopied
+              ? 'bg-white text-blue-600'
+              : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+          }`}
+          style={{ minWidth: '210px' }}
         >
-          <Copy className="w-5 h-5" />
-          Копировать ссылку
+          <Copy className="absolute left-3 w-5 h-5" />
+          <span className="font-medium">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
         </button>
       )}
 
