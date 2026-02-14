@@ -10,7 +10,6 @@ export { useGameState } from './useGameState';
 export { GameBoard } from './GameBoard';
 export { GameBoardExtended } from './GameBoardExtended';
 export { CoverScreen, ThemesScreen, RoundScreen } from './GameScreens';
-export { QuestionModal } from './QuestionModal';
 export { SuperGameRound } from './SuperGameRound';
 export { SuperGameQuestionModal, SuperGameAnswersModal } from './SuperGameModals';
 
