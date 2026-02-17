@@ -4,13 +4,7 @@
  */
 
 import { useEffect, useCallback, useRef } from 'react';
-import type { GameScreen } from '@components/host/game/types';
-
-export interface SuperGameBet {
-  teamId: string;
-  bet: number;
-  ready: boolean;
-}
+import type { GameScreen, SuperGameBet } from '../components/host/game/types';
 
 export interface PackRound {
   id: string;

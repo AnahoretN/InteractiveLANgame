@@ -5,20 +5,9 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import { P2PSMessage, BuzzEventMessage, Team } from '../types';
-
-export interface SuperGameBet {
-  teamId: string;
-  bet: number;
-  ready: boolean;
-}
-
-export interface SuperGameAnswer {
-  teamId: string;
-  answer: string;
-  revealed: boolean;
-  submitted: boolean;
-}
+import type { SuperGameBet, SuperGameAnswer } from '../components/host/game/types';
 
 export interface Command {
   id: string;
@@ -47,21 +36,21 @@ export interface P2PHost {
 
 interface UseP2PMessageHandlersOptions {
   teams: Team[];
-  setTeams: React.Dispatch<React.SetStateAction<Team[]>>;
+  setTeams: Dispatch<SetStateAction<Team[]>>;
   clients: Map<string, ConnectedClient>;
-  setClients: React.Dispatch<React.SetStateAction<Map<string, ConnectedClient>>>;
+  setClients: Dispatch<SetStateAction<Map<string, ConnectedClient>>>;
   superGameBets: SuperGameBet[];
-  setSuperGameBets: React.Dispatch<React.SetStateAction<SuperGameBet[]>>;
+  setSuperGameBets: Dispatch<SetStateAction<SuperGameBet[]>>;
   superGameAnswers: SuperGameAnswer[];
-  setSuperGameAnswers: React.Dispatch<React.SetStateAction<SuperGameAnswer[]>>;
+  setSuperGameAnswers: Dispatch<SetStateAction<SuperGameAnswer[]>>;
   commands: Command[];
-  setCommands: React.Dispatch<React.SetStateAction<Command[]>>;
+  setCommands: Dispatch<SetStateAction<Command[]>>;
   buzzedClients: Map<string, number>;
-  setBuzzedClients: React.Dispatch<React.SetStateAction<Map<string, number>>>;
+  setBuzzedClients: Dispatch<SetStateAction<Map<string, number>>>;
   pendingConfirmations: Map<string, string>;
-  setPendingConfirmations: React.Dispatch<React.SetStateAction<Map<string, string>>>;
+  setPendingConfirmations: Dispatch<SetStateAction<Map<string, string>>>;
   pendingCommandsRequest: string | null;
-  setPendingCommandsRequest: React.Dispatch<React.SetStateAction<string | null>>;
+  setPendingCommandsRequest: Dispatch<SetStateAction<string | null>>;
   p2pHost?: P2PHost;
 }
 
@@ -74,6 +63,7 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
     superGameBets,
     setSuperGameBets,
     superGameAnswers,
+    setSuperGameAnswers,
     commands,
     setCommands,
     buzzedClients,

@@ -5,6 +5,7 @@
 export { useSessionSettings } from './useSessionSettings';
 export { useTeams } from './useTeams';
 export { useBuzz } from './useBuzz';
+export { useTeamManager } from './useTeamManager';
 
 // Utility hooks
 export { useInterval } from './useInterval';

@@ -18,6 +18,18 @@ import { generateUUID, getSignallingServer } from '../utils';
  * P2P Host Hook - manages WebRTC connections for the host
  * Handles multiple client connections with automatic reconnection
  */
+
+export interface P2PHostResult {
+  isReady: boolean;
+  error: Error | null;
+  hostId: string;
+  connectionCount: number;
+  connectedClients: string[];
+  broadcast: (data: unknown) => void;
+  sendToClient: (clientId: string, data: unknown) => void;
+  disconnectClient: (clientId: string) => void;
+  disconnectAll: () => void;
+}
 export const useP2PHost = (config: P2PConfig & {
   onClientConnected?: (clientId: string, data: { name: string; teamId?: string; persistentClientId?: string }) => void;
   onClientDisconnected?: (clientId: string) => void;

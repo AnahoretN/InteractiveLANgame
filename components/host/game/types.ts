@@ -14,16 +14,13 @@ export type GameScreen =
   | 'superAnswers'
   | 'showWinner';
 
-interface TeamScore {
-  teamId: string;
-  teamName: string;
-  score: number;
-}
+// TeamScore is imported from main types.ts
+import type { TeamScore } from '../../../types';
 
 // Super Game state
 export interface SuperGameBet {
   teamId: string;
-  amount: number;
+  bet: number;
   ready: boolean;
 }
 
@@ -31,6 +28,7 @@ export interface SuperGameAnswer {
   teamId: string;
   answer: string;
   revealed: boolean;
+  submitted?: boolean;  // Whether the answer has been submitted (for host tracking)
   isCorrect?: boolean;
   isWrong?: boolean;
 }

@@ -5,20 +5,25 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { P2PSMessage, BuzzEventMessage, Team, TeamsSyncMessage, CommandsListMessage } from '../types';
+import type { Dispatch, SetStateAction } from 'react';
+import { P2PSMessage, BuzzEventMessage, Team, TeamsSyncMessage, CommandsListMessage, MessageCategory } from '../types';
 import type { P2PHostResult } from './useP2PHost';
+import type { SuperGameBet, SuperGameAnswer } from '../components/host/game/types';
+import { useBuzz } from './useBuzz';
 
-export interface SuperGameBet {
-  teamId: string;
-  bet: number;
-  ready: boolean;
+export interface Command {
+  id: string;
+  name: string;
 }
 
-export interface SuperGameAnswer {
-  teamId: string;
-  answer: string;
-  revealed: boolean;
-  submitted: boolean;
+interface UseHostStateManagerProps {
+  teams: Team[];
+  setTeams: Dispatch<SetStateAction<Team[]>>;
+  clients: Map<string, any>;
+  setClients: Dispatch<SetStateAction<Map<string, any>>>;
+  p2pHost?: P2PHostResult;
+  commands: Command[];
+  setCommands: Dispatch<SetStateAction<Command[]>>;
 }
 
 export interface Command {
@@ -47,7 +52,7 @@ export const useHostStateManager = ({
 }: UseHostStateManagerProps) => {
 
   // Local state
-  const [buzzedClients, setBuzzedClients] = useState<Map<string, number>>(new Map());
+  const { buzzedClients, markBuzzed, clearBuzz, clearAllBuzzes } = useBuzz();
   const [pendingConfirmations, setPendingConfirmations] = useState<Map<string, string>>(new Map());
   const [pendingCommandsRequest, setPendingCommandsRequest] = useState<string | null>(null);
   const [superGameBets, setSuperGameBets] = useState<SuperGameBet[]>([]);
@@ -106,8 +111,7 @@ export const useHostStateManager = ({
 
     switch (message.type) {
       case 'BUZZ': {
-        const buzzMsg = message as BuzzEventMessage;
-        setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(peerId, buzzMsg.payload.buzzTime));
+        markBuzzed(peerId);
         break;
       }
       case 'JOIN_TEAM': {
@@ -189,13 +193,13 @@ export const useHostStateManager = ({
       default:
         console.log('[useHostStateManager] Unhandled message type:', message.type);
     }
-  }, [teams, superGameBets, superGameAnswers, updateClients, setTeams, setPendingConfirmations, setSuperGameBets, setSuperGameAnswers]);
+  }, [teams, superGameBets, superGameAnswers, updateClients, setTeams, setPendingConfirmations, setSuperGameBets, setSuperGameAnswers, markBuzzed]);
 
   // Broadcast teams list to all clients
   const broadcastTeamsList = useCallback(() => {
     if (p2pHost?.isReady && teams.length > 0) {
       const teamsSync: Omit<TeamsSyncMessage, 'id' | 'timestamp' | 'senderId'> = {
-        category: 'SYNC',
+        category: MessageCategory.SYNC,
         type: 'TEAMS_SYNC',
         payload: {
           teams: teams.map(t => ({ id: t.id, name: t.name }))
@@ -209,7 +213,7 @@ export const useHostStateManager = ({
   const broadcastCommandsList = useCallback(() => {
     if (p2pHost?.isReady && commands.length > 0) {
       const commandsSync: Omit<CommandsListMessage, 'id' | 'timestamp' | 'senderId'> = {
-        category: 'SYNC',
+        category: MessageCategory.SYNC,
         type: 'COMMANDS_LIST',
         payload: {
           commands: commands
@@ -218,25 +222,6 @@ export const useHostStateManager = ({
       p2pHost.broadcast(commandsSync);
     }
   }, [commands, p2pHost?.isReady, p2pHost?.broadcast]);
-
-  // Buzzed clients cleanup
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      const BUZZ_DURATION = 3000; // 3 seconds
-      setBuzzedClients(prev => {
-        const updated = new Map(prev);
-        for (const [clientId, timestamp] of prev.entries()) {
-          if (now - timestamp > BUZZ_DURATION) {
-            updated.delete(clientId);
-          }
-        }
-        return updated;
-      });
-    }, 500); // Check every 500ms
-
-    return () => clearInterval(interval);
-  }, []);
 
   // Auto-cleanup empty teams after 5 minutes
   useEffect(() => {
@@ -270,7 +255,8 @@ export const useHostStateManager = ({
     broadcastCommandsList,
     // State
     buzzedClients,
-    setBuzzedClients,
+    clearBuzz,
+    clearAllBuzzes,
     pendingConfirmations,
     setPendingConfirmations,
     pendingCommandsRequest,

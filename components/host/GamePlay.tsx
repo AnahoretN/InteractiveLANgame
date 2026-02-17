@@ -42,8 +42,8 @@ interface TeamScore {
   score: number;
 }
 
-// Re-export TeamScore from modals for compatibility
-export { TeamScore };
+// Re-export TeamScore from types for compatibility
+export type { TeamScore } from '../../../types';
 
 interface GamePlayProps {
   pack: GamePack;
@@ -1097,7 +1097,7 @@ export const GamePlay = memo(({
           selectedSuperAnswerTeam={selectedSuperAnswerTeam}
           onTeamSelect={(teamId) => setSelectedSuperAnswerTeam(teamId)}
           onScoreChange={(teamId, correct) => {
-            const bet = superGameBets.find(b => b.teamId === teamId)?.amount || 0;
+            const bet = superGameBets.find(b => b.teamId === teamId)?.bet || 0;
             setTeamScores(prev => prev.map(t => {
               if (t.teamId === teamId) {
                 return { ...t, score: t.score + (correct ? bet : -bet) };

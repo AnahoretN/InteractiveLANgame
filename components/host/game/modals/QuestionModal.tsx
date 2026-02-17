@@ -7,19 +7,14 @@
 import React, { memo, useState, useEffect } from 'react';
 import { Volume2 } from 'lucide-react';
 import type { Question, Theme } from '../../PackEditor';
+import type { TeamScore } from '../../../../types';
 import {
   calculateQuestionFontSize,
   calculateAnswerFontSizeMobile,
   calculateAnswerFontSizeDesktop
 } from '../fontUtils';
 
-export interface TeamScore {
-  teamId: string;
-  teamName: string;
-  score: number;
-}
-
-interface QuestionModalProps {
+export interface QuestionModalProps {
   question: Question;
   theme: Theme;
   points: number;

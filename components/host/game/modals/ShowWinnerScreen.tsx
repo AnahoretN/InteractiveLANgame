@@ -4,14 +4,9 @@
  */
 
 import React, { memo, useEffect } from 'react';
+import type { TeamScore } from '../../../../types';
 
-export interface TeamScore {
-  teamId: string;
-  teamName: string;
-  score: number;
-}
-
-interface ShowWinnerScreenProps {
+export interface ShowWinnerScreenProps {
   teamScores: TeamScore[];
   onBroadcastMessage?: (message: unknown) => void;
 }

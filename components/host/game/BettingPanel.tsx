@@ -20,7 +20,7 @@ export const BettingPanel = memo(({ teams, bets, maxBet, onPlaceBet }: BettingPa
 
   // Get bet for a team
   const getTeamBet = (teamId: string) => {
-    return bets.find(b => b.teamId === teamId)?.amount || 0;
+    return bets.find(b => b.teamId === teamId)?.bet || 0;
   };
 
   // Handle bet submission

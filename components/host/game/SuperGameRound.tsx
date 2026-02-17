@@ -122,7 +122,7 @@ export const SuperGameRound = memo(({
                   }`}
                 >
                   <p className="text-sm text-gray-400">{bet.teamId}</p>
-                  <p className="text-xl font-bold">{bet.amount}</p>
+                  <p className="text-xl font-bold">{bet.bet}</p>
                 </div>
               ))}
             </div>

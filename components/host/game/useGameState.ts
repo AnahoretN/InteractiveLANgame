@@ -75,7 +75,7 @@ export function useGameState({
       onSuperGamePhaseChange('placeBets');
       // Calculate and broadcast max bet
       if (superGameBets && superGameBets.length > 0) {
-        const maxBet = Math.max(...superGameBets.map(b => b.amount));
+        const maxBet = Math.max(...superGameBets.map(b => b.bet));
         onSuperGameMaxBetChange?.(maxBet);
       }
     } else if (currentScreen === 'superQuestion') {
