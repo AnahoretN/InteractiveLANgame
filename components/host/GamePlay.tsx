@@ -54,6 +54,7 @@ interface GamePlayProps {
   onClearBuzzes?: () => void;  // Clear buzzed clients when transitioning to response phase
   buzzedTeamId: string | null;
   buzzedTeamIds?: Set<string>;  // Teams that recently buzzed (for white flash effect)
+  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (yellow flash)
   answeringTeamId?: string | null;  // Team that gets to answer the question
   onAnsweringTeamChange?: (teamId: string | null) => void;  // Callback to reset answering team
   // Super Game props (optional for backward compatibility)
@@ -62,6 +63,8 @@ interface GamePlayProps {
   superGameAnswers?: SuperGameAnswer[];  // Answers received from mobile clients
   onSuperGamePhaseChange?: (phase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner') => void;  // Track super game phase
   onSuperGameMaxBetChange?: (maxBet: number) => void;  // Track max bet for super game
+  onRequestStateSync?: () => void;  // Trigger to resend current state to clients
+  stateSyncTrigger?: number;  // Trigger value that changes when state sync is requested
 }
 
 export const GamePlay = memo(({
@@ -73,6 +76,7 @@ export const GamePlay = memo(({
   onClearBuzzes,
   buzzedTeamId,
   buzzedTeamIds,
+  lateBuzzTeamIds,
   answeringTeamId,
   onAnsweringTeamChange,
   onBroadcastMessage,
@@ -80,6 +84,8 @@ export const GamePlay = memo(({
   superGameAnswers: externalSuperGameAnswers,
   onSuperGamePhaseChange,
   onSuperGameMaxBetChange,
+  onRequestStateSync,
+  stateSyncTrigger,
 }: GamePlayProps) => {
   // Game state
   const [currentScreen, setCurrentScreen] = useState<GameScreen>('cover');
@@ -157,8 +163,8 @@ export const GamePlay = memo(({
   // Auto-transition to superQuestion when all teams have placed bets - REMOVED
   // Now requires manual Space press to advance from placeBets to superQuestion
 
-  // Update parent with super game phase AND broadcast state sync
-  useEffect(() => {
+  // Function to broadcast current super game state
+  const broadcastSuperGameState = useCallback(() => {
     if (!onBroadcastMessage) return;
 
     if (currentScreen === 'placeBets' && currentRound) {
@@ -182,10 +188,8 @@ export const GamePlay = memo(({
         themeId: selectedTheme?.id,
         themeName: selectedTheme?.name,
         maxBet: maxBet,
+        teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
       });
-
-      // Reset bets state
-      setSuperGameBets([]);
     } else if (currentScreen === 'superQuestion' && currentRound && selectedSuperThemeId) {
       // Update parent phase
       onSuperGamePhaseChange?.('showQuestion');
@@ -203,10 +207,8 @@ export const GamePlay = memo(({
           themeName: selectedTheme.name,
           questionText: question.text || '',
           questionMedia: question.media,
+          teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
         });
-
-        // Reset answers state
-        setSuperGameAnswers([]);
       }
     } else if (currentScreen === 'superAnswers') {
       onSuperGamePhaseChange?.('showWinner');
@@ -233,6 +235,33 @@ export const GamePlay = memo(({
       });
     }
   }, [currentScreen, onBroadcastMessage, onSuperGamePhaseChange, currentRound, selectedSuperThemeId, teamScores]);
+
+  // Update parent with super game phase AND broadcast state sync
+  useEffect(() => {
+    broadcastSuperGameState();
+  }, [currentScreen, broadcastSuperGameState]);
+
+  // Reset bets state when entering placeBets screen
+  useEffect(() => {
+    if (currentScreen === 'placeBets') {
+      setSuperGameBets([]);
+    }
+  }, [currentScreen]);
+
+  // Reset answers state when entering superQuestion screen
+  useEffect(() => {
+    if (currentScreen === 'superQuestion') {
+      setSuperGameAnswers([]);
+    }
+  }, [currentScreen]);
+
+  // Handle state sync request from client - rebroadcast current state when trigger changes
+  useEffect(() => {
+    if (stateSyncTrigger !== undefined && stateSyncTrigger > 0) {
+      console.log('[GamePlay] State sync requested, rebroadcasting current state');
+      broadcastSuperGameState();
+    }
+  }, [stateSyncTrigger, broadcastSuperGameState]);
 
   // Sync external bets from mobile clients
   useEffect(() => {
@@ -770,6 +799,10 @@ export const GamePlay = memo(({
         responseTimerRemaining: 0,
         handicapActive: false
       });
+      // Reset answering team when answer is shown (after scoring)
+      if (onAnsweringTeamChange) {
+        onAnsweringTeamChange(null);
+      }
     } else if (change === 'correct') {
       // Add points to answering team
       if (targetTeamId) {
@@ -790,12 +823,20 @@ export const GamePlay = memo(({
         responseTimerRemaining: 0,
         handicapActive: false
       });
+      // Reset answering team when answer is shown (after scoring)
+      if (onAnsweringTeamChange) {
+        onAnsweringTeamChange(null);
+      }
     }
-  }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange]);
+  }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange]);
 
   // Open question
   const openQuestion = useCallback((question: Question, theme: Theme, points: number) => {
     const key = `${theme.id}-${question.id}`;
+    // Reset answering team when opening a new question
+    if (onAnsweringTeamChange) {
+      onAnsweringTeamChange(null);
+    }
     // Highlight the question for 1 second, then open modal
     setHighlightedQuestion(key);
     setTimeout(() => {
@@ -804,7 +845,7 @@ export const GamePlay = memo(({
       setShowAnswer(false);
       setBuzzerActive(false);
     }, 1000);
-  }, [currentRound?.name]);
+  }, [currentRound?.name, onAnsweringTeamChange]);
 
   // Check if question is answered
   const isQuestionAnswered = useCallback((questionId: string, themeId: string) => {
@@ -817,8 +858,10 @@ export const GamePlay = memo(({
       {/* Player Panel - Always visible on top layer */}
       <div className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
         {teamScores.map(team => {
-          const isAnsweringTeam = (buzzedTeamId === team.teamId && activeQuestion && !showAnswer) || answeringTeamId === team.teamId;
+          // answeringTeamId takes priority (set by first buzz during response phase)
+          const isAnsweringTeam = answeringTeamId === team.teamId;
           const isBuzzed = buzzedTeamIds?.has(team.teamId) || false;
+          const isLateBuzz = lateBuzzTeamIds?.has(team.teamId) || false;
           // Check if team has placed bet in super game
           const hasPlacedBet = currentScreen === 'placeBets' && superGameBets.find(b => b.teamId === team.teamId)?.ready;
           // Check if team has submitted answer in super game
@@ -831,10 +874,12 @@ export const GamePlay = memo(({
                 hasPlacedBet || hasSubmittedAnswer
                   ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
                   : isAnsweringTeam
-                    ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.5)] scale-105'
-                    : isBuzzed
-                      ? 'bg-white/50 border-white shadow-[0_0_30px_rgba(255,255,255,0.8)] scale-105 animate-double-flash'
-                      : 'bg-gray-800/50 border-gray-700'
+                    ? 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105'
+                    : isLateBuzz
+                      ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)] scale-105 animate-double-flash'
+                      : isBuzzed
+                        ? 'bg-white/50 border-white shadow-[0_0_30px_rgba(255,255,255,0.8)] scale-105 animate-double-flash'
+                        : 'bg-gray-800/50 border-gray-700'
               }`}
             >
             <div className="text-center">
@@ -1103,6 +1148,13 @@ export const GamePlay = memo(({
                 return { ...t, score: t.score + (correct ? bet : -bet) };
               }
               return t;
+            }));
+            // Update superGameAnswers with isCorrect/isWrong flags
+            setSuperGameAnswers(prev => prev.map(a => {
+              if (a.teamId === teamId) {
+                return { ...a, isCorrect: correct, isWrong: !correct };
+              }
+              return a;
             }));
           }}
           onSpacePressed={() => setCurrentScreen('showWinner')}

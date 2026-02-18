@@ -55,38 +55,52 @@ export function useKeyboardNavigation({
   const themesScrollRef = useRef<HTMLDivElement | null>(null);
   const doublePressRef = useRef<{ lastKey: string; lastTime: number }>({ lastKey: '', lastTime: 0 });
 
-  // Navigate between screens with Space
+  // Navigate between screens with Space or ArrowRight (forward) / ArrowLeft (back)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle if question modal is open or CTRL pressed
       if (activeQuestion) return;
       if (e.ctrlKey || e.key === 'Control') return;
 
-      if (e.key === ' ') {
+      if (e.key === ' ' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
         e.preventDefault();
         const isSuperRound = currentRoundType === 'super';
 
         onScreenChange((prev: GameScreen): GameScreen => {
           const nextScreen = (() => {
             switch (prev) {
-              case 'cover': return isSuperRound ? 'selectSuperThemes' : 'themes';
+              case 'cover':
+                if (e.key === 'ArrowLeft') return prev; // Can't go back from cover
+                return isSuperRound ? 'selectSuperThemes' : 'themes';
               case 'themes':
+                if (e.key === 'ArrowLeft') return 'cover';
                 // Always show round cover
                 return 'round';
               case 'selectSuperThemes':
+                if (e.key === 'ArrowLeft') return 'round';
                 // Only proceed to placeBets when exactly one theme remains
                 const remainingCount = 1; // Would be calculated
                 return remainingCount === 1 ? 'placeBets' : 'selectSuperThemes';
               case 'round':
+                if (e.key === 'ArrowLeft') return 'cover';
                 // For super rounds, skip board and go to selectSuperThemes
                 return isSuperRound ? 'selectSuperThemes' : 'board';
               case 'placeBets':
-                // Always proceed to superQuestion when Space is pressed
+                if (e.key === 'ArrowLeft') return 'selectSuperThemes';
+                // Always proceed to superQuestion when Space/ArrowRight is pressed
                 return 'superQuestion';
-              case 'board': return 'board'; // Stay on board
-              case 'superQuestion': return 'superAnswers';
-              case 'superAnswers': return 'showWinner';
-              case 'showWinner': return 'showWinner'; // Stay on winner screen
+              case 'board':
+                if (e.key === 'ArrowLeft') return 'round';
+                return 'board'; // Stay on board
+              case 'superQuestion':
+                if (e.key === 'ArrowLeft') return 'placeBets';
+                return 'superAnswers';
+              case 'superAnswers':
+                if (e.key === 'ArrowLeft') return 'superQuestion';
+                return 'showWinner';
+              case 'showWinner':
+                if (e.key === 'ArrowLeft') return 'superAnswers';
+                return 'showWinner'; // Stay on winner screen
               default: return prev;
             }
           }) as GameScreen;

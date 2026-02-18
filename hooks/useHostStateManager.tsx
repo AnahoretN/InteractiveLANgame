@@ -4,7 +4,7 @@
  * Extracted to reduce HostView component size
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { P2PSMessage, BuzzEventMessage, Team, TeamsSyncMessage, CommandsListMessage, MessageCategory } from '../types';
 import type { P2PHostResult } from './useP2PHost';
@@ -222,27 +222,6 @@ export const useHostStateManager = ({
       p2pHost.broadcast(commandsSync);
     }
   }, [commands, p2pHost?.isReady, p2pHost?.broadcast]);
-
-  // Auto-cleanup empty teams after 5 minutes
-  useEffect(() => {
-    const EMPTY_TEAM_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const clientTeamIds = new Set(Array.from(clients.values()).map(c => c.teamId).filter(Boolean) as string[]);
-
-      setTeams(prev => {
-        const filtered = prev.filter(team => {
-          const hasPlayers = clientTeamIds.has(team.id);
-          const isRecent = (now - team.lastUsedAt) < EMPTY_TEAM_TIMEOUT;
-          return hasPlayers || isRecent;
-        });
-        return filtered;
-      });
-    }, 60000); // Check every minute
-
-    return () => clearInterval(cleanupInterval);
-  }, [clients, setTeams]);
 
   return {
     // Team management

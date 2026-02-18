@@ -94,10 +94,23 @@ export const HostView: React.FC = () => {
     } catch { return []; }
   });
 
-  // Commands/Rooms state - for quick join feature
+  // Commands/Rooms state - synchronized with teams for quick join feature
   const [commands, setCommands] = useState<Array<{ id: string; name: string }>>(() => {
+    // First try to load from teams storage (preferred source)
+    const savedTeams = storage.get<string>(STORAGE_KEYS.TEAMS);
+    if (savedTeams && typeof savedTeams === 'string' && savedTeams.trim() !== '' && savedTeams !== 'null' && savedTeams !== 'undefined') {
+      try {
+        const parsed = JSON.parse(savedTeams);
+        if (Array.isArray(parsed)) {
+          return parsed.map((t: Team) => ({ id: t.id, name: t.name }));
+        }
+      } catch (e) {
+        console.error('[HostView] Failed to parse teams from storage:', e);
+      }
+    }
+    // Fallback to old commands storage for backward compatibility
     const saved = getRawStorageValue(STORAGE_KEYS.COMMANDS);
-    if (!saved || saved.trim() === '') return [];
+    if (!saved || typeof saved !== 'string' || saved.trim() === '' || saved === 'null' || saved === 'undefined') return [];
     try {
       const parsed = JSON.parse(saved);
       return Array.isArray(parsed) ? parsed : [];
@@ -128,6 +141,9 @@ export const HostView: React.FC = () => {
 
   // Track which teams have buzzed (for visual flash effect) - only tracks recent buzzes
   const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
+
+  // Track late buzzes (teams that pressed after answering team was already determined)
+  const [lateBuzzTeamIds, setLateBuzzTeamIds] = useState<Set<string>>(new Set());
 
   // Track buzzer state from GamePlay for GameSession
   const [buzzerState, setBuzzerState] = useState<{
@@ -161,6 +177,8 @@ export const HostView: React.FC = () => {
   // Track super game phase for responding to GET_SUPER_GAME_STATE requests
   const [superGamePhase, setSuperGamePhase] = useState<'idle' | 'placeBets' | 'showQuestion' | 'showWinner'>('idle');
   const [superGameMaxBet, setSuperGameMaxBet] = useState<number>(100);
+  // Trigger for state sync request (increments to trigger sync)
+  const [stateSyncTrigger, setStateSyncTrigger] = useState<number>(0);
 
   // Session settings using custom hook
   const { settings: sessionSettings, updateSettings: updateSessionSettings } = useSessionSettings();
@@ -212,9 +230,62 @@ export const HostView: React.FC = () => {
       switch (message.type) {
         case 'BUZZ': {
           const buzzMsg = message as BuzzEventMessage;
-          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName, 'clientId:', buzzMsg.payload.clientId, 'teamId:', buzzMsg.payload.teamId);
+          const teamId = buzzMsg.payload.teamId;
+          const buzzTime = buzzMsg.payload.buzzTime;
+
+          // Use ref to get current buzzer state (not stale closure value)
+          const currentBuzzerState = buzzerStateRef.current;
+          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName, 'clientId:', buzzMsg.payload.clientId, 'teamId:', teamId, 'buzzerState.active:', currentBuzzerState.active, 'timerPhase:', currentBuzzerState.timerPhase);
+
+          // Only process buzzes during response phase when buzzer is active
+          const isResponsePhase = currentBuzzerState.timerPhase === 'response' && currentBuzzerState.active;
+
           // Use clientId from payload instead of peerId to match the client's actual ID
-          setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(buzzMsg.payload.clientId, buzzMsg.payload.buzzTime));
+          setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(buzzMsg.payload.clientId, buzzTime));
+
+          if (isResponsePhase && teamId) {
+            // Check if we already have an answering team (using ref for current value)
+            const currentAnsweringTeamId = answeringTeamIdRef.current;
+            if (!currentAnsweringTeamId) {
+              // First buzz during response phase - this team gets to answer!
+              console.log('[HostView] First buzz! Setting answering team:', teamId);
+              setAnsweringTeamId(teamId);
+              setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+              // Clear after 500ms
+              setTimeout(() => {
+                setBuzzedTeamIds(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(teamId);
+                  return newSet;
+                });
+              }, 500);
+            } else {
+              // Late buzz - another team already won this round
+              console.log('[HostView] Late buzz from:', teamId, '(answering team already set:', currentAnsweringTeamId, ')');
+              setLateBuzzTeamIds(prev => new Set(prev).add(teamId));
+              // Clear after 500ms
+              setTimeout(() => {
+                setLateBuzzTeamIds(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(teamId);
+                  return newSet;
+                });
+              }, 500);
+            }
+          } else {
+            // Buzz during reading phase or when buzzer inactive - just visual flash
+            console.log('[HostView] Buzz during non-response phase, just visual flash');
+            if (teamId) {
+              setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+              setTimeout(() => {
+                setBuzzedTeamIds(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(teamId);
+                  return newSet;
+                });
+              }, 500);
+            }
+          }
 
           // Add peerId to buzzingClientIds for lobby list visual flash effect (clears after 500ms)
           setBuzingClientIds(prev => new Set(prev).add(peerId));
@@ -225,18 +296,6 @@ export const HostView: React.FC = () => {
               return newSet;
             });
           }, 500);
-
-          // Add teamId to buzzedTeamIds for team panel visual flash effect (clears after 500ms)
-          if (buzzMsg.payload.teamId) {
-            setBuzzedTeamIds(prev => new Set(prev).add(buzzMsg.payload.teamId!));
-            setTimeout(() => {
-              setBuzzedTeamIds(prev => {
-                const newSet = new Set(prev);
-                newSet.delete(buzzMsg.payload.teamId!);
-                return newSet;
-              });
-            }, 500);
-          }
           break;
         }
         case 'JOIN_TEAM': {
@@ -371,21 +430,29 @@ export const HostView: React.FC = () => {
         }
         case 'SUPER_GAME_ANSWER': {
           // Client submitted an answer in super game
-                          const existingIndex = superGameAnswers.findIndex((a: { teamId: string }) => a.teamId === message.payload.teamId);
+          console.log('[HostView] Received SUPER_GAME_ANSWER from', peerId, 'teamId:', message.payload.teamId, 'answer:', message.payload.answer);
+          const existingIndex = superGameAnswers.findIndex((a: { teamId: string }) => a.teamId === message.payload.teamId);
           if (existingIndex >= 0) {
-                            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => prev.map((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }, i: number) =>
+            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => prev.map((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }, i: number) =>
               i === existingIndex ? { ...a, answer: message.payload.answer, submitted: true } : a
             ));
-                          } else {
-                            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => [...prev, {
+          } else {
+            setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => [...prev, {
               teamId: message.payload.teamId,
               answer: message.payload.answer,
               revealed: false,
               submitted: true
             }]);
-                          }
+          }
           break;
-                        }
+        }
+        case 'STATE_SYNC_REQUEST': {
+          // Client requested full state sync - trigger GamePlay to broadcast current state
+          console.log('[HostView] STATE_SYNC_REQUEST received from', peerId, '- triggering state sync');
+          // Increment trigger to cause GamePlay to rebroadcast current state
+          setStateSyncTrigger(prev => prev + 1);
+          break;
+        }
         default:
                           console.log('[HostView] Unhandled message type:', message.type);
                       }
@@ -445,6 +512,19 @@ export const HostView: React.FC = () => {
       console.error('[HostView] P2P error:', error);
     }, []),
               });
+
+  // Keep commands array in sync with teams array
+  // This ensures that commands created by guests are also available for GET_COMMANDS requests
+  useEffect(() => {
+    const teamCommands = teams.map(t => ({ id: t.id, name: t.name }));
+    // Only update if different to avoid unnecessary updates
+    const currentIds = commands.map(c => c.id).sort().join(',');
+    const newIds = teamCommands.map(c => c.id).sort().join(',');
+    if (currentIds !== newIds) {
+      setCommands(teamCommands);
+      console.log('[HostView] Synced commands with teams:', teamCommands.length);
+    }
+  }, [teams]);
 
   // Use sync effects for teams and commands (broadcasting and storage)
   useSyncEffects({
@@ -514,7 +594,7 @@ export const HostView: React.FC = () => {
     }
   }, [p2pHost.isReady, pendingCommandsRequest, commands, p2pHost.sendToClient]);
 
-  // Create command
+  // Create command - adds to teams, commands are synced automatically
   const handleCreateCommand = useCallback((name: string) => {
     const teamId = 'team_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
     const newTeam: Team = {
@@ -524,29 +604,21 @@ export const HostView: React.FC = () => {
       lastUsedAt: Date.now()
     };
 
-    // Add to teams array for lobby display
+    // Add to teams array (commands will be synced automatically via useEffect)
     setTeams(prev => [...prev, newTeam]);
-
-    // Also add to commands array for compatibility
-    const newCommand: { id: string; name: string } = {
-      id: teamId,
-      name
-    };
-    setCommands(prev => [...prev, newCommand]);
 
     console.log('[HostView] Created team:', newTeam.name, 'id:', teamId);
   }, []);
 
-  // Update command name (rename)
+  // Update command name (rename) - updates teams, commands are synced automatically
   const handleRenameCommand = useCallback((commandId: string, newName: string) => {
-    setCommands(prev => prev.map(c => c.id === commandId ? { ...c, name: newName } : c));
     setTeams(prev => prev.map(t => t.id === commandId ? { ...t, name: newName } : t));
     console.log('[HostView] Renamed team/command:', commandId, 'to', newName);
   }, []);
 
-  // Delete command - uses deleteTeam for proper cleanup
+  // Delete command - removes from teams, commands are synced automatically
   const handleDeleteCommand = useCallback((commandId: string) => {
-    // Remove from clients and teams via deleteTeam logic
+    // Remove teamId from clients
     setClients(clientsPrev => {
       const updated = new Map(clientsPrev);
       updated.forEach((client) => {
@@ -556,9 +628,8 @@ export const HostView: React.FC = () => {
       });
       return updated;
     });
-    // Remove from both teams and commands arrays
+    // Remove from teams array (commands will be synced automatically via useEffect)
     setTeams(prev => prev.filter(t => t.id !== commandId));
-    setCommands(prev => prev.filter(c => c.id !== commandId));
     console.log('[HostView] Deleted team/command:', commandId);
   }, []);
 
@@ -730,12 +801,14 @@ export const HostView: React.FC = () => {
   // Keep refs in sync with state
   const teamsRef = useRef<Team[]>([]);
   const buzzerStateRef = useRef(buzzerState);
+  const answeringTeamIdRef = useRef<string | null>(answeringTeamId);
 
   // Keep all refs in sync with state - combined for better performance
   useEffect(() => {
     teamsRef.current = teams;
     buzzerStateRef.current = buzzerState;
-  }, [teams, buzzerState]);
+    answeringTeamIdRef.current = answeringTeamId;
+  }, [teams, buzzerState, answeringTeamId]);
 
   // Clean up buzzed clients after 3 seconds
   useEffect(() => {
@@ -851,27 +924,6 @@ export const HostView: React.FC = () => {
     }
   }, [p2pHost.isReady, p2pHost.broadcast]);
 
-  // Auto-cleanup empty teams after 5 minutes (300000ms)
-  useEffect(() => {
-    const EMPTY_TEAM_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const clientTeamIds = new Set(Array.from(clients.values()).map((c: ConnectedClient) => c.teamId).filter(Boolean) as string[]);
-
-      setTeams(prev => {
-        const filtered = prev.filter(team => {
-          const hasPlayers = clientTeamIds.has(team.id);
-          const isRecent = (now - team.lastUsedAt) < EMPTY_TEAM_TIMEOUT;
-          return hasPlayers || isRecent;
-        });
-
-        return filtered;
-      });
-    }, 60000); // Check every minute
-
-    return () => clearInterval(cleanupInterval);
-  }, [clients]);
 
   // Reset super game state when session starts/ends
   useEffect(() => {
@@ -1323,6 +1375,7 @@ export const HostView: React.FC = () => {
       clients={clients}
       buzzedClients={buzzedClients}
       buzzedTeamIds={buzzedTeamIds}
+      lateBuzzTeamIds={lateBuzzTeamIds}
       status={status}
       isOnline={isOnline}
       onBackToLobby={() => setIsSessionActive(false)}
@@ -1340,6 +1393,8 @@ export const HostView: React.FC = () => {
       superGameAnswers={superGameAnswers}
       onSuperGamePhaseChange={setSuperGamePhase}
       onSuperGameMaxBetChange={setSuperGameMaxBet}
+      onRequestStateSync={() => setStateSyncTrigger(prev => prev + 1)}
+      stateSyncTrigger={stateSyncTrigger}
     />
   );
 };

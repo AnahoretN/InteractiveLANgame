@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ConnectionStatus, ConnectionQuality, MessageCategory, P2PSMessage, GetCommandsMessage } from '../types';
-import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp, RotateCw } from 'lucide-react';
 import { Button } from './Button';
 import { useBuzzerDebounce } from '../hooks/useBuzzerDebounce';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
@@ -29,6 +29,9 @@ export const MobileView: React.FC = () => {
     return storage.get(STORAGE_KEYS.CURRENT_TEAM_ID) || null;
   });
   const [currentTeamScore, setCurrentTeamScore] = useState<number | null>(null);
+
+  // Team scores from host (for super game betting)
+  const [teamScores, setTeamScores] = useState<Array<{ id: string; name: string; score: number }>>([]);
 
   // Wait for host confirmation after selecting team before showing BUZZ! screen
   const [waitForHostConfirmation, setWaitForHostConfirmation] = useState<boolean>(false);
@@ -102,6 +105,9 @@ export const MobileView: React.FC = () => {
   const [superGameWinner, setSuperGameWinner] = useState<{ winnerTeamName: string; finalScores: { teamId: string; teamName: string; score: number }[] } | null>(null);
   const [betPlaced, setBetPlaced] = useState<boolean>(false);
   const [pendingSuperGame, setPendingSuperGame] = useState<{ maxBet: number; theme?: { id: string; name: string } } | null>(null);
+  // Control modal visibility for super game (triggered by BUZZ button)
+  const [showBetModal, setShowBetModal] = useState<boolean>(false);
+  const [showAnswerModal, setShowAnswerModal] = useState<boolean>(false);
 
   const [retryCount, setRetryCount] = useState(0);
   const [clientId] = useState<string>(() => {
@@ -176,6 +182,61 @@ export const MobileView: React.FC = () => {
           // Full state sync
           setBuzzerState(message.payload.buzzerState);
           setSuperGamePhase(message.payload.superGamePhase);
+          // Sync team scores from host (teams array includes scores)
+          if (message.payload.teams) {
+            setTeamScores(message.payload.teams.map((t: { id: string; name: string; score?: number }) => ({
+              id: t.id,
+              name: t.name,
+              score: t.score ?? 0
+            })));
+          }
+          break;
+        case 'SUPER_GAME_STATE_SYNC':
+          // Super game state sync
+          const sgPayload = message.payload as {
+            phase?: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
+            themeId?: string;
+            themeName?: string;
+            maxBet?: number;
+            questionText?: string;
+            questionMedia?: { type: string; url?: string };
+            teamScores?: Array<{ id: string; name: string; score: number }>;
+          };
+          console.log('[MobileView] SUPER_GAME_STATE_SYNC received:', sgPayload);
+
+          // Update phase
+          if (sgPayload.phase) {
+            setSuperGamePhase(sgPayload.phase);
+          }
+
+          // Update theme info for placeBets phase
+          if (sgPayload.phase === 'placeBets' && sgPayload.themeId && sgPayload.themeName) {
+            setSuperGameTheme({ id: sgPayload.themeId, name: sgPayload.themeName });
+            setSuperGameMaxBet(sgPayload.maxBet || 100);
+            // Update team scores for betting
+            if (sgPayload.teamScores) {
+              setTeamScores(sgPayload.teamScores);
+            }
+            // Reset previous bet
+            setBetPlaced(false);
+            setSuperGameBet(0);
+          }
+
+          // Update question for showQuestion phase
+          if (sgPayload.phase === 'showQuestion' && sgPayload.questionText) {
+            setSuperGameQuestion({
+              text: sgPayload.questionText,
+              media: sgPayload.questionMedia
+            });
+            setSuperGameTheme({ id: sgPayload.themeId || '', name: sgPayload.themeName || '' });
+            // Reset answer
+            setSuperGameAnswer('');
+          }
+
+          // Reset to idle when phase is idle
+          if (sgPayload.phase === 'idle') {
+            resetSuperGameState();
+          }
           break;
         case 'TEAMS_SYNC':
           // Teams list from host (same structure as commands)
@@ -260,8 +321,70 @@ export const MobileView: React.FC = () => {
           console.log('[MobileView] After setState called (state will update on next render)');
           break;
         case 'BROADCAST':
-          // Generic broadcast from host
+          // Generic broadcast from host - check for SUPER_GAME_STATE_SYNC inside payload
           console.log('[MobileView] Broadcast:', message.payload);
+          const broadcastPayload = message.payload as { type?: string; phase?: string; themeId?: string; themeName?: string; maxBet?: number; questionText?: string; questionMedia?: { type: string; url?: string }; teamScores?: Array<{ id: string; name: string; score: number }> };
+
+          // Handle SUPER_GAME_STATE_SYNC sent via BROADCAST
+          if (broadcastPayload?.type === 'SUPER_GAME_STATE_SYNC') {
+            console.log('[MobileView] SUPER_GAME_STATE_SYNC received via BROADCAST:', broadcastPayload);
+
+            // Update phase
+            if (broadcastPayload.phase) {
+              setSuperGamePhase(broadcastPayload.phase as 'idle' | 'placeBets' | 'showQuestion' | 'showWinner');
+            }
+
+            // Update theme info for placeBets phase
+            if (broadcastPayload.phase === 'placeBets' && broadcastPayload.themeId && broadcastPayload.themeName) {
+              setSuperGameTheme({ id: broadcastPayload.themeId, name: broadcastPayload.themeName });
+              setSuperGameMaxBet(broadcastPayload.maxBet || 100);
+              // Update team scores for betting
+              if (broadcastPayload.teamScores) {
+                setTeamScores(broadcastPayload.teamScores);
+                // Update currentTeamId if we have a temp ID (teamName) but now have the real ID from host
+                if (currentTeam && currentTeamId) {
+                  const matchedTeam = broadcastPayload.teamScores.find(t => t.name === currentTeam);
+                  if (matchedTeam && matchedTeam.id !== currentTeamId) {
+                    console.log('[MobileView] Updating currentTeamId from temp to real ID (SUPER_GAME_STATE_SYNC):', currentTeamId, '->', matchedTeam.id);
+                    setCurrentTeamId(matchedTeam.id);
+                    storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
+                  }
+                }
+              }
+              // Reset previous bet
+              setBetPlaced(false);
+              setSuperGameBet(0);
+            }
+
+            // Update question for showQuestion phase
+            if (broadcastPayload.phase === 'showQuestion' && broadcastPayload.questionText) {
+              setSuperGameQuestion({
+                text: broadcastPayload.questionText,
+                media: broadcastPayload.questionMedia
+              });
+              setSuperGameTheme({ id: broadcastPayload.themeId || '', name: broadcastPayload.themeName || '' });
+              // Update team scores and currentTeamId
+              if (broadcastPayload.teamScores) {
+                setTeamScores(broadcastPayload.teamScores);
+                // Update currentTeamId if we have a temp ID (teamName) but now have the real ID from host
+                if (currentTeam && currentTeamId) {
+                  const matchedTeam = broadcastPayload.teamScores.find(t => t.name === currentTeam);
+                  if (matchedTeam && matchedTeam.id !== currentTeamId) {
+                    console.log('[MobileView] Updating currentTeamId from temp to real ID (showQuestion):', currentTeamId, '->', matchedTeam.id);
+                    setCurrentTeamId(matchedTeam.id);
+                    storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
+                  }
+                }
+              }
+              // Reset answer
+              setSuperGameAnswer('');
+            }
+
+            // Reset to idle when phase is idle
+            if (broadcastPayload.phase === 'idle') {
+              resetSuperGameState();
+            }
+          }
           break;
         default:
           console.log('[MobileView] Unhandled message type:', message.type);
@@ -343,6 +466,8 @@ export const MobileView: React.FC = () => {
     setSuperGameWinner(null);
     setBetPlaced(false);
     setPendingSuperGame(null);
+    setShowBetModal(false);
+    setShowAnswerModal(false);
   }, []);
 
   // Send buzz via P2P
@@ -372,11 +497,17 @@ export const MobileView: React.FC = () => {
 
   // Handle buzz button press
   const handleBuzz = useCallback(() => {
-    if (superGamePhase !== 'idle') {
-      // In super game, don't buzz
-      return;
+    if (superGamePhase === 'placeBets') {
+      // Show bet selection modal
+      setShowBetModal(true);
+    } else if (superGamePhase === 'showQuestion') {
+      // Show answer input modal
+      setShowAnswerModal(true);
+    } else if (superGamePhase === 'idle') {
+      // Regular buzz
+      debounceBuzz(sendBuzz);
     }
-    debounceBuzz(sendBuzz);
+    // For 'showWinner' phase, do nothing
   }, [debounceBuzz, sendBuzz, superGamePhase]);
 
   // Handle leave
@@ -638,15 +769,17 @@ export const MobileView: React.FC = () => {
         /* GAME SCREEN */
         <div className="h-full flex flex-col relative bg-gray-950">
           {/* Header */}
-          <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm">
+          <div className="absolute top-0 left-0 right-0 p-4 flex justify-center items-center z-10 bg-gradient-to-b from-gray-900/80 to-transparent backdrop-blur-sm">
+            {/* Left: Leave button */}
             <button
               onClick={handleLeave}
-              className="p-2 bg-red-600/20 hover:bg-red-600/30 rounded-full border border-red-600/30 text-red-400 transition-colors"
+              className="absolute left-4 p-2 bg-red-600/20 hover:bg-red-600/30 rounded-full border border-red-600/30 text-red-400 transition-colors"
               title="Leave session"
             >
               <LogOut className="w-4 h-4" />
             </button>
 
+            {/* Center: User name and team */}
             <div className="flex items-center gap-2 bg-gray-800/50 rounded-full pl-3 pr-4 py-1 border border-white/10">
               <Users className="w-4 h-4 text-blue-400" />
               <div className="flex flex-col text-left leading-none">
@@ -654,31 +787,174 @@ export const MobileView: React.FC = () => {
                 {currentTeam && <span className="text-[10px] text-indigo-400">{currentTeam}</span>}
               </div>
             </div>
+
+            {/* Right: Reconnect button */}
+            <button
+              onClick={() => {
+                console.log('[MobileView] Manual reconnect requested');
+                // Request full state sync from server
+                if (p2pClient.isConnected) {
+                  p2pClient.send({
+                    category: MessageCategory.SYNC,
+                    type: 'GET_COMMANDS',
+                    payload: {}
+                  });
+                  // Also request state sync
+                  p2pClient.send({
+                    category: MessageCategory.STATE,
+                    type: 'STATE_SYNC_REQUEST',
+                    payload: {}
+                  });
+                } else {
+                  // Not connected, trigger reconnect
+                  handleForceReconnect();
+                }
+              }}
+              className="absolute right-4 p-2 bg-blue-600/20 hover:bg-blue-600/30 rounded-full border border-blue-600/30 text-blue-400 transition-colors"
+              title="Reconnect"
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Main Content */}
-          <div className="flex-1 flex items-start justify-center pt-[20vh] p-6 w-full">
+          <div className="flex-1 flex p-6 w-full">
             {isSetupComplete ? (
-              <div className="flex items-center justify-center w-full animate-in zoom-in duration-300">
-                <button
-                  onClick={handleBuzz}
-                  className={`group relative rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none touch-manipulation ${
-                    status !== ConnectionStatus.CONNECTED ? 'grayscale' : ''
-                  }`}
-                  style={{ width: 'min(60vw, 60vh)', height: 'min(60vw, 60vh)' }}
-                >
-                  <div className="absolute inset-0 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-full shadow-[0_0_60px_-15px_rgba(37,99,235,0.5)] group-hover:shadow-[0_0_80px_-10px_rgba(37,99,235,0.7)] transition-all duration-500"></div>
-                  <div className="absolute inset-4 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full border-t border-white/20"></div>
-                  <div className="relative flex flex-col items-center pointer-events-none">
-                    {status !== ConnectionStatus.CONNECTED ? (
-                      <span className="text-4xl font-black text-white/70 tracking-wide text-center leading-tight">Connection<br/>lost</span>
-                    ) : (
-                      <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white to-white/80 tracking-widest uppercase drop-shadow-md">Buzz!</span>
+              // Super Game screens take priority - auto-show based on phase
+              (superGamePhase === 'placeBets' || showBetModal) ? (
+                // placeBets modal - shown automatically when phase changes to placeBets
+                <div className="flex-1 flex items-start justify-center pt-[20vh] w-full">
+                  <div className="flex flex-col items-center w-full animate-in fade-in duration-300 px-4">
+                    <h2 className="text-2xl font-bold text-white mb-4">Place Your Bet</h2>
+                    {superGameTheme && (
+                      <p className="text-lg text-yellow-400 mb-6">{superGameTheme.name}</p>
                     )}
+                    <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-gray-400 text-sm">Your bet:</span>
+                        <span className="text-white font-bold">{superGameBet}</span>
+                      </div>
+                      <div className="text-gray-500 text-xs mb-4">Your score: {teamScores.find(t => t.id === currentTeamId)?.score || 0}</div>
+                      <input
+                        type="range"
+                        min="0"
+                        max={teamScores.find(t => t.id === currentTeamId)?.score || 100}
+                        step="10"
+                        value={superGameBet}
+                        onChange={(e) => setSuperGameBet(parseInt(e.target.value))}
+                        className="w-full accent-blue-500"
+                        disabled={betPlaced}
+                      />
+                      <button
+                        onClick={() => {
+                          if (p2pClient.isConnected && currentTeamId) {
+                            p2pClient.send({
+                              category: MessageCategory.EVENT,
+                              type: 'SUPER_GAME_BET',
+                              payload: {
+                                clientId: clientId,
+                                teamId: currentTeamId,
+                                bet: superGameBet
+                              }
+                            });
+                            setBetPlaced(true);
+                            setShowBetModal(false);
+                            console.log('[MobileView] Sent SUPER_GAME_BET:', superGameBet);
+                          }
+                        }}
+                        // Always allow clicking to proceed
+                        disabled={!p2pClient.isConnected}
+                      className="w-full mt-4 p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors"
+                    >
+                      {betPlaced ? 'Done' : 'Place Bet'}
+                    </button>
                   </div>
-                  <div className="absolute inset-0 rounded-full border-4 border-white/10 scale-105 animate-pulse"></div>
-                </button>
-              </div>
+                </div>
+                </div>
+              ) : (superGamePhase === 'showQuestion' || showAnswerModal) ? (
+                // showQuestion modal - shown when BUZZ is pressed during showQuestion phase
+                <div className="flex-1 flex items-start justify-center pt-[20vh] px-4 w-full animate-in fade-in duration-300">
+                  <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full">
+                    <div className="text-center text-gray-400 text-sm mb-4">
+                      Your bet: <span className="text-white font-bold text-base">{superGameBet}</span>&nbsp;|&nbsp;Your score: <span className="text-white font-bold text-base">{teamScores.find(t => t.id === currentTeamId)?.score || 0}</span>
+                    </div>
+                    <textarea
+                      value={superGameAnswer}
+                      onChange={(e) => setSuperGameAnswer(e.target.value)}
+                      placeholder="Type your answer..."
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none text-base"
+                      rows={4}
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (p2pClient.isConnected && currentTeamId && superGameAnswer.trim()) {
+                          console.log('[MobileView] Sending SUPER_GAME_ANSWER - teamId:', currentTeamId, 'answer:', superGameAnswer.trim());
+                          p2pClient.send({
+                            category: MessageCategory.EVENT,
+                            type: 'SUPER_GAME_ANSWER',
+                            payload: {
+                              clientId: clientId,
+                              teamId: currentTeamId,
+                              answer: superGameAnswer.trim()
+                            }
+                          });
+                          console.log('[MobileView] Sent SUPER_GAME_ANSWER:', superGameAnswer.trim());
+                          setShowAnswerModal(false);
+                        } else {
+                          console.log('[MobileView] Cannot send answer - isConnected:', p2pClient.isConnected, 'currentTeamId:', currentTeamId, 'hasAnswer:', !!superGameAnswer.trim());
+                        }
+                      }}
+                      disabled={!superGameAnswer.trim() || !p2pClient.isConnected}
+                      className="w-full mt-4 p-4 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors text-lg touch-manipulation active:scale-95"
+                    >
+                      Submit Answer
+                    </button>
+                    <button
+                      onClick={() => setShowAnswerModal(false)}
+                      className="w-full mt-2 p-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-xl text-sm transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              ) : superGamePhase === 'showWinner' && superGameWinner ? (
+                <div className="flex flex-col items-center justify-center w-full animate-in fade-in duration-300 px-4">
+                  <h2 className="text-3xl font-bold text-yellow-400 mb-4">Winner!</h2>
+                  <p className="text-2xl text-white mb-6">{superGameWinner.winnerTeamName}</p>
+                  <div className="bg-gray-900 border border-yellow-600 rounded-xl p-4 w-full max-w-sm">
+                    {superGameWinner.finalScores.map((score, idx) => (
+                      <div key={idx} className="flex justify-between items-center py-2 border-b border-gray-700 last:border-0">
+                        <span className="text-white">{score.teamName}</span>
+                        <span className="text-xl font-bold text-yellow-400">{score.score}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                // Regular BUZZ button
+                <div className="flex items-start justify-center pt-[20vh] w-full animate-in zoom-in duration-300">
+                  <button
+                    onClick={handleBuzz}
+                    className={`group relative rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none touch-manipulation ${
+                      status !== ConnectionStatus.CONNECTED ? 'grayscale' : ''
+                    }`}
+                    style={{ width: 'min(60vw, 60vh)', height: 'min(60vw, 60vh)' }}
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-full shadow-[0_0_60px_-15px_rgba(37,99,235,0.5)] group-hover:shadow-[0_0_80px_-10px_rgba(37,99,235,0.7)] transition-all duration-500"></div>
+                    <div className="absolute inset-4 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full border-t border-white/20"></div>
+                    <div className="relative flex flex-col items-center pointer-events-none">
+                      {status !== ConnectionStatus.CONNECTED ? (
+                        <span className="text-4xl font-black text-white/70 tracking-wide text-center leading-tight">Connection<br/>lost</span>
+                      ) : (
+                        <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white to-white/80 tracking-widest uppercase drop-shadow-md">Buzz!</span>
+                      )}
+                    </div>
+                    <div className="absolute inset-0 rounded-full border-4 border-white/10 scale-105 animate-pulse"></div>
+                  </button>
+                </div>
+              )
             ) : (
               <div className="flex flex-col items-center space-y-6 text-center">
                 <div className="relative">

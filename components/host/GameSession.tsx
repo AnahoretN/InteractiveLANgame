@@ -30,6 +30,7 @@ interface GameSessionProps {
   clients: Map<string, TeamPlayer>;
   buzzedClients: Map<string, number>;
   buzzedTeamIds: Set<string>;  // Teams that recently buzzed (for visual flash)
+  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (yellow flash)
   status: import('../../types').ConnectionStatus;
   isOnline: boolean;
   onBackToLobby: () => void;
@@ -47,6 +48,8 @@ interface GameSessionProps {
   superGameAnswers?: Array<{ teamId: string; answer: string; revealed: boolean }>;  // Answers from mobile clients
   onSuperGamePhaseChange?: (phase: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner') => void;  // Track super game phase
   onSuperGameMaxBetChange?: (maxBet: number) => void;  // Track max bet for super game
+  onRequestStateSync?: () => void;  // Trigger to resend current state to clients
+  stateSyncTrigger?: number;  // Trigger value that changes when state sync is requested
 }
 
 export const GameSession = memo(({
@@ -54,6 +57,7 @@ export const GameSession = memo(({
   clients,
   buzzedClients,
   buzzedTeamIds,
+  lateBuzzTeamIds,
   noTeamsMode = false,
   sessionSettings,
   onBackToLobby,
@@ -68,7 +72,9 @@ export const GameSession = memo(({
   superGameBets,
   superGameAnswers,
   onSuperGamePhaseChange,
-  onSuperGameMaxBetChange
+  onSuperGameMaxBetChange,
+  onRequestStateSync,
+  stateSyncTrigger
 }: GameSessionProps) => {
   const isNoTeamsMode = noTeamsMode || sessionSettings?.noTeamsMode || false;
 
@@ -142,6 +148,7 @@ export const GameSession = memo(({
         onClearBuzzes={onClearBuzz}
         buzzedTeamId={triggeredTeamId}
         buzzedTeamIds={buzzedTeamIds}
+        lateBuzzTeamIds={lateBuzzTeamIds}
         answeringTeamId={answeringTeamId}
         onAnsweringTeamChange={onAnsweringTeamChange}
         onBroadcastMessage={onBroadcastMessage}
@@ -150,6 +157,8 @@ export const GameSession = memo(({
         superGameAnswers={superGameAnswers || []}
         onSuperGamePhaseChange={onSuperGamePhaseChange}
         onSuperGameMaxBetChange={onSuperGameMaxBetChange}
+        onRequestStateSync={onRequestStateSync}
+        stateSyncTrigger={stateSyncTrigger}
       />
     </Suspense>
   );

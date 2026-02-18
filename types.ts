@@ -249,6 +249,13 @@ export interface GetCommandsMessage extends P2PMessage {
   payload: {};
 }
 
+// SYNC: Request full state sync from host
+export interface StateSyncRequestMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'STATE_SYNC_REQUEST';
+  payload: {};
+}
+
 // Union type for all P2P messages
 export type P2PSMessage =
   | TeamStateMessage
@@ -267,7 +274,8 @@ export type P2PSMessage =
   | TeamUpdateMessage
   | TeamsSyncMessage
   | CommandsListMessage
-  | GetCommandsMessage;
+  | GetCommandsMessage
+  | StateSyncRequestMessage;
 
 // Message handler type
 export type MessageHandler = (message: P2PSMessage, peerId: string) => void;
