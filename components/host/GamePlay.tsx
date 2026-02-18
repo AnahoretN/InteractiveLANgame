@@ -864,8 +864,8 @@ export const GamePlay = memo(({
           const isLateBuzz = lateBuzzTeamIds?.has(team.teamId) || false;
           // Check if team has placed bet in super game
           const hasPlacedBet = currentScreen === 'placeBets' && superGameBets.find(b => b.teamId === team.teamId)?.ready;
-          // Check if team has submitted answer in super game
-          const hasSubmittedAnswer = currentScreen === 'superGameAnswers' && superGameAnswers.find((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }) => a.teamId === team.teamId)?.submitted;
+          // Check if team has submitted answer in super game (during question phase)
+          const hasSubmittedAnswer = currentScreen === 'superQuestion' && superGameAnswers.find(a => a.teamId === team.teamId)?.answer;
 
           return (
             <div
@@ -890,12 +890,6 @@ export const GamePlay = memo(({
               }`}>
                 {team.score}
               </div>
-              {hasPlacedBet && (
-                <div className="text-green-400 text-xs font-bold mt-1">✓ Bet Placed</div>
-              )}
-              {hasSubmittedAnswer && (
-                <div className="text-green-400 text-xs font-bold mt-1">✓ Answer Sent</div>
-              )}
             </div>
           </div>
           );

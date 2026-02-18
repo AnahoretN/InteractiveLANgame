@@ -119,7 +119,7 @@ export const SuperGameQuestionModal = memo(({
           </div>
 
           {/* Question content */}
-          <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
+          <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
             <div className={`w-full h-full flex ${
               mediaUrl ? 'items-center justify-start' : 'items-center justify-center'
             }`}>
@@ -172,17 +172,6 @@ export const SuperGameQuestionModal = memo(({
                 </div>
               )}
             </div>
-          </div>
-        </div>
-
-        {/* Status bar - simple status message */}
-        <div className="h-16 bg-gray-800/50 flex items-center justify-center px-6">
-          <div className="text-center text-white text-lg">
-            {superGameAnswers.length > 0 && superGameAnswers.length === teamScores.length ? (
-              <span className="text-green-400 animate-pulse">All teams answered! Press Space to reveal answers</span>
-            ) : (
-              <span className="text-gray-400">Waiting for teams to answer... ({superGameAnswers.length}/{teamScores.length})</span>
-            )}
           </div>
         </div>
       </div>
@@ -336,10 +325,11 @@ export const SuperGameAnswersModal = memo(({
                 // What to display in the card
                 const getCardContent = () => {
                   if (hasAnswer) {
-                    // Always show the answer text - 50% larger font
+                    // Show the answer text when available - 50% larger font
                     return <div className="text-white font-medium break-words" style={{ fontSize: `${1.5 * fontScale}rem` }}>{answer.answer}</div>;
                   }
-                  return <div className="text-gray-400" style={{ fontSize: `${1.5 * fontScale}rem` }}>Ожидает...</div>;
+                  // Empty when no answer yet
+                  return null;
                 };
 
                 return (

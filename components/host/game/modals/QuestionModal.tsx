@@ -232,7 +232,7 @@ export const QuestionModal = memo(({
           </div>
 
           {/* Question content */}
-          <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
+          <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
             <div className={`w-full h-full flex ${
               (showAnswer ? (question.answerMedia?.url) : mediaUrl) ? 'items-center justify-start' : 'items-center justify-center'
             }`}>

@@ -6,11 +6,11 @@
  * Calculate dynamic font size for question text
  * @param text - The question text
  * @param baseSize - Base font size in rem (current size: 4 for mobile, 7 for desktop)
- * @returns Font size in rem (half of base to full base)
+ * @returns Font size in rem (can go down to 25% of base for very long text)
  */
 export function calculateQuestionFontSize(text: string, baseSize: number): number {
-  const minSize = baseSize * 0.5;
-  const maxLength = 200; // At 200+ chars, use minimum size
+  const minSize = baseSize * 0.25; // Can go down to 25% for very long text
+  const maxLength = 400; // At 400+ chars, use minimum size
   const shortThreshold = 30; // Text length considered "short"
 
   const length = text.length;
