@@ -3,57 +3,57 @@
  * Modals for super game: question display and answers grid
  */
 
-import React, { memo, useState, useCallback, useEffect } from 'react';
+import React, { memo, useState, useCallback, useEffect, useMemo } from 'react';
 import { Volume2, X } from 'lucide-react';
-import type { Round, Theme, Question } from '../packeditor/types';
+import type { Round } from '../packeditor/types';
 import type { SuperGameBet, SuperGameAnswer } from './types';
 import { calculateQuestionFontSize } from './fontUtils';
+
+// ============= CONSTANTS =============
+const SUPER_GAME_QUESTION_TIME = 60; // seconds
+const TIMER_UPDATE_INTERVAL = 100; // ms
 
 // ============= SUPER GAME QUESTION MODAL =============
 
 interface SuperGameQuestionModalProps {
   round: Round;
   selectedSuperThemeId: string | null;
-  teamScores: { teamId: string; teamName: string; score: number }[];
-  superGameBets: SuperGameBet[];
-  superGameAnswers: SuperGameAnswer[];
   onClose: () => void;
 }
 
 export const SuperGameQuestionModal = memo(({
   round,
   selectedSuperThemeId,
-  teamScores,
-  superGameBets,
-  superGameAnswers,
   onClose,
 }: SuperGameQuestionModalProps) => {
-  const [timerRemaining, setTimerRemaining] = useState(0);
-  const [timerActive, setTimerActive] = useState(false);
+  const [timerRemaining, setTimerRemaining] = useState<number>(SUPER_GAME_QUESTION_TIME);
+  const [timerActive, setTimerActive] = useState<boolean>(true);
 
   // Get the selected theme and question
-  const selectedTheme = round.themes?.find(t => t.id === selectedSuperThemeId);
+  const selectedTheme = useMemo(
+    () => round.themes?.find(t => t.id === selectedSuperThemeId),
+    [round.themes, selectedSuperThemeId]
+  );
   const question = selectedTheme?.questions?.[0];
 
   // Auto-start timer when question opens
   useEffect(() => {
-    setTimerActive(true);
-    const QUESTION_TIME = 60; // 60 seconds for super game question
-    setTimerRemaining(QUESTION_TIME);
+    if (!timerActive) return;
+
+    setTimerRemaining(SUPER_GAME_QUESTION_TIME);
 
     const interval = setInterval(() => {
       setTimerRemaining(prev => {
         if (prev <= 0.1) {
-          clearInterval(interval);
           setTimerActive(false);
           return 0;
         }
-        return Math.max(0, prev - 0.1);
+        return Math.max(0, prev - TIMER_UPDATE_INTERVAL / 1000);
       });
-    }, 100);
+    }, TIMER_UPDATE_INTERVAL);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [timerActive]);
 
   const handleClose = useCallback(() => {
     onClose();
@@ -68,8 +68,9 @@ export const SuperGameQuestionModal = memo(({
     );
   }
 
-  const mediaUrl = question.media?.url;
-  const mediaType = question.media?.type;
+  const questionMedia = question.media;
+  const mediaUrl = questionMedia?.url;
+  const mediaType = questionMedia?.type;
 
   // Calculate dynamic font size
   const questionText = question.text || '';
@@ -77,8 +78,7 @@ export const SuperGameQuestionModal = memo(({
   const questionFontSizeDesktop = calculateQuestionFontSize(questionText, 5);
 
   // Calculate timer progress
-  const QUESTION_TIME = 60;
-  const timerProgress = ((QUESTION_TIME - timerRemaining) / QUESTION_TIME) * 100;
+  const timerProgress = ((SUPER_GAME_QUESTION_TIME - timerRemaining) / SUPER_GAME_QUESTION_TIME) * 100;
 
   return (
     <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default"
@@ -124,7 +124,7 @@ export const SuperGameQuestionModal = memo(({
               mediaUrl ? 'items-center justify-start' : 'items-center justify-center'
             }`}>
               {/* Media container on left - 50% width when media exists */}
-              {mediaUrl ? (
+              {mediaUrl && (
                 <div className="w-1/2 h-full flex items-center justify-center p-4">
                   {mediaType === 'image' && (
                     <img
@@ -147,30 +147,18 @@ export const SuperGameQuestionModal = memo(({
                     </div>
                   )}
                 </div>
-              ) : null}
+              )}
 
               {/* Question text */}
-              {mediaUrl ? (
-                <div className="w-1/2 h-full flex items-center justify-center p-4">
-                  <h2
-                    className="font-bold text-white leading-[1.1] text-center"
-                    style={{ fontSize: `${questionFontSizeMobile}rem` }}
-                    data-sg-sgq="true"
-                  >
-                    {questionText}
-                  </h2>
-                </div>
-              ) : (
-                <div className="w-3/4 h-full flex items-center justify-center p-4">
-                  <h2
-                    className="font-bold text-white leading-[1.1] text-center"
-                    style={{ fontSize: `${questionFontSizeMobile}rem` }}
-                    data-sg-sgq="true"
-                  >
-                    {questionText}
-                  </h2>
-                </div>
-              )}
+              <div className={`${mediaUrl ? 'w-1/2' : 'w-3/4'} h-full flex items-center justify-center p-4`}>
+                <h2
+                  className="font-bold text-white leading-[1.1] text-center"
+                  style={{ fontSize: `${questionFontSizeMobile}rem` }}
+                  data-sg-sgq="true"
+                >
+                  {questionText}
+                </h2>
+              </div>
             </div>
           </div>
         </div>
@@ -207,10 +195,13 @@ export const SuperGameAnswersModal = memo(({
   onClose,
 }: SuperGameAnswersModalProps) => {
   // State for showing correct answer
-  const [showCorrectAnswer, setShowCorrectAnswer] = useState(false);
+  const [showCorrectAnswer, setShowCorrectAnswer] = useState<boolean>(false);
 
   // Get the selected theme and question
-  const selectedTheme = round.themes?.find(t => t.id === selectedSuperThemeId);
+  const selectedTheme = useMemo(
+    () => round.themes?.find(t => t.id === selectedSuperThemeId),
+    [round.themes, selectedSuperThemeId]
+  );
   const question = selectedTheme?.questions?.[0];
 
   // Handle keyboard controls
@@ -298,48 +289,24 @@ export const SuperGameAnswersModal = memo(({
                                   teamScores.length <= 20 ? 0.7 : 0.6;
 
                 // Determine card style based on state
-                const getCardStyle = () => {
-                  if (isCorrect) {
-                    // Correct answer - always green, white border if also selected
-                    return isSelected
-                      ? 'border-white bg-green-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                      : 'border-green-500 bg-green-500/20';
-                  }
-                  if (isWrong) {
-                    // Wrong answer - always red, white border if also selected
-                    return isSelected
-                      ? 'border-white bg-red-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                      : 'border-red-500 bg-red-500/20';
-                  }
-                  if (isSelected) {
-                    // Selected card (not yet judged) - white border
-                    return 'border-white bg-blue-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]';
-                  }
-                  if (hasAnswer) {
-                    // Has answer but not selected - blue border
-                    return 'border-blue-500 bg-blue-500/20';
-                  }
-                  return 'border-gray-700 bg-gray-900 hover:border-gray-600';
-                };
-
-                // What to display in the card
-                const getCardContent = () => {
-                  if (hasAnswer) {
-                    // Show the answer text when available - 50% larger font
-                    return <div className="text-white font-medium break-words" style={{ fontSize: `${1.5 * fontScale}rem` }}>{answer.answer}</div>;
-                  }
-                  // Empty when no answer yet
-                  return null;
-                };
+                const cardStyle = isCorrect
+                  ? (isSelected ? 'border-white bg-green-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]' : 'border-green-500 bg-green-500/20')
+                  : isWrong
+                    ? (isSelected ? 'border-white bg-red-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]' : 'border-red-500 bg-red-500/20')
+                    : isSelected
+                      ? 'border-white bg-blue-500/20 scale-105 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
+                      : hasAnswer
+                        ? 'border-blue-500 bg-blue-500/20'
+                        : 'border-gray-700 bg-gray-900 hover:border-gray-600';
 
                 return (
                   <button
                     key={team.teamId}
                     onClick={() => onTeamSelect(team.teamId)}
-                    className={`relative rounded-xl border-[3px] transition-all flex flex-col cursor-pointer ${getCardStyle()}`}
+                    className={`relative rounded-xl border-[3px] transition-all flex flex-col cursor-pointer ${cardStyle}`}
                     style={{ minHeight: '140px', padding: '8px' }}
                   >
-                    {/* Top: Team name with margin - yellow color, 25% larger font */}
+                    {/* Top: Team name */}
                     <div className="text-center" style={{ marginTop: '12px', marginBottom: '8px' }}>
                       <div
                         className="font-bold text-yellow-400 leading-tight"
@@ -351,10 +318,14 @@ export const SuperGameAnswersModal = memo(({
 
                     {/* Center: Answer - takes remaining space */}
                     <div className="flex-1 flex items-center justify-center text-center px-1">
-                      {getCardContent()}
+                      {hasAnswer ? (
+                        <div className="text-white font-medium break-words" style={{ fontSize: `${1.5 * fontScale}rem` }}>
+                          {answer.answer}
+                        </div>
+                      ) : null}
                     </div>
 
-                    {/* Bottom: Bet with margin - yellow color, 25% larger font */}
+                    {/* Bottom: Bet */}
                     <div className="text-center" style={{ marginTop: '8px', marginBottom: '12px' }}>
                       <div
                         className="text-yellow-400 font-semibold"

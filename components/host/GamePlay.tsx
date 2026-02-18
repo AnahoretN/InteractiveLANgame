@@ -1119,9 +1119,7 @@ export const GamePlay = memo(({
         <SuperGameQuestionModal
           round={currentRound}
           selectedSuperThemeId={selectedSuperThemeId}
-          teamScores={teamScores}
-          superGameAnswers={superGameAnswers}
-          onSpacePressed={() => setCurrentScreen('superAnswers')}
+          onClose={() => setCurrentScreen('superAnswers')}
         />
       )}
 
@@ -1151,7 +1149,7 @@ export const GamePlay = memo(({
               return a;
             }));
           }}
-          onSpacePressed={() => setCurrentScreen('showWinner')}
+          onClose={() => setCurrentScreen('showWinner')}
         />
       )}
 
