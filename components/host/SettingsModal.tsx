@@ -10,7 +10,7 @@ import { SESSION_CONFIG } from '../../config';
 import type { SessionSettings } from '../../hooks/useSessionSettings';
 
 // App version
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 
 interface SettingsModalProps {
   isOpen: boolean;
