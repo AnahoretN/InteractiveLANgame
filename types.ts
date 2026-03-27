@@ -108,6 +108,7 @@ export interface BuzzerStateMessage extends P2PMessage {
     responseTimerRemaining: number;
     handicapActive: boolean;
     handicapTeamId?: string;
+    buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
   };
 }
 

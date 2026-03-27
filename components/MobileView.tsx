@@ -56,11 +56,9 @@ export const MobileView: React.FC = () => {
     if (currentTeam && currentTeamId) {
       storage.set(STORAGE_KEYS.CURRENT_TEAM, currentTeam);
       storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, currentTeamId);
-      console.log('[MobileView] Saved team to storage:', currentTeam, currentTeamId);
     } else if (currentTeam === null) {
       storage.remove(STORAGE_KEYS.CURRENT_TEAM);
       storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
-      console.log('[MobileView] Removed team from storage');
     }
   }, [currentTeam, currentTeamId]);
 
@@ -171,8 +169,6 @@ export const MobileView: React.FC = () => {
     persistentClientId: clientId,  // Pass stored client ID for reconnection
     currentTeamId: currentTeamId,   // Pass current team ID for reconnection
     onMessage: (message) => {
-      console.log('[MobileView] Received message from host:', message.type, 'category:', message.category);
-
       switch (message.type) {
         case 'BUZZER_STATE':
           // Update buzzer state from host
@@ -202,7 +198,6 @@ export const MobileView: React.FC = () => {
             questionMedia?: { type: string; url?: string };
             teamScores?: Array<{ id: string; name: string; score: number }>;
           };
-          console.log('[MobileView] SUPER_GAME_STATE_SYNC received:', sgPayload);
 
           // Update phase
           if (sgPayload.phase) {
@@ -250,7 +245,6 @@ export const MobileView: React.FC = () => {
           if (currentTeam && currentTeamId) {
             const matchedTeam = newTeamsCommands.find(c => c.name === currentTeam);
             if (matchedTeam && matchedTeam.id !== currentTeamId) {
-              console.log('[MobileView] Updating currentTeamId from temp to real ID:', currentTeamId, '->', matchedTeam.id);
               setCurrentTeamId(matchedTeam.id);
               storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
             }
@@ -260,7 +254,6 @@ export const MobileView: React.FC = () => {
           if (currentTeamId && currentTeam) {
             const currentTeamExists = newTeamsCommands.some(c => c.id === currentTeamId || c.name === currentTeam);
             if (!currentTeamExists) {
-              console.log('[MobileView] Current team was deleted (TEAMS_SYNC), clearing selection');
               setCurrentTeam(null);
               setCurrentTeamId(null);
               storage.remove(STORAGE_KEYS.CURRENT_TEAM);
@@ -271,7 +264,6 @@ export const MobileView: React.FC = () => {
           setCommands(newTeamsCommands);
           storage.set(STORAGE_KEYS.COMMANDS, JSON.stringify(newTeamsCommands));
           setHasReceivedCommands(true);
-          console.log('[MobileView] Teams sync received:', syncedTeams);
           break;
         case 'COMMANDS_LIST':
           // Commands list from host
@@ -285,7 +277,6 @@ export const MobileView: React.FC = () => {
           if (currentTeam && currentTeamId) {
             const matchedTeam = newCommands.find(c => c.name === currentTeam);
             if (matchedTeam && matchedTeam.id !== currentTeamId) {
-              console.log('[MobileView] Updating currentTeamId from temp to real ID:', currentTeamId, '->', matchedTeam.id);
               setCurrentTeamId(matchedTeam.id);
               storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
             }
@@ -296,7 +287,6 @@ export const MobileView: React.FC = () => {
             const currentTeamExists = newCommands.some(c => c.id === currentTeamId || c.name === currentTeam);
             if (!currentTeamExists) {
               // Current team was deleted, clear selection
-              console.log('[MobileView] Current team was deleted, clearing selection');
               setCurrentTeam(null);
               setCurrentTeamId(null);
               storage.remove(STORAGE_KEYS.CURRENT_TEAM);
@@ -310,24 +300,18 @@ export const MobileView: React.FC = () => {
           setLoadingCommands(false);
           setIsRefreshingList(false);
           setHasReceivedCommands(true);
-          console.log('[MobileView] Commands sync received:', syncedCommands);
           break;
         case 'TEAM_CONFIRMED':
           // Host confirmed client is in lobby
-          console.log('[MobileView] TEAM_CONFIRMED received, showing BUZZ! screen');
-          console.log('[MobileView] Before setState - waitForHostConfirmation:', waitForHostConfirmation);
           // Directly set to false
           setWaitForHostConfirmation(false);
-          console.log('[MobileView] After setState called (state will update on next render)');
           break;
         case 'BROADCAST':
           // Generic broadcast from host - check for SUPER_GAME_STATE_SYNC inside payload
-          console.log('[MobileView] Broadcast:', message.payload);
           const broadcastPayload = message.payload as { type?: string; phase?: string; themeId?: string; themeName?: string; maxBet?: number; questionText?: string; questionMedia?: { type: string; url?: string }; teamScores?: Array<{ id: string; name: string; score: number }> };
 
           // Handle SUPER_GAME_STATE_SYNC sent via BROADCAST
           if (broadcastPayload?.type === 'SUPER_GAME_STATE_SYNC') {
-            console.log('[MobileView] SUPER_GAME_STATE_SYNC received via BROADCAST:', broadcastPayload);
 
             // Update phase
             if (broadcastPayload.phase) {
@@ -345,7 +329,6 @@ export const MobileView: React.FC = () => {
                 if (currentTeam && currentTeamId) {
                   const matchedTeam = broadcastPayload.teamScores.find(t => t.name === currentTeam);
                   if (matchedTeam && matchedTeam.id !== currentTeamId) {
-                    console.log('[MobileView] Updating currentTeamId from temp to real ID (SUPER_GAME_STATE_SYNC):', currentTeamId, '->', matchedTeam.id);
                     setCurrentTeamId(matchedTeam.id);
                     storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
                   }
@@ -370,7 +353,6 @@ export const MobileView: React.FC = () => {
                 if (currentTeam && currentTeamId) {
                   const matchedTeam = broadcastPayload.teamScores.find(t => t.name === currentTeam);
                   if (matchedTeam && matchedTeam.id !== currentTeamId) {
-                    console.log('[MobileView] Updating currentTeamId from temp to real ID (showQuestion):', currentTeamId, '->', matchedTeam.id);
                     setCurrentTeamId(matchedTeam.id);
                     storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, matchedTeam.id);
                   }
@@ -387,7 +369,6 @@ export const MobileView: React.FC = () => {
           }
           break;
         default:
-          console.log('[MobileView] Unhandled message type:', message.type);
       }
     },
     onConnectionChange: (state, quality) => {
@@ -425,14 +406,12 @@ export const MobileView: React.FC = () => {
   // Auto-connect when we have host ID
   useEffect(() => {
     if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting) {
-      console.log('[MobileView] Auto-connecting to host:', urlHostId);
       p2pClient.connect();
     }
   }, [urlHostId, p2pClient.isConnected, p2pClient.isConnecting, p2pClient.connect]);
 
   // Debug: Track p2pClient connection state changes
   useEffect(() => {
-    console.log('[MobileView] p2pClient state changed - isConnected:', p2pClient.isConnected, 'connectionState:', p2pClient.connectionState);
   }, [p2pClient.isConnected, p2pClient.connectionState]);
 
   // Save name to storage when changed
@@ -472,7 +451,6 @@ export const MobileView: React.FC = () => {
 
   // Send buzz via P2P
   const sendBuzz = useCallback(() => {
-    console.log('[MobileView] sendBuzz called - p2pClient.isConnected:', p2pClient.isConnected, 'connectionState:', p2pClient.connectionState);
 
     if (!p2pClient.isConnected) {
       console.warn('[MobileView] Not connected, cannot buzz. State:', p2pClient.connectionState);
@@ -492,7 +470,6 @@ export const MobileView: React.FC = () => {
       }
     });
 
-    console.log('[MobileView] Buzz message sent:', sent);
   }, [p2pClient.isConnected, p2pClient.connectionState, p2pClient.send, clientId, userName, currentTeamId, currentTeam]);
 
   // Handle buzz button press
@@ -539,7 +516,6 @@ export const MobileView: React.FC = () => {
 
   // Handle force reconnect
   const handleForceReconnect = useCallback(() => {
-    console.log('[MobileView] Force reconnect');
     setRetryCount(0);
     if (p2pClient.isConnected) {
       p2pClient.disconnect();
@@ -557,13 +533,12 @@ export const MobileView: React.FC = () => {
 
   // Debug: Track waitForHostConfirmation changes
   useEffect(() => {
-    console.log('[MobileView] waitForHostConfirmation changed to:', waitForHostConfirmation);
+    // Track waitForHostConfirmation changes
   }, [waitForHostConfirmation]);
 
   // Is setup complete (ready to play) - need name, selected team, AND host confirmation
   const isSetupComplete = useMemo(() => {
     const result = userName.trim() !== '' && currentTeam !== null && !waitForHostConfirmation;
-    console.log('[MobileView] isSetupComplete:', result, 'userName:', userName, 'currentTeam:', currentTeam, 'waitForHostConfirmation:', waitForHostConfirmation);
     return result;
   }, [userName, currentTeam, waitForHostConfirmation]);
 
@@ -576,7 +551,6 @@ export const MobileView: React.FC = () => {
         type: 'GET_COMMANDS',
         payload: {}
       });
-      console.log('[MobileView] Requested commands list from host');
     }
   }, [p2pClient]);
 
@@ -628,7 +602,6 @@ export const MobileView: React.FC = () => {
                           type: 'GET_COMMANDS',
                           payload: {}
                         });
-                        console.log('[MobileView] Refreshing commands list from host');
                       }
                     } else {
                       // Open the list and fetch commands if needed
@@ -641,7 +614,6 @@ export const MobileView: React.FC = () => {
                             type: 'GET_COMMANDS',
                             payload: {}
                           });
-                          console.log('[MobileView] Requested commands list from host');
                         }
                       }
                     }
@@ -702,7 +674,6 @@ export const MobileView: React.FC = () => {
                                   }
                                 });
                                 setWaitForHostConfirmation(true);
-                                console.log('[MobileView] Sent JOIN_TEAM message for team:', command.name);
                               }
                             }}
                             className="w-full border rounded-xl px-4 py-3 text-left transition-all flex items-center justify-between bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
@@ -739,7 +710,6 @@ export const MobileView: React.FC = () => {
                           teamName: teamName
                         }
                       });
-                      console.log('[MobileView] Sent CREATE_TEAM message:', teamName);
                       setNewTeamName('');
                       // Set current team and wait for host confirmation
                       setCurrentTeam(teamName);
@@ -791,7 +761,6 @@ export const MobileView: React.FC = () => {
             {/* Right: Reconnect button */}
             <button
               onClick={() => {
-                console.log('[MobileView] Manual reconnect requested');
                 // Request full state sync from server
                 if (p2pClient.isConnected) {
                   p2pClient.send({
@@ -859,7 +828,6 @@ export const MobileView: React.FC = () => {
                             });
                             setBetPlaced(true);
                             setShowBetModal(false);
-                            console.log('[MobileView] Sent SUPER_GAME_BET:', superGameBet);
                           }
                         }}
                         // Always allow clicking to proceed
@@ -890,7 +858,6 @@ export const MobileView: React.FC = () => {
                         e.preventDefault();
                         e.stopPropagation();
                         if (p2pClient.isConnected && currentTeamId && superGameAnswer.trim()) {
-                          console.log('[MobileView] Sending SUPER_GAME_ANSWER - teamId:', currentTeamId, 'answer:', superGameAnswer.trim());
                           p2pClient.send({
                             category: MessageCategory.EVENT,
                             type: 'SUPER_GAME_ANSWER',
@@ -900,10 +867,8 @@ export const MobileView: React.FC = () => {
                               answer: superGameAnswer.trim()
                             }
                           });
-                          console.log('[MobileView] Sent SUPER_GAME_ANSWER:', superGameAnswer.trim());
                           setShowAnswerModal(false);
                         } else {
-                          console.log('[MobileView] Cannot send answer - isConnected:', p2pClient.isConnected, 'currentTeamId:', currentTeamId, 'hasAnswer:', !!superGameAnswer.trim());
                         }
                       }}
                       disabled={!superGameAnswer.trim() || !p2pClient.isConnected}

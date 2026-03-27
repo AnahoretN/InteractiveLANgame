@@ -30,7 +30,7 @@ interface GameSessionProps {
   clients: Map<string, TeamPlayer>;
   buzzedClients: Map<string, number>;
   buzzedTeamIds: Set<string>;  // Teams that recently buzzed (for visual flash)
-  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (yellow flash)
+  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (blue flash)
   status: import('../../types').ConnectionStatus;
   isOnline: boolean;
   onBackToLobby: () => void;
@@ -43,6 +43,10 @@ interface GameSessionProps {
   buzzerState?: BuzzerState;  // Add buzzer state to track timer phase
   answeringTeamId?: string | null;  // Team that gets to answer the question
   onAnsweringTeamChange?: (teamId: string | null) => void;  // Callback to reset answering team
+  onRequestNextAnsweringTeam?: () => void;  // Callback to request next team in buzz queue
+  onClearBuzzQueue?: () => void;  // Callback to clear buzz queue when answer is shown
+  buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
+  currentBuzzIndex?: number;  // Current position in buzz queue
   onBroadcastMessage?: (message: unknown) => void;  // Broadcast message to all clients (no-op without network)
   superGameBets?: Array<{ teamId: string; bet: number; ready: boolean }>;  // Bets from mobile clients
   superGameAnswers?: Array<{ teamId: string; answer: string; revealed: boolean }>;  // Answers from mobile clients
@@ -68,6 +72,10 @@ export const GameSession = memo(({
   buzzerState,
   answeringTeamId,
   onAnsweringTeamChange,
+  onRequestNextAnsweringTeam,
+  onClearBuzzQueue,
+  buzzQueue = [],
+  currentBuzzIndex = 0,
   onBroadcastMessage,
   superGameBets,
   superGameAnswers,
@@ -151,6 +159,10 @@ export const GameSession = memo(({
         lateBuzzTeamIds={lateBuzzTeamIds}
         answeringTeamId={answeringTeamId}
         onAnsweringTeamChange={onAnsweringTeamChange}
+        onRequestNextAnsweringTeam={onRequestNextAnsweringTeam}
+        onClearBuzzQueue={onClearBuzzQueue}
+        buzzQueue={buzzQueue}
+        currentBuzzIndex={currentBuzzIndex}
         onBroadcastMessage={onBroadcastMessage}
         // Super Game props
         superGameBets={superGameBets || []}

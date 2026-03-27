@@ -54,9 +54,13 @@ interface GamePlayProps {
   onClearBuzzes?: () => void;  // Clear buzzed clients when transitioning to response phase
   buzzedTeamId: string | null;
   buzzedTeamIds?: Set<string>;  // Teams that recently buzzed (for white flash effect)
-  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (yellow flash)
+  lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (blue flash)
   answeringTeamId?: string | null;  // Team that gets to answer the question
   onAnsweringTeamChange?: (teamId: string | null) => void;  // Callback to reset answering team
+  onRequestNextAnsweringTeam?: () => void;  // Callback to request next team in buzz queue
+  onClearBuzzQueue?: () => void;  // Callback to clear buzz queue when answer is shown
+  buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
+  currentBuzzIndex?: number;  // Current position in buzz queue
   // Super Game props (optional for backward compatibility)
   onBroadcastMessage?: (message: unknown) => void;  // Broadcast message to all clients (no-op without network)
   superGameBets?: SuperGameBet[];  // Bets received from mobile clients
@@ -79,6 +83,10 @@ export const GamePlay = memo(({
   lateBuzzTeamIds,
   answeringTeamId,
   onAnsweringTeamChange,
+  onRequestNextAnsweringTeam,
+  onClearBuzzQueue,
+  buzzQueue = [],
+  currentBuzzIndex = 0,
   onBroadcastMessage,
   superGameBets: externalSuperGameBets,
   superGameAnswers: externalSuperGameAnswers,
@@ -114,6 +122,7 @@ export const GamePlay = memo(({
   const [, setBuzzerActive] = useState(false);
   const [highlightedQuestion, setHighlightedQuestion] = useState<string | null>(null);
 
+
   // Refs for timer and cleanup
   const buzzerDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const responseWindowRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -125,6 +134,12 @@ export const GamePlay = memo(({
   // Ref for themes scroll container
   const themesScrollRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Ref to track if we're processing a wrong answer (for queue logic)
+  const processingWrongAnswerRef = useRef<boolean>(false);
+
+  // Track teams that answered wrong in current question (for red card display)
+  const [wrongAnswerTeams, setWrongAnswerTeams] = useState<Set<string>>(new Set());
 
   // Get current round
   const currentRound = useMemo((): Round | undefined => {
@@ -181,7 +196,6 @@ export const GamePlay = memo(({
       const maxBet = maxScore > 0 ? maxScore : 100;
 
       // Broadcast state sync to clients
-      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC placeBets');
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'placeBets',
@@ -199,7 +213,6 @@ export const GamePlay = memo(({
       const question = selectedTheme?.questions?.[0];
 
       if (selectedTheme && question) {
-        console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC showQuestion');
         onBroadcastMessage({
           type: 'SUPER_GAME_STATE_SYNC',
           phase: 'showQuestion',
@@ -213,7 +226,6 @@ export const GamePlay = memo(({
     } else if (currentScreen === 'superAnswers') {
       onSuperGamePhaseChange?.('showWinner');
       // Clients go to idle when host views answers
-      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (superAnswers)');
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
@@ -221,14 +233,12 @@ export const GamePlay = memo(({
     } else if (currentScreen === 'showWinner') {
       onSuperGamePhaseChange?.('showWinner');
       // Clients go to idle when host views winner
-      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (showWinner)');
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
       });
     } else if (['board', 'cover', 'themes', 'round', 'selectSuperThemes'].includes(currentScreen)) {
       onSuperGamePhaseChange?.('idle');
-      console.log('[GamePlay] Broadcasting SUPER_GAME_STATE_SYNC idle (regular screens)');
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
@@ -258,7 +268,6 @@ export const GamePlay = memo(({
   // Handle state sync request from client - rebroadcast current state when trigger changes
   useEffect(() => {
     if (stateSyncTrigger !== undefined && stateSyncTrigger > 0) {
-      console.log('[GamePlay] State sync requested, rebroadcasting current state');
       broadcastSuperGameState();
     }
   }, [stateSyncTrigger, broadcastSuperGameState]);
@@ -302,7 +311,6 @@ export const GamePlay = memo(({
       // If we're leaving super game entirely (not a valid internal transition)
       if (!isInSuperGame || !isValidTransition) {
         if (onBroadcastMessage) {
-          console.log('[GamePlay] Leaving super game or invalid transition, clearing state on clients:', prevScreen, '->', currentScreen);
           onBroadcastMessage({ type: 'SUPER_GAME_CLEAR' });
         }
       }
@@ -342,6 +350,26 @@ export const GamePlay = memo(({
     });
   }, [teams]);
 
+  // Watch for answeringTeamId becoming null after wrong answer (no more teams in queue)
+  useEffect(() => {
+    // Only trigger if we have an active question, haven't shown answer yet,
+    // and answeringTeamId was just set to null while processing a wrong answer
+    if (activeQuestion && !showAnswer && answeringTeamId === null && processingWrongAnswerRef.current) {
+      // This means no more teams in queue, show answer
+      setShowAnswer(true);
+      onClearBuzzQueue?.(); // Clear buzz queue when showing answer
+      setBuzzerActive(false);
+      processingWrongAnswerRef.current = false;
+      onBuzzerStateChange({
+        active: false,
+        timerPhase: 'inactive',
+        readingTimerRemaining: 0,
+        responseTimerRemaining: 0,
+        handicapActive: false
+      });
+    }
+  }, [activeQuestion, showAnswer, answeringTeamId, onBuzzerStateChange, onClearBuzzQueue]);
+
   // Broadcast updated maxBet to clients when team scores change (during super game)
   useEffect(() => {
     if (currentScreen === 'placeBets') {
@@ -349,7 +377,6 @@ export const GamePlay = memo(({
       const maxScore = Math.max(...teamScores.map(t => t.score), 0);
       const maxBet = maxScore > 0 ? maxScore : 100;
 
-      console.log('[GamePlay] Broadcasting updated maxBet:', maxBet, 'based on scores:', teamScores);
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'placeBets',
@@ -371,11 +398,8 @@ export const GamePlay = memo(({
         // This avoids stale closure issues with useMemo
         const roundAtIndex = pack.rounds?.[currentRoundIndex];
         const isSuperRound = roundAtIndex?.type === 'super';
-        console.log('[GamePlay] Space pressed - currentRound:', roundAtIndex?.name, 'type:', roundAtIndex?.type, 'index:', currentRoundIndex);
 
         setCurrentScreen(prev => {
-          console.log('[GamePlay] isSuperRound:', isSuperRound, 'prev screen:', prev);
-
           const nextScreen = (() => {
             switch (prev) {
               case 'cover': return isSuperRound ? 'selectSuperThemes' : 'themes';
@@ -400,8 +424,6 @@ export const GamePlay = memo(({
               default: return prev;
             }
           })();
-
-          console.log('[GamePlay] Screen transition:', prev, '->', nextScreen);
 
           return nextScreen;
         });
@@ -614,8 +636,11 @@ export const GamePlay = memo(({
       // Helper to send buzzer state
       const sendBuzzerState = () => {
         const isHandicapActiveForTeam = handicapActive && leadingTeam?.teamId;
+        // Buzzer is active during response phase (regardless of handicap)
+        // Handicap only blocks the specific leading team, not all teams
+        const isActive = currentPhase === 'response';
         onBuzzerStateChange({
-          active: currentPhase === 'response' && !handicapActive,
+          active: isActive,
           timerPhase: currentPhase,
           readingTimerRemaining: Math.max(0, readingRemaining),
           responseTimerRemaining: Math.max(0, responseRemaining),
@@ -729,6 +754,7 @@ export const GamePlay = memo(({
     }));
 
     setShowAnswer(true);
+    onClearBuzzQueue?.(); // Clear buzz queue when showing answer
     setBuzzerActive(false);
     onBuzzerStateChange({
       active: false,
@@ -749,6 +775,9 @@ export const GamePlay = memo(({
     setActiveQuestion(null);
     setShowAnswer(false);
     setBuzzerActive(false);
+    // Reset wrong answer teams when question closes
+    setWrongAnswerTeams(new Set());
+    processingWrongAnswerRef.current = false;
     onBuzzerStateChange({
       active: false,
       timerPhase: 'inactive',
@@ -789,19 +818,43 @@ export const GamePlay = memo(({
           return team;
         }));
         setScoreChangeType('wrong');
+        processingWrongAnswerRef.current = true;
+
+        // Mark team as having answered wrong
+        setWrongAnswerTeams(prev => new Set(prev).add(targetTeamId));
       }
-      setShowAnswer(true);
-      setBuzzerActive(false);
-      onBuzzerStateChange({
-        active: false,
-        timerPhase: 'inactive',
-        readingTimerRemaining: 0,
-        responseTimerRemaining: 0,
-        handicapActive: false
-      });
-      // Reset answering team when answer is shown (after scoring)
-      if (onAnsweringTeamChange) {
-        onAnsweringTeamChange(null);
+
+      // Request next team in queue from HostView
+      if (onRequestNextAnsweringTeam) {
+        onRequestNextAnsweringTeam();
+
+        // Check if there will be no more teams by checking if current was the last
+        // We'll know this when answeringTeamId becomes null in the next render
+        // For now, keep buzzer active to allow continuation
+        setBuzzerActive(true);
+        onBuzzerStateChange({
+          active: true,
+          timerPhase: 'response',
+          readingTimerRemaining: 0,
+          responseTimerRemaining: currentRound?.responseWindow ?? 30,
+          handicapActive: false
+        });
+      } else {
+        // Fallback: show answer immediately if callback not provided
+        setShowAnswer(true);
+        onClearBuzzQueue?.(); // Clear buzz queue when showing answer
+        setBuzzerActive(false);
+        processingWrongAnswerRef.current = false;
+        onBuzzerStateChange({
+          active: false,
+          timerPhase: 'inactive',
+          readingTimerRemaining: 0,
+          responseTimerRemaining: 0,
+          handicapActive: false
+        });
+        if (onAnsweringTeamChange) {
+          onAnsweringTeamChange(null);
+        }
       }
     } else if (change === 'correct') {
       // Add points to answering team
@@ -815,7 +868,9 @@ export const GamePlay = memo(({
         setScoreChangeType('correct');
       }
       setShowAnswer(true);
+      onClearBuzzQueue?.(); // Clear buzz queue when showing answer
       setBuzzerActive(false);
+      processingWrongAnswerRef.current = false;
       onBuzzerStateChange({
         active: false,
         timerPhase: 'inactive',
@@ -828,7 +883,7 @@ export const GamePlay = memo(({
         onAnsweringTeamChange(null);
       }
     }
-  }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange]);
+  }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange, onRequestNextAnsweringTeam, currentRound]);
 
   // Open question
   const openQuestion = useCallback((question: Question, theme: Theme, points: number) => {
@@ -837,6 +892,8 @@ export const GamePlay = memo(({
     if (onAnsweringTeamChange) {
       onAnsweringTeamChange(null);
     }
+    // Reset wrong answer teams when opening a new question
+    setWrongAnswerTeams(new Set());
     // Highlight the question for 1 second, then open modal
     setHighlightedQuestion(key);
     setTimeout(() => {
@@ -862,6 +919,13 @@ export const GamePlay = memo(({
           const isAnsweringTeam = answeringTeamId === team.teamId;
           const isBuzzed = buzzedTeamIds?.has(team.teamId) || false;
           const isLateBuzz = lateBuzzTeamIds?.has(team.teamId) || false;
+          const hasWrongAnswer = wrongAnswerTeams.has(team.teamId);
+
+          // Find team's position in buzz queue (1-indexed)
+          const buzzPosition = buzzQueue.findIndex(item => item.teamId === team.teamId);
+          const hasBuzzPosition = buzzPosition !== -1;
+          const buzzOrderNumber = buzzPosition + 1; // 1-indexed for display
+
           // Check if team has placed bet in super game
           const hasPlacedBet = currentScreen === 'placeBets' && superGameBets.find(b => b.teamId === team.teamId)?.ready;
           // Check if team has submitted answer in super game (during question phase)
@@ -870,18 +934,33 @@ export const GamePlay = memo(({
           return (
             <div
               key={team.teamId}
-              className={`px-6 py-2 rounded-lg border-2 transition-all ${
-                hasPlacedBet || hasSubmittedAnswer
-                  ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
-                  : isAnsweringTeam
-                    ? 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105'
-                    : isLateBuzz
-                      ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_30px_rgba(250,204,21,0.8)] scale-105 animate-double-flash'
-                      : isBuzzed
-                        ? 'bg-white/50 border-white shadow-[0_0_30px_rgba(255,255,255,0.8)] scale-105 animate-double-flash'
-                        : 'bg-gray-800/50 border-gray-700'
+              className={`px-6 py-2 rounded-lg border-2 transition-all relative ${
+                hasWrongAnswer
+                  ? 'bg-red-500/40 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.6)]'
+                  : hasPlacedBet || hasSubmittedAnswer
+                    ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
+                    : isAnsweringTeam
+                      ? 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105'
+                      : isLateBuzz
+                        ? 'bg-blue-500/30 border-blue-400 shadow-[0_0_30px_rgba(59,130,246,0.8)] scale-105 animate-double-flash'
+                        : isBuzzed
+                          ? 'bg-white/50 border-white shadow-[0_0_30px_rgba(255,255,255,0.8)] scale-105 animate-double-flash'
+                          : 'bg-gray-800/50 border-gray-700'
               }`}
             >
+            {/* Buzz order number badge */}
+            {hasBuzzPosition && (
+              <div className={`absolute top-1 right-1 w-6 h-6 rounded-full flex items-center justify-center shadow-lg border-2 border-white ${
+                isAnsweringTeam
+                  ? 'bg-green-500'
+                  : hasWrongAnswer
+                    ? 'bg-red-500'
+                    : 'bg-blue-500'
+              }`}>
+                <span className="text-white text-xs font-bold">{buzzOrderNumber}</span>
+              </div>
+            )}
+
             <div className="text-center">
               <div className="text-2xl font-bold text-white">{team.teamName}</div>
               <div className="h-px bg-gray-600 my-1"></div>

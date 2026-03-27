@@ -164,6 +164,13 @@ export const HostView: React.FC = () => {
   // Track the current answering team (the team that gets to answer the question)
   const [answeringTeamId, setAnsweringTeamId] = useState<string | null>(null);
 
+  // Track buzz queue - all teams that buzzed during current question
+  const [buzzQueue, setBuzzQueue] = useState<Array<{ teamId: string; timestamp: number }>>([]);
+  const [currentBuzzIndex, setCurrentBuzzIndex] = useState(0);
+
+  // Track previous timer phase to detect transitions
+  const prevTimerPhaseRef = useRef<'reading' | 'response' | 'complete' | 'inactive' | null>(null);
+
   // Session version - changes when starting a new session, helps clients detect stale state
   // Load from storage or generate new one
   const [sessionVersion, setSessionVersion] = useState<string>(() => {
@@ -224,8 +231,6 @@ export const HostView: React.FC = () => {
     isLanMode: isLanMode,
     signallingServer: getSignallingServer(),
     onMessage: useCallback((message: P2PSMessage, peerId: string) => {
-      console.log('[HostView] Received message from', peerId, message.type);
-
       // Handle incoming messages from clients
       switch (message.type) {
         case 'BUZZ': {
@@ -235,21 +240,35 @@ export const HostView: React.FC = () => {
 
           // Use ref to get current buzzer state (not stale closure value)
           const currentBuzzerState = buzzerStateRef.current;
-          console.log('[HostView] Buzz received from', buzzMsg.payload.clientName, 'clientId:', buzzMsg.payload.clientId, 'teamId:', teamId, 'buzzerState.active:', currentBuzzerState.active, 'timerPhase:', currentBuzzerState.timerPhase);
 
-          // Only process buzzes during response phase when buzzer is active
-          const isResponsePhase = currentBuzzerState.timerPhase === 'response' && currentBuzzerState.active;
+          // Check if we're in response phase (green timer active)
+          const isResponsePhase = currentBuzzerState.timerPhase === 'response';
+
+          // Check if this team is blocked by handicap
+          const isTeamBlockedByHandicap = currentBuzzerState.handicapActive && currentBuzzerState.handicapTeamId === teamId;
+
+          // Check if buzzer is allowed for this team (response phase AND not blocked by handicap)
+          const isBuzzerAllowed = isResponsePhase && !isTeamBlockedByHandicap;
 
           // Use clientId from payload instead of peerId to match the client's actual ID
           setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(buzzMsg.payload.clientId, buzzTime));
 
-          if (isResponsePhase && teamId) {
+          if (isBuzzerAllowed && teamId) {
+            // Add to buzz queue if not already there
+            setBuzzQueue((prev: Array<{ teamId: string; timestamp: number }>) => {
+              const exists = prev.some(item => item.teamId === teamId);
+              if (!exists) {
+                return [...prev, { teamId, timestamp: buzzTime }];
+              }
+              return prev;
+            });
+
             // Check if we already have an answering team (using ref for current value)
             const currentAnsweringTeamId = answeringTeamIdRef.current;
             if (!currentAnsweringTeamId) {
               // First buzz during response phase - this team gets to answer!
-              console.log('[HostView] First buzz! Setting answering team:', teamId);
               setAnsweringTeamId(teamId);
+              setCurrentBuzzIndex(0);
               setBuzzedTeamIds(prev => new Set(prev).add(teamId));
               // Clear after 500ms
               setTimeout(() => {
@@ -261,7 +280,6 @@ export const HostView: React.FC = () => {
               }, 500);
             } else {
               // Late buzz - another team already won this round
-              console.log('[HostView] Late buzz from:', teamId, '(answering team already set:', currentAnsweringTeamId, ')');
               setLateBuzzTeamIds(prev => new Set(prev).add(teamId));
               // Clear after 500ms
               setTimeout(() => {
@@ -273,8 +291,7 @@ export const HostView: React.FC = () => {
               }, 500);
             }
           } else {
-            // Buzz during reading phase or when buzzer inactive - just visual flash
-            console.log('[HostView] Buzz during non-response phase, just visual flash');
+            // Buzz during non-response phase or when team is blocked by handicap - just visual flash
             if (teamId) {
               setBuzzedTeamIds(prev => new Set(prev).add(teamId));
               setTimeout(() => {
@@ -430,7 +447,6 @@ export const HostView: React.FC = () => {
         }
         case 'SUPER_GAME_ANSWER': {
           // Client submitted an answer in super game
-          console.log('[HostView] Received SUPER_GAME_ANSWER from', peerId, 'teamId:', message.payload.teamId, 'answer:', message.payload.answer);
           const existingIndex = superGameAnswers.findIndex((a: { teamId: string }) => a.teamId === message.payload.teamId);
           if (existingIndex >= 0) {
             setSuperGameAnswers((prev: Array<{ teamId: string; answer: string; revealed: boolean; submitted: boolean }>) => prev.map((a: { teamId: string; answer: string; revealed: boolean; submitted: boolean }, i: number) =>
@@ -448,13 +464,11 @@ export const HostView: React.FC = () => {
         }
         case 'STATE_SYNC_REQUEST': {
           // Client requested full state sync - trigger GamePlay to broadcast current state
-          console.log('[HostView] STATE_SYNC_REQUEST received from', peerId, '- triggering state sync');
           // Increment trigger to cause GamePlay to rebroadcast current state
           setStateSyncTrigger(prev => prev + 1);
           break;
         }
         default:
-                          console.log('[HostView] Unhandled message type:', message.type);
                       }
                   }, [updateClients, superGameBets, superGameAnswers]),
     onClientConnected: useCallback((clientId: string, data: { name: string; teamId?: string; persistentClientId?: string }) => {
@@ -576,7 +590,6 @@ export const HostView: React.FC = () => {
         }
       };
       p2pHost.sendToClient(pendingCommandsRequest, commandsSync);
-      console.log('[HostView] Sent commands list to client:', pendingCommandsRequest, commandsSync);
       // Clear the request after sending
       setPendingCommandsRequest(null);
     } else if (p2pHost.isReady && pendingCommandsRequest && commands.length === 0) {
@@ -589,7 +602,6 @@ export const HostView: React.FC = () => {
         }
       };
       p2pHost.sendToClient(pendingCommandsRequest, commandsSync);
-      console.log('[HostView] Sent empty commands list to client:', pendingCommandsRequest);
       setPendingCommandsRequest(null);
     }
   }, [p2pHost.isReady, pendingCommandsRequest, commands, p2pHost.sendToClient]);
@@ -659,11 +671,6 @@ export const HostView: React.FC = () => {
       });
     }
   }, [commands, p2pHost.isReady, p2pHost.sendToClient, clients]);
-
-  // Log initial commands load
-  useEffect(() => {
-    console.log('[HostView] Initial commands loaded from storage:', commands);
-  }, []);
 
   // Update invitation URL when settings change
   useEffect(() => {
@@ -907,13 +914,24 @@ export const HostView: React.FC = () => {
       handicapActive: state.handicapActive,
       handicapTeamId: state.handicapTeamId
     });
-  }, []);
+
+    // Reset buzz queue only when ENTERING response phase (not every update)
+    const prevPhase = prevTimerPhaseRef.current;
+    if (state.timerPhase === 'response' && state.active && prevPhase !== 'response') {
+      setBuzzQueue([]);
+      setCurrentBuzzIndex(0);
+    }
+
+    // Update previous timer phase
+    if (state.timerPhase) {
+      prevTimerPhaseRef.current = state.timerPhase;
+    }
+  }, []); // No dependencies - prevTimerPhaseRef doesn't trigger re-renders
 
   // Helper function to broadcast arbitrary message (kept for interface compatibility)
   const broadcastMessage = useCallback((message: unknown) => {
     // Broadcast via P2P to all connected clients
     if (p2pHost.isReady) {
-      console.log('[HostView] Broadcasting message:', message);
       // Convert to P2P message format
       const broadcastMsg: Omit<BroadcastMessage, 'id' | 'timestamp' | 'senderId'> = {
         category: MessageCategory.EVENT,
@@ -924,6 +942,26 @@ export const HostView: React.FC = () => {
     }
   }, [p2pHost.isReady, p2pHost.broadcast]);
 
+  // Callback to request next team in buzz queue
+  const handleRequestNextAnsweringTeam = useCallback(() => {
+    if (buzzQueue.length > 0 && currentBuzzIndex < buzzQueue.length - 1) {
+      // Move to next team in queue
+      const nextIndex = currentBuzzIndex + 1;
+      const nextTeam = buzzQueue[nextIndex];
+
+      setCurrentBuzzIndex(nextIndex);
+      setAnsweringTeamId(nextTeam.teamId);
+    } else {
+      // Don't show answer - let GamePlay handle it when all teams have answered
+      setAnsweringTeamId(null);
+    }
+  }, [buzzQueue, currentBuzzIndex]);
+
+  // Callback to clear buzz queue when answer is shown
+  const handleClearBuzzQueue = useCallback(() => {
+    setBuzzQueue([]);
+    setCurrentBuzzIndex(0);
+  }, []);
 
   // Reset super game state when session starts/ends
   useEffect(() => {
@@ -1012,12 +1050,12 @@ export const HostView: React.FC = () => {
   // --- LOBBY VIEW ---
   if (!isSessionActive) {
     return (
-      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col p-6 items-center justify-center">
-        <div className="w-full max-w-6xl grid lg:grid-cols-2 gap-8 md:gap-12 animate-in fade-in duration-500 cursor-default">
+      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col p-8 items-center justify-center">
+        <div className="w-full max-w-7xl grid lg:grid-cols-2 gap-10 md:gap-14 animate-in fade-in duration-500 cursor-default">
           {/* LEFT COLUMN: Setup & QR */}
-          <div className="flex flex-col space-y-4">
+          <div className="flex flex-col space-y-5">
             {/* First row: IP input + LAN button + OK button */}
-            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
+            <div className="bg-gray-900 border border-gray-800 p-5 rounded-lg shadow-lg cursor-default">
               <div className="flex items-center gap-2">
                 <input
                   type="text"
@@ -1025,11 +1063,11 @@ export const HostView: React.FC = () => {
                   onChange={(e) => setIpInput(e.target.value)}
                   placeholder="192.168.1.x"
                   disabled={!isLanMode || isIpLocked}
-                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-5 py-3 text-white text-base focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={() => setIsLanMode(!isLanMode)}
-                  className={`h-11 px-4 rounded-lg border text-sm font-medium transition-colors ${
+                  className={`h-13 px-5 rounded-lg border text-base font-medium transition-colors ${
                     isLanMode
                       ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
                       : 'bg-gray-800 hover:bg-gray-700 text-gray-400 border-gray-700'
@@ -1057,7 +1095,7 @@ export const HostView: React.FC = () => {
                     }
                   }}
                   disabled={(!isIpLocked && !ipInput.trim()) || !isLanMode}
-                  className={`h-11 px-4 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`h-13 px-5 rounded-lg text-base font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     isIpLocked
                       ? 'bg-gray-600 hover:bg-gray-700 text-white'
                       : 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -1069,14 +1107,14 @@ export const HostView: React.FC = () => {
             </div>
 
             {/* Session ID */}
-            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
+            <div className="bg-gray-900 border border-gray-800 p-5 rounded-lg shadow-lg cursor-default">
               <div className="flex items-center gap-3">
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Session ID</label>
+                <label className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Session ID</label>
                 <input
                   key={sessionId}
                   type="text"
                   value={sessionId}
-                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2 text-white text-sm text-center font-mono text-xl tracking-widest"
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-5 py-2 text-white text-base text-center font-mono text-2xl tracking-widest"
                   readOnly
                 />
                 <button
@@ -1103,36 +1141,36 @@ export const HostView: React.FC = () => {
                       storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
                     }
                   }}
-                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors flex items-center gap-1.5 text-sm font-medium"
+                  className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors flex items-center gap-2 text-base font-medium"
                   title="Regenerate Session ID"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
             {/* QR Code */}
-            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-8 group cursor-default">
+            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-10 group cursor-default">
               <div className="absolute inset-0 bg-blue-600/5 blur-[80px] rounded-full pointer-events-none group-hover:bg-blue-600/10 transition-colors duration-500"></div>
               <div
                 key={finalQrUrl}
-                className="relative z-10 bg-white p-4 rounded-lg shadow-xl"
+                className="relative z-10 bg-white p-5 rounded-lg shadow-xl"
               >
                 {!isIpLocked ? (
-                  <div className="w-[350px] h-[350px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-center p-6 space-y-3">
-                    <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
-                      <Settings className="w-8 h-8 text-gray-400" />
+                  <div className="w-[402px] h-[402px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-center p-7 space-y-4">
+                    <div className="w-18 h-18 bg-gray-200 rounded-full flex items-center justify-center">
+                      <Settings className="w-10 h-10 text-gray-400" />
                     </div>
-                    <p className="text-gray-600 font-medium">Enter IP address</p>
-                    <p className="text-gray-400 text-sm">Then confirm to generate QR code</p>
+                    <p className="text-gray-600 font-medium text-lg">Enter IP address</p>
+                    <p className="text-gray-400 text-base">Then confirm to generate QR code</p>
                   </div>
                 ) : (
                   <>
-                    <QRCodeSVG value={finalQrUrl} size={350} level="H" includeMargin={true} />
+                    <QRCodeSVG value={finalQrUrl} size={402} level="H" includeMargin={true} />
                   </>
                 )}
               </div>
-              <div className="mt-6 text-center z-10 flex items-center gap-2">
+              <div className="mt-8 text-center z-10 flex items-center gap-2">
                 <button
                   onClick={() => {
                     if (finalQrUrl) {
@@ -1142,40 +1180,40 @@ export const HostView: React.FC = () => {
                     }
                   }}
                   disabled={!finalQrUrl}
-                  className={`relative flex items-center justify-center px-4 py-3 rounded-lg transition-all duration-200 pl-10 ${
+                  className={`relative flex items-center justify-center px-5 py-4 rounded-lg transition-all duration-200 pl-12 ${
                     linkCopied
                       ? 'bg-white text-blue-600'
                       : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
                   }`}
-                  style={{ minWidth: '210px' }}
+                  style={{ minWidth: '240px' }}
                 >
-                  <Copy className="absolute left-3 w-5 h-5" />
-                  <span className="font-medium">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
+                  <Copy className="absolute left-4 w-6 h-6" />
+                  <span className="font-medium text-base">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
                 </button>
               </div>
             </div>
           </div>
 
           {/* RIGHT COLUMN: List */}
-          <div className="flex flex-col h-full space-y-4">
-             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-6 flex flex-col min-h-[400px] shadow-xl cursor-default">
-                <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
-                   <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                     <Users className="w-4 h-4 text-blue-400" /> Lobby
+          <div className="flex flex-col h-full space-y-5">
+             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-7 flex flex-col min-h-[460px] shadow-xl cursor-default">
+                <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-2">
+                   <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                     <Users className="w-5 h-5 text-blue-400" /> Lobby
                    </h2>
                    <div className="flex items-center gap-2">
-                     <div className="bg-gray-800 px-3 py-1 rounded-full text-xs font-mono text-blue-400 border border-blue-500/20">
+                     <div className="bg-gray-800 px-4 py-1.5 rounded-full text-sm font-mono text-blue-400 border border-blue-500/20">
                        {clients.size} Ready
                      </div>
                      {clients.size > 0 && (
-                       <div className={`px-3 py-1 rounded-full text-xs font-mono border ${getHealthBgColor(clientStats.avgQuality)}`}>
-                         <Activity className="w-3 h-3 inline mr-1" /> {clientStats.avgQuality}%
+                       <div className={`px-4 py-1.5 rounded-full text-sm font-mono border ${getHealthBgColor(clientStats.avgQuality)}`}>
+                         <Activity className="w-4 h-4 inline mr-1" /> {clientStats.avgQuality}%
                        </div>
                      )}
                    </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
+                <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
                    {sessionSettings.noTeamsMode ? (
                      // No Teams Mode - show all players individually
                      Array.from(clients.values()).map((client: ConnectedClient) => (
@@ -1244,18 +1282,18 @@ export const HostView: React.FC = () => {
                        />
 
                        {/* Create Team button - always visible */}
-                       <div className="bg-gray-900/50 backdrop-blur-sm rounded-lg p-4">
+                       <div className="bg-gray-900/50 backdrop-blur-sm rounded-lg p-5">
                            {!showCreateTeamInput ? (
                              <button
                                onClick={() => setShowCreateTeamInput(true)}
-                               className="w-full p-2 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 text-sm hover:bg-gray-800/50 hover:text-gray-300 transition-colors flex items-center justify-center gap-2"
+                               className="w-full p-3 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 text-base hover:bg-gray-800/50 hover:text-gray-300 transition-colors flex items-center justify-center gap-2"
                              >
-                               <Plus className="w-4 h-4 text-gray-400" />
+                               <Plus className="w-5 h-5 text-gray-400" />
                                <span>Create Team</span>
                              </button>
                            ) : (
-                             <div className="flex items-center gap-2 p-2 bg-gray-800/50 rounded-lg border-2 border-blue-500/30">
-                               <Plus className="w-4 h-4 text-blue-400" />
+                             <div className="flex items-center gap-2 p-3 bg-gray-800/50 rounded-lg border-2 border-blue-500/30">
+                               <Plus className="w-5 h-5 text-blue-400" />
                                <input
                                  type="text"
                                  value={newTeamName}
@@ -1273,7 +1311,7 @@ export const HostView: React.FC = () => {
                                    }
                                  }}
                                  placeholder="Team name..."
-                                 className="flex-1 bg-transparent text-white text-sm font-medium focus:outline-none"
+                                 className="flex-1 bg-transparent text-white text-base font-medium focus:outline-none"
                                  autoFocus
                                />
                                {newTeamName.trim() && (
@@ -1283,10 +1321,10 @@ export const HostView: React.FC = () => {
                                      setNewTeamName('');
                                      setShowCreateTeamInput(false);
                                    }}
-                                   className="p-1.5 hover:bg-gray-700 rounded text-green-400"
+                                   className="p-2 hover:bg-gray-700 rounded text-green-400"
                                    title="Create team"
                                  >
-                                   <Check className="w-4 h-4" />
+                                   <Check className="w-5 h-5" />
                                  </button>
                                )}
                                <button
@@ -1294,7 +1332,7 @@ export const HostView: React.FC = () => {
                                    setShowCreateTeamInput(false);
                                    setNewTeamName('');
                                  }}
-                                 className="p-1.5 hover:bg-gray-700 rounded text-gray-400"
+                                 className="p-2 hover:bg-gray-700 rounded text-gray-400"
                                  title="Cancel"
                                >
                                  ✕
@@ -1308,29 +1346,29 @@ export const HostView: React.FC = () => {
              </div>
 
              {/* Selected game info */}
-             <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-4 py-3 flex items-center justify-between">
-               <div className="flex items-center gap-3">
-                 <div className="w-10 h-10 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center">
-                   <span className="text-lg font-bold">{selectedGame === 'custom' ? 'СИ' : selectedGame === 'quiz' ? 'К' : 'В'}</span>
+             <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-5 py-4 flex items-center justify-between">
+               <div className="flex items-center gap-4">
+                 <div className="w-12 h-12 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center">
+                   <span className="text-xl font-bold">{selectedGame === 'custom' ? 'СИ' : selectedGame === 'quiz' ? 'К' : 'В'}</span>
                  </div>
                  <div>
-                   <div className="text-sm font-medium text-white">
+                   <div className="text-base font-medium text-white">
                      {selectedGame === 'custom' ? 'Своя игра' : selectedGame === 'quiz' ? 'Квиз' : 'Викторина'}
                    </div>
                    {selectedPacks.length > 0 ? (
-                     <div className="text-xs text-gray-500">{selectedPacks.length} pack{selectedPacks.length > 1 ? 's' : ''} selected</div>
+                     <div className="text-sm text-gray-500">{selectedPacks.length} pack{selectedPacks.length > 1 ? 's' : ''} selected</div>
                    ) : (
-                     <div className="text-xs text-gray-600">No pack selected</div>
+                     <div className="text-sm text-gray-600">No pack selected</div>
                    )}
                  </div>
                </div>
              </div>
 
-             <div className="flex gap-3">
-               <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowSettingsModal(true)} title="Session Settings">
-                  <Settings className="w-6 h-6" />
+             <div className="flex gap-4">
+               <Button size="xl" variant="secondary" className="px-7" onClick={() => setShowSettingsModal(true)} title="Session Settings">
+                  <Settings className="w-7 h-7" />
                </Button>
-               <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowGameSelector(true)} disabled={!isOnline || !isIpLocked}>
+               <Button size="xl" variant="secondary" className="px-7" onClick={() => setShowGameSelector(true)} disabled={!isOnline || !isIpLocked}>
                   Select Game
                </Button>
                <Button size="xl" className="flex-1 shadow-blue-900/20" onClick={() => {
@@ -1388,6 +1426,10 @@ export const HostView: React.FC = () => {
       sessionSettings={sessionSettings}
       answeringTeamId={answeringTeamId}
       onAnsweringTeamChange={setAnsweringTeamId}
+      onRequestNextAnsweringTeam={handleRequestNextAnsweringTeam}
+      onClearBuzzQueue={handleClearBuzzQueue}
+      buzzQueue={buzzQueue}
+      currentBuzzIndex={currentBuzzIndex}
       onBroadcastMessage={broadcastMessage}
       superGameBets={superGameBets}
       superGameAnswers={superGameAnswers}
