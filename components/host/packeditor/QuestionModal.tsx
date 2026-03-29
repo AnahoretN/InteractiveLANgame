@@ -22,13 +22,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
   const [answers, setAnswers] = useState<string[]>(question?.answers || ['', '', '', '']);
   const [correctAnswer, setCorrectAnswer] = useState(question?.correctAnswer ?? 0);
   const [points, setPoints] = useState(question?.points ?? 100);
-  const [mediaUrl, setMediaUrl] = useState(question?.media?.url || '');
 
-  // Multimedia fields
-  const [multimediaType, setMultimediaType] = useState<'video' | 'audio' | 'youtube' | ''>(
-    question?.media?.type === 'video' || question?.media?.type === 'audio' || question?.media?.type === 'youtube'
-      ? question.media.type
-      : ''
+  // Unified multimedia fields - handles all media types including images
+  const [multimediaType, setMultimediaType] = useState<'image' | 'video' | 'audio' | 'youtube'>(
+    question?.media?.type || 'image' // Default to 'image'
   );
   const [multimediaUrl, setMultimediaUrl] = useState('');
 
@@ -45,15 +42,14 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       setCorrectAnswer(question?.correctAnswer ?? 0);
       setPoints(question?.points ?? 100);
 
-      // Check if question has multimedia (not just image)
+      // Unified media handling - all types go through multimediaType
       const mediaType = question?.media?.type;
-      if (mediaType === 'video' || mediaType === 'audio' || mediaType === 'youtube') {
+      if (mediaType) {
         setMultimediaType(mediaType);
         setMultimediaUrl(question?.media?.url || '');
-        setMediaUrl(''); // Clear image URL if multimedia
       } else {
-        setMediaUrl(question?.media?.url || '');
-        setMultimediaType('');
+        // Default to image if no media exists
+        setMultimediaType('image');
         setMultimediaUrl('');
       }
 
@@ -83,10 +79,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
   };
 
   const handleSave = useCallback(() => {
-    // Determine media type - multimedia takes priority over image
+    // Determine media data - unified handling for all types
     let mediaData: { type: 'image' | 'video' | 'audio' | 'youtube'; url: string } | undefined;
 
-    if (multimediaType && multimediaUrl) {
+    if (multimediaUrl && multimediaUrl.trim() !== '') {
       // Process URL based on type
       let processedUrl = multimediaUrl;
 
@@ -100,16 +96,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
         url: processedUrl
       };
 
-      console.log('🎬 Saving multimedia:', {
+      console.log('🎬 Saving media:', {
         type: multimediaType,
         originalUrl: multimediaUrl,
         processedUrl: processedUrl,
-        mediaData: mediaData
-      });
-    } else if (mediaUrl) {
-      mediaData = { type: 'image', url: mediaUrl };
-      console.log('🖼️ Saving image media:', {
-        url: mediaUrl,
         mediaData: mediaData
       });
     }
@@ -130,7 +120,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
     console.log('💾 Saving question data:', saveData);
     onSave(saveData);
     onClose();
-  }, [text, hasAnswers, answers, correctAnswer, points, mediaUrl, multimediaType, multimediaUrl, answerText, answerMediaUrl, onSave, onClose]);
+  }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, answerText, answerMediaUrl, onSave, onClose]);
 
   if (!isOpen) return null;
 
@@ -161,32 +151,31 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
           />
         </div>
 
-        {/* Question Media (Image Only) */}
-        <FileUpload
-          value={mediaUrl}
-          onChange={setMediaUrl}
-          accept="image/*"
-          placeholder="https://example.com/image.jpg"
-          label="Question Image (optional)"
-        />
-
-        {/* Question Multimedia (Video/Audio) */}
+        {/* Unified Question Multimedia Section */}
         <div className="border-t border-gray-700 pt-4">
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-0.5 h-4 bg-purple-500"></div>
-            <span className="text-sm font-medium text-purple-400">Question Multimedia</span>
+            <div className="w-0.5 h-4 bg-blue-500"></div>
+            <span className="text-sm font-medium text-blue-400">Question Media</span>
           </div>
 
-          {/* Multimedia Type Selection */}
+          {/* Media Type Selection - Image is first and default */}
           <div className="mb-3">
             <label className="block text-xs text-gray-400 mb-2">Media Type</label>
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setMultimediaType('youtube');
-                  setMediaUrl(''); // Clear image when youtube selected
-                }}
+                onClick={() => setMultimediaType('image')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  multimediaType === 'image'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                🖼️ Image
+              </button>
+              <button
+                type="button"
+                onClick={() => setMultimediaType('youtube')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                   multimediaType === 'youtube'
                     ? 'bg-red-600 text-white'
@@ -197,10 +186,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setMultimediaType('video');
-                  setMediaUrl(''); // Clear image when video selected
-                }}
+                onClick={() => setMultimediaType('video')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                   multimediaType === 'video'
                     ? 'bg-purple-600 text-white'
@@ -211,10 +197,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setMultimediaType('audio');
-                  setMediaUrl(''); // Clear image when audio selected
-                }}
+                onClick={() => setMultimediaType('audio')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                   multimediaType === 'audio'
                     ? 'bg-purple-600 text-white'
@@ -223,54 +206,43 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
               >
                 🎵 Audio
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMultimediaType('');
-                  setMultimediaUrl('');
-                }}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  !multimediaType
-                    ? 'bg-gray-600 text-white'
-                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-                }`}
-              >
-                None
-              </button>
             </div>
           </div>
 
-          {/* Multimedia URL/File Input */}
-          {multimediaType && (
-            <>
-              {multimediaType === 'youtube' ? (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-2">YouTube URL</label>
-                  <input
-                    type="text"
-                    value={multimediaUrl}
-                    onChange={(e) => setMultimediaUrl(e.target.value)}
-                    placeholder="https://youtu.be/VIDEO_ID or https://www.youtube.com/watch?v=VIDEO_ID"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-red-500"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    💡 Paste any YouTube link - it will be automatically converted to embed format
-                  </p>
-                </div>
-              ) : (
-                <FileUpload
-                  value={multimediaUrl}
-                  onChange={setMultimediaUrl}
-                  accept={multimediaType === 'video' ? 'video/*' : 'audio/*'}
-                  placeholder={multimediaType === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/audio.mp3'}
-                  label={`${multimediaType === 'video' ? 'Video' : 'Audio'} File or URL`}
-                />
-              )}
-            </>
+          {/* Media URL/File Input based on type */}
+          {multimediaType === 'youtube' ? (
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">YouTube URL</label>
+              <input
+                type="text"
+                value={multimediaUrl}
+                onChange={(e) => setMultimediaUrl(e.target.value)}
+                placeholder="https://youtu.be/VIDEO_ID or https://www.youtube.com/watch?v=VIDEO_ID"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-red-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Paste any YouTube link - it will be automatically converted to embed format
+              </p>
+            </div>
+          ) : (
+            <FileUpload
+              value={multimediaUrl}
+              onChange={setMultimediaUrl}
+              accept={multimediaType === 'image' ? 'image/*' : multimediaType === 'video' ? 'video/*' : 'audio/*'}
+              placeholder={
+                multimediaType === 'image' ? 'https://example.com/image.jpg' :
+                multimediaType === 'video' ? 'https://example.com/video.mp4' :
+                'https://example.com/audio.mp3'
+              }
+              label={`${
+                multimediaType === 'image' ? 'Image' :
+                multimediaType === 'video' ? 'Video' : 'Audio'
+              } File or URL`}
+            />
           )}
 
           <p className="text-xs text-gray-500 mt-2">
-            💡 If both URL and local file are provided, URL will be used. Multimedia takes priority over image.
+            💡 If both URL and local file are provided, URL will be used.
           </p>
         </div>
 
