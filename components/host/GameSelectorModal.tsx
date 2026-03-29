@@ -833,6 +833,25 @@ export const GameSelectorModal = memo(({
             setEditingPack(undefined);
           }}
           onSavePack={handleSavePack}
+          onPackChange={(updatedPack) => {
+            console.log('📢 [GameSelector] Pack changed, updating state:', {
+              packId: updatedPack.id,
+              packName: updatedPack.name,
+              questionsWithMedia: updatedPack.rounds?.reduce((sum, r) =>
+                sum + r.themes.reduce((tSum, t) =>
+                  tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+            });
+            // Update the pack in the list
+            setEditingPack(updatedPack);
+            setPacks(prev => {
+              const existingIndex = prev.findIndex(p => p.id === updatedPack.id);
+              if (existingIndex >= 0) {
+                return prev.map((p, idx) => idx === existingIndex ? updatedPack : p);
+              } else {
+                return [...prev, updatedPack];
+              }
+            });
+          }}
           initialPack={editingPack}
         />
       </Suspense>

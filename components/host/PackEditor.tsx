@@ -472,10 +472,11 @@ interface PackEditorProps {
   isOpen: boolean;
   onClose: () => void;
   onSavePack: (pack: GamePack) => void;
+  onPackChange?: (pack: GamePack) => void; // New callback for real-time updates
   initialPack?: GamePack;
 }
 
-export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: PackEditorProps) => {
+export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, initialPack }: PackEditorProps) => {
   const [packName, setPackName] = useState(initialPack?.name || '');
   const [packCoverType, setPackCoverType] = useState<'url' | 'file' | 'none'>(
     initialPack?.cover ? initialPack.cover.type : 'none'
@@ -518,6 +519,38 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
       setSelectedThemeId(null);
     }
   }, [initialPack?.id]); // Use ID instead of object reference
+
+  // Notify parent of pack changes
+  const notifyPackChange = useCallback((updatedRounds?: Round[]) => {
+    if (!onPackChange) return;
+
+    const currentPack: GamePack = {
+      id: initialPack?.id || generateUUID(),
+      name: packName,
+      ...(packCoverType !== 'none' && packCoverValue ? { cover: { type: packCoverType, value: packCoverValue } } : {}),
+      gameType: 'custom',
+      rounds: updatedRounds || rounds,
+      createdAt: initialPack?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    console.log('📢 PackEditor - Notifying parent of pack changes:', {
+      packId: currentPack.id,
+      packName: currentPack.name,
+      questionsWithMedia: currentPack.rounds?.reduce((sum, r) =>
+        sum + r.themes.reduce((tSum, t) =>
+          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+    });
+
+    onPackChange(currentPack);
+  }, [packName, packCoverType, packCoverValue, rounds, initialPack, onPackChange]);
+
+  // Notify parent when rounds change
+  useEffect(() => {
+    if (rounds.length > 0 && initialPack) {
+      notifyPackChange();
+    }
+  }, [rounds, notifyPackChange, initialPack]);
 
   // Modal states
   const [showRoundModal, setShowRoundModal] = useState(false);
@@ -583,6 +616,9 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
         setRounds(pack.rounds || []);
         setSelectedRoundId(null);
         setSelectedThemeId(null);
+
+        // Notify parent of loaded pack data
+        notifyPackChange(pack.rounds);
       } catch (error) {
         console.error('❌ Failed to parse pack file:', error);
       }
