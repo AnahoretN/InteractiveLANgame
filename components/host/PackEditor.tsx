@@ -576,15 +576,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
           })),
           sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
         });
-          packName: pack.name,
-          roundsCount: pack.rounds?.length || 0,
-          totalQuestions: pack.rounds?.reduce((sum, r) =>
-            sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
-          questionsWithMedia: pack.rounds?.reduce((sum, r) =>
-            sum + r.themes.reduce((tSum, t) =>
-              tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
-          sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
-        });
 
         setPackName(pack.name || 'Loaded Pack');
         setPackCoverType(pack.cover ? pack.cover.type : 'none');
