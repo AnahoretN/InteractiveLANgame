@@ -303,6 +303,8 @@ export const HostView: React.FC = () => {
               : 0;
             const isClashModeEnabled = sessionSettings.collisionEnabled;
 
+            console.log('[HostView] BUZZ - Clash check:', { isClashModeEnabled, simultaneousThreshold, clashOccurred: clashOccurredForQuestion });
+
             if (isClashModeEnabled && simultaneousThreshold > 0 && !clashOccurredForQuestion) {
               const currentFirstBuzzTimestamp = firstBuzzTimestampRef.current;
               const currentClashPhase = clashPhaseRef.current;
@@ -314,6 +316,7 @@ export const HostView: React.FC = () => {
 
               if (currentFirstBuzzTimestamp === null && currentClashPhase === 'idle') {
                 // FIRST PRESS - Start the simultaneous press window
+                console.log('[HostView] CLASH - First press, starting window');
                 setFirstBuzzTimestamp(buzzTime);
                 setClashPhase('waiting');
                 setClashingTeamIds(new Set([teamId]));
@@ -331,6 +334,7 @@ export const HostView: React.FC = () => {
                 // Set timeout to end simultaneous press window and resolve clash
                 setTimeout(() => {
                   const finalClashingTeamIds = clashingTeamIdsRef.current;
+                  console.log('[HostView] CLASH - Window ended, teams in clash:', Array.from(finalClashingTeamIds));
 
                   if (finalClashingTeamIds.size > 1) {
                     // CLASH DETECTED - Multiple teams pressed simultaneously
@@ -340,11 +344,13 @@ export const HostView: React.FC = () => {
                     const shuffledForAnswer = [...teamIdsArray].sort(() => Math.random() - 0.5);
                     const selectedAnsweringTeam = shuffledForAnswer[0];
 
+                    console.log('[HostView] CLASH DETECTED - Teams:', teamIdsArray, 'Selected:', selectedAnsweringTeam);
+
                     // Only set answering team if none exists yet (prevent hijacking)
                     if (!currentAnsweringTeamId) {
                       setAnsweringTeamId(selectedAnsweringTeam);
-                      // Deactivate all teams when someone becomes answering
-                      setActiveTeamIds(new Set());
+                      // DON'T deactivate teams yet - wait for clash window to end
+                      console.log('[HostView] CLASH - Answering team selected, but NOT deactivating yet');
                     }
 
                     // Mark that Clash occurred for this question
@@ -355,6 +361,10 @@ export const HostView: React.FC = () => {
                     setClashingTeamIds(new Set());
                     setClashPhase('idle');
 
+                    // NOW deactivate all teams after clash window ends
+                    console.log('[HostView] CLASH - Window ended, deactivating all teams');
+                    setActiveTeamIds(new Set());
+
                   } else if (finalClashingTeamIds.size === 1) {
                     // NO CLASH - Only one team pressed during window, they get to answer
                     const singleTeamId = Array.from(finalClashingTeamIds)[0];
@@ -362,8 +372,8 @@ export const HostView: React.FC = () => {
                     // Only set answering team if none exists yet (prevent hijacking)
                     if (!currentAnsweringTeamId) {
                       setAnsweringTeamId(singleTeamId);
-                      // Deactivate all teams when someone becomes answering
-                      setActiveTeamIds(new Set());
+                      // DON'T deactivate teams yet - wait for clash window to end
+                      console.log('[HostView] CLASH - Answering team selected, but NOT deactivating yet');
                     }
 
                     // Mark that Clash window occurred for this question (even without actual clash)
@@ -373,6 +383,10 @@ export const HostView: React.FC = () => {
                     setFirstBuzzTimestamp(null);
                     setClashingTeamIds(new Set());
                     setClashPhase('idle');
+
+                    // NOW deactivate all teams after clash window ends
+                    console.log('[HostView] CLASH - Window ended, deactivating all teams');
+                    setActiveTeamIds(new Set());
 
                   } else {
                     // No teams in clash window - reset
@@ -384,6 +398,7 @@ export const HostView: React.FC = () => {
 
               } else if (isWithinSimultaneousWindow && currentClashPhase === 'waiting') {
                 // WITHIN SIMULTANEOUS WINDOW - Another team pressed
+                console.log('[HostView] CLASH - Within window, adding team:', teamId);
                 setClashingTeamIds(prev => new Set(prev).add(teamId));
 
                 // Set visual indicator - violet flash with "?"
