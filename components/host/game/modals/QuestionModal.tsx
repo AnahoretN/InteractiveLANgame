@@ -53,6 +53,10 @@ export const QuestionModal = memo(({
   const mediaUrl = question.media?.url;
   const mediaType = question.media?.type;
 
+  // Check if question has any media (image, video, audio, or youtube)
+  const hasQuestionMedia = question.media && question.media.url && question.media.url.trim() !== '';
+  const hasAnswerMedia = question.answerMedia && question.answerMedia.url && question.answerMedia.url.trim() !== '';
+
   const buzzedTeam = teamScores.find(t => t.teamId === buzzedTeamId);
 
   // Calculate reading time based on question text length (letters only, excluding spaces and punctuation)
@@ -234,10 +238,10 @@ export const QuestionModal = memo(({
           {/* Question content */}
           <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
             <div className={`w-full h-full flex ${
-              (showAnswer ? (question.answerMedia?.url) : mediaUrl) ? 'items-center justify-start' : 'items-center justify-center'
+              (showAnswer ? hasAnswerMedia : hasQuestionMedia) ? 'items-center justify-start' : 'items-center justify-center'
             }`}>
               {/* Media container on left - 50% width when media exists */}
-              {(showAnswer ? (question.answerMedia?.url) : mediaUrl) ? (
+              {(showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
                 <div className="w-1/2 h-full flex items-center justify-center p-4">
                   {showAnswer && question.answerMedia ? (
                     // Answer media
@@ -308,6 +312,11 @@ export const QuestionModal = memo(({
                           />
                         </div>
                       )}
+                      {!mediaType && (
+                        <div className="w-full h-full flex items-center justify-center bg-gray-800 rounded-lg p-4">
+                          <p className="text-gray-400 text-sm">Media URL: {mediaUrl?.slice(0, 50)}...</p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -315,7 +324,7 @@ export const QuestionModal = memo(({
 
               {/* Right side: Question text container and answer options container */}
               {/* With image: 50% width each. Without image: 75% width total, centered */}
-              {(showAnswer ? (question.answerMedia?.url) : mediaUrl) ? (
+              {(showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
                 <div className="w-1/2 h-full flex flex-col p-4">
                   {/* Question text container */}
                   <div className={`flex flex-col items-center justify-center p-4 ${
