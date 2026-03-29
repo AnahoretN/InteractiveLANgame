@@ -495,6 +495,8 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
     const file = e.target.files?.[0];
     if (!file) return;
 
+    console.log('📂 Starting to load pack file:', file.name);
+
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
@@ -510,6 +512,17 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
           pack = parsePackFromText(content);
         }
 
+        console.log('📦 Pack loaded successfully:', {
+          packName: pack.name,
+          roundsCount: pack.rounds?.length || 0,
+          totalQuestions: pack.rounds?.reduce((sum, r) =>
+            sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
+          questionsWithMedia: pack.rounds?.reduce((sum, r) =>
+            sum + r.themes.reduce((tSum, t) =>
+              tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+          sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
+        });
+
         setPackName(pack.name || 'Loaded Pack');
         setPackCoverType(pack.cover ? pack.cover.type : 'none');
         setPackCoverValue(pack.cover?.value || '');
@@ -517,7 +530,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
         setSelectedRoundId(null);
         setSelectedThemeId(null);
       } catch (error) {
-        console.error('Failed to parse pack file:', error);
+        console.error('❌ Failed to parse pack file:', error);
       }
     };
     reader.readAsText(file);
