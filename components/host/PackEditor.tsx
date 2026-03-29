@@ -165,6 +165,9 @@ function parsePackFromText(content: string): GamePack {
           } else if (value.includes('youtube.com') || value.includes('youtu.be')) {
             currentQuestion.mediaType = 'youtube';
           }
+        } else if (key === 'mediaType' && currentQuestion) {
+          // Explicit media type from file (overrides auto-detection)
+          currentQuestion.mediaType = value as 'image' | 'video' | 'audio' | 'youtube';
         } else if (key === 'answers' && currentQuestion) {
           currentQuestion.answers = value.split('|');
         } else if (key === 'correctAnswer' && currentQuestion) {
@@ -340,7 +343,7 @@ function packToTextFormat(pack: GamePack): string {
     points?: number;
     answerText?: string;
     mediaUrl?: string;
-    mediaType?: 'image' | 'video' | 'audio';
+    mediaType?: 'image' | 'video' | 'audio' | 'youtube';
     answers?: string[];
     correctAnswer?: number;
   }> = [];
@@ -377,6 +380,9 @@ function packToTextFormat(pack: GamePack): string {
     }
     if (q.mediaUrl) {
       lines.push(`url: ${q.mediaUrl};`);
+      if (q.mediaType && q.mediaType !== 'image') {
+        lines.push(`mediaType: ${q.mediaType};`);
+      }
     } else {
       lines.push(`file: - ;`);
     }
@@ -531,6 +537,16 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
       updatedAt: Date.now(),
     };
 
+    console.log('💾 Saving pack:', {
+      packName: pack.name,
+      roundsCount: pack.rounds.length,
+      totalQuestions: pack.rounds.reduce((sum, r) => sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0),
+      questionsWithMedia: pack.rounds.reduce((sum, r) =>
+        sum + r.themes.reduce((tSum, t) =>
+          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0),
+      sampleMediaData: pack.rounds[0]?.themes[0]?.questions[0]?.media
+    });
+
     // Check if pack contains base64 data (images/videos uploaded as files)
     const hasBase64Data = (
       (pack.cover?.value?.startsWith('data:')) ||
@@ -611,6 +627,15 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
 
   const handleAddQuestion = useCallback((data: Partial<Question>) => {
     if (!selectedTheme || !selectedRound) return;
+
+    console.log('📝 Pack Editor - Saving Question:', {
+      editingQuestionId: editingQuestion?.id,
+      data: data,
+      mediaData: data.media,
+      selectedTheme: selectedTheme.name,
+      selectedRound: selectedRound.name
+    });
+
     if (editingQuestion) {
       setRounds(prev => prev.map(r => r.id === selectedRound.id
         ? {
@@ -622,6 +647,12 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
           }
         : r
       ));
+
+      console.log('📝 Pack Editor - Updated existing question:', {
+        questionId: editingQuestion.id,
+        newMediaData: data.media
+      });
+
       setEditingQuestion(undefined);
     } else {
       const newQuestion: Question = {
@@ -633,6 +664,11 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
         media: data.media,
         ...data,
       };
+
+      console.log('📝 Pack Editor - Created new question:', {
+        questionId: newQuestion.id,
+        mediaData: newQuestion.media
+      });
       setRounds(prev => prev.map(r => r.id === selectedRound.id
         ? {
             ...r,

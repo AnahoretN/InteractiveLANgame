@@ -57,6 +57,18 @@ export const QuestionModal = memo(({
   const hasQuestionMedia = question.media && question.media.url && question.media.url.trim() !== '';
   const hasAnswerMedia = question.answerMedia && question.answerMedia.url && question.answerMedia.url.trim() !== '';
 
+  // Debug logging
+  console.log('🎮 Game Question Modal Render:', {
+    questionId: question.id,
+    questionText: question.text?.slice(0, 50),
+    mediaType: mediaType,
+    mediaUrl: mediaUrl?.slice(0, 100),
+    hasQuestionMedia: hasQuestionMedia,
+    hasAnswerMedia: hasAnswerMedia,
+    showAnswer: showAnswer,
+    fullMediaObject: question.media
+  });
+
   const buzzedTeam = teamScores.find(t => t.teamId === buzzedTeamId);
 
   // Calculate reading time based on question text length (letters only, excluding spaces and punctuation)

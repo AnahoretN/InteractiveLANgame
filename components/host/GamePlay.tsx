@@ -898,6 +898,17 @@ export const GamePlay = memo(({
   // Open question
   const openQuestion = useCallback((question: Question, theme: Theme, points: number) => {
     const key = `${theme.id}-${question.id}`;
+
+    console.log('🎯 GamePlay - Opening question:', {
+      questionId: question.id,
+      questionText: question.text?.slice(0, 50),
+      theme: theme.name,
+      points: points,
+      mediaData: question.media,
+      mediaUrl: question.media?.url,
+      mediaType: question.media?.type
+    });
+
     // Reset answering team when opening a new question
     if (onAnsweringTeamChange) {
       onAnsweringTeamChange(null);

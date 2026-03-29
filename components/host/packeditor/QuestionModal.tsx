@@ -99,11 +99,22 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
         type: multimediaType,
         url: processedUrl
       };
+
+      console.log('🎬 Saving multimedia:', {
+        type: multimediaType,
+        originalUrl: multimediaUrl,
+        processedUrl: processedUrl,
+        mediaData: mediaData
+      });
     } else if (mediaUrl) {
       mediaData = { type: 'image', url: mediaUrl };
+      console.log('🖼️ Saving image media:', {
+        url: mediaUrl,
+        mediaData: mediaData
+      });
     }
 
-    onSave({
+    const saveData = {
       text,
       ...(hasAnswers ? {
         answers: answers.filter(a => a.trim() !== ''),
@@ -114,7 +125,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       // Save answer fields
       ...(answerText ? { answerText } : {}),
       ...(answerMediaUrl ? { answerMedia: { type: 'image', url: answerMediaUrl } } : {}),
-    });
+    };
+
+    console.log('💾 Saving question data:', saveData);
+    onSave(saveData);
     onClose();
   }, [text, hasAnswers, answers, correctAnswer, points, mediaUrl, multimediaType, multimediaUrl, answerText, answerMediaUrl, onSave, onClose]);
 
