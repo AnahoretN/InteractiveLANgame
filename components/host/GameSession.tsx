@@ -43,10 +43,6 @@ interface GameSessionProps {
   buzzerState?: BuzzerState;  // Add buzzer state to track timer phase
   answeringTeamId?: string | null;  // Team that gets to answer the question
   onAnsweringTeamChange?: (teamId: string | null) => void;  // Callback to reset answering team
-  onRequestNextAnsweringTeam?: () => void;  // Callback to request next team in buzz queue
-  onClearBuzzQueue?: () => void;  // Callback to clear buzz queue when answer is shown
-  buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
-  currentBuzzIndex?: number;  // Current position in buzz queue
   onBroadcastMessage?: (message: unknown) => void;  // Broadcast message to all clients (no-op without network)
   superGameBets?: Array<{ teamId: string; bet: number; ready: boolean }>;  // Bets from mobile clients
   superGameAnswers?: Array<{ teamId: string; answer: string; revealed: boolean }>;  // Answers from mobile clients
@@ -54,6 +50,12 @@ interface GameSessionProps {
   onSuperGameMaxBetChange?: (maxBet: number) => void;  // Track max bet for super game
   onRequestStateSync?: () => void;  // Trigger to resend current state to clients
   stateSyncTrigger?: number;  // Trigger value that changes when state sync is requested
+  // Clash mode props
+  clashingTeamIds?: Set<string>;  // Teams that are in clash mode
+  // Active/inactive players props
+  activeTeamIds?: Set<string>;  // Players who can BUZZ to become answering (active = blue, inactive = white)
+  answeringTeamLockedIn?: boolean;  // Answering team is locked (answered incorrectly/correctly)
+  onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
 }
 
 export const GameSession = memo(({
@@ -72,17 +74,17 @@ export const GameSession = memo(({
   buzzerState,
   answeringTeamId,
   onAnsweringTeamChange,
-  onRequestNextAnsweringTeam,
-  onClearBuzzQueue,
-  buzzQueue = [],
-  currentBuzzIndex = 0,
   onBroadcastMessage,
   superGameBets,
   superGameAnswers,
   onSuperGamePhaseChange,
   onSuperGameMaxBetChange,
   onRequestStateSync,
-  stateSyncTrigger
+  stateSyncTrigger,
+  clashingTeamIds,
+  activeTeamIds,
+  answeringTeamLockedIn,
+  onUpdateActiveTeamIds
 }: GameSessionProps) => {
   const isNoTeamsMode = noTeamsMode || sessionSettings?.noTeamsMode || false;
 
@@ -159,10 +161,6 @@ export const GameSession = memo(({
         lateBuzzTeamIds={lateBuzzTeamIds}
         answeringTeamId={answeringTeamId}
         onAnsweringTeamChange={onAnsweringTeamChange}
-        onRequestNextAnsweringTeam={onRequestNextAnsweringTeam}
-        onClearBuzzQueue={onClearBuzzQueue}
-        buzzQueue={buzzQueue}
-        currentBuzzIndex={currentBuzzIndex}
         onBroadcastMessage={onBroadcastMessage}
         // Super Game props
         superGameBets={superGameBets || []}
@@ -171,6 +169,12 @@ export const GameSession = memo(({
         onSuperGameMaxBetChange={onSuperGameMaxBetChange}
         onRequestStateSync={onRequestStateSync}
         stateSyncTrigger={stateSyncTrigger}
+        // Clash mode props
+        clashingTeamIds={clashingTeamIds}
+        // Active/inactive players props
+        activeTeamIds={activeTeamIds}
+        answeringTeamLockedIn={answeringTeamLockedIn}
+        onUpdateActiveTeamIds={onUpdateActiveTeamIds}
       />
     </Suspense>
   );

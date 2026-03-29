@@ -145,6 +145,16 @@ export const HostView: React.FC = () => {
   // Track late buzzes (teams that pressed after answering team was already determined)
   const [lateBuzzTeamIds, setLateBuzzTeamIds] = useState<Set<string>>(new Set());
 
+  // Track players who were removed from queue (for re-adding to end on second BUZZ)
+  const [removedFromQueueTeamIds, setRemovedFromQueueTeamIds] = useState<Set<string>>(new Set());
+
+  // Track if Clash already occurred for current question (to prevent multiple Clash triggers)
+  const [clashOccurredForQuestion, setClashOccurredForQuestion] = useState<boolean>(false);
+
+  // Track active/inactive players for current question
+  const [activeTeamIds, setActiveTeamIds] = useState<Set<string>>(new Set());  // Players who can BUZZ to become answering
+  const [answeringTeamLockedIn, setAnsweringTeamLockedIn] = useState<boolean>(false);  // Answering team is locked (answered incorrectly/correctly)
+
   // Track buzzer state from GamePlay for GameSession
   const [buzzerState, setBuzzerState] = useState<{
     active: boolean;
@@ -164,10 +174,6 @@ export const HostView: React.FC = () => {
   // Track the current answering team (the team that gets to answer the question)
   const [answeringTeamId, setAnsweringTeamId] = useState<string | null>(null);
 
-  // Track buzz queue - all teams that buzzed during current question
-  const [buzzQueue, setBuzzQueue] = useState<Array<{ teamId: string; timestamp: number }>>([]);
-  const [currentBuzzIndex, setCurrentBuzzIndex] = useState(0);
-
   // Track previous timer phase to detect transitions
   const prevTimerPhaseRef = useRef<'reading' | 'response' | 'complete' | 'inactive' | null>(null);
 
@@ -186,6 +192,11 @@ export const HostView: React.FC = () => {
   const [superGameMaxBet, setSuperGameMaxBet] = useState<number>(100);
   // Trigger for state sync request (increments to trigger sync)
   const [stateSyncTrigger, setStateSyncTrigger] = useState<number>(0);
+
+  // Clash mode state
+  const [firstBuzzTimestamp, setFirstBuzzTimestamp] = useState<number | null>(null);
+  const [clashingTeamIds, setClashingTeamIds] = useState<Set<string>>(new Set());
+  const [clashPhase, setClashPhase] = useState<'idle' | 'waiting' | 'resolved'>('idle');
 
   // Session settings using custom hook
   const { settings: sessionSettings, updateSettings: updateSessionSettings } = useSessionSettings();
@@ -253,42 +264,155 @@ export const HostView: React.FC = () => {
           // Use clientId from payload instead of peerId to match the client's actual ID
           setBuzzedClients((prev: Map<string, number>) => new Map(prev).set(buzzMsg.payload.clientId, buzzTime));
 
-          if (isBuzzerAllowed && teamId) {
-            // Add to buzz queue if not already there
-            setBuzzQueue((prev: Array<{ teamId: string; timestamp: number }>) => {
-              const exists = prev.some(item => item.teamId === teamId);
-              if (!exists) {
-                return [...prev, { teamId, timestamp: buzzTime }];
-              }
-              return prev;
-            });
+          // Get current active teams
+          const currentActiveTeamIds = activeTeamIdsRef.current;
+          const currentAnsweringTeamId = answeringTeamIdRef.current;
 
-            // Check if we already have an answering team (using ref for current value)
-            const currentAnsweringTeamId = answeringTeamIdRef.current;
-            if (!currentAnsweringTeamId) {
-              // First buzz during response phase - this team gets to answer!
-              setAnsweringTeamId(teamId);
-              setCurrentBuzzIndex(0);
+          if (isBuzzerAllowed && teamId) {
+            // PROTECTION: Answering team can't trigger any action (check FIRST, before active check)
+            if (currentAnsweringTeamId === teamId) {
+              // Answering team pressed BUZZ - just visual flash, no action
               setBuzzedTeamIds(prev => new Set(prev).add(teamId));
-              // Clear after 500ms
               setTimeout(() => {
                 setBuzzedTeamIds(prev => {
                   const newSet = new Set(prev);
                   newSet.delete(teamId);
                   return newSet;
                 });
-              }, 500);
-            } else {
-              // Late buzz - another team already won this round
-              setLateBuzzTeamIds(prev => new Set(prev).add(teamId));
-              // Clear after 500ms
+              }, 300);
+              break;
+            }
+
+            // Check if this team is active (can press BUZZ)
+            if (!currentActiveTeamIds.has(teamId)) {
+              // Team is not active - just visual flash, no action
+              setBuzzedTeamIds(prev => new Set(prev).add(teamId));
               setTimeout(() => {
-                setLateBuzzTeamIds(prev => {
+                setBuzzedTeamIds(prev => {
                   const newSet = new Set(prev);
                   newSet.delete(teamId);
                   return newSet;
                 });
-              }, 500);
+              }, 300);
+              break;
+            }
+
+            // CLASH MODE LOGIC (simplified)
+            const simultaneousThreshold = sessionSettings.simultaneousPressEnabled
+              ? sessionSettings.simultaneousPressThreshold * 1000 // Convert to ms
+              : 0;
+            const isClashModeEnabled = sessionSettings.collisionEnabled;
+
+            if (isClashModeEnabled && simultaneousThreshold > 0 && !clashOccurredForQuestion) {
+              const currentFirstBuzzTimestamp = firstBuzzTimestampRef.current;
+              const currentClashPhase = clashPhaseRef.current;
+              const currentClashingTeamIds = clashingTeamIdsRef.current;
+
+              // Check if this buzz is within the simultaneous press window
+              const isWithinSimultaneousWindow = currentFirstBuzzTimestamp !== null &&
+                (buzzTime - currentFirstBuzzTimestamp) <= simultaneousThreshold;
+
+              if (currentFirstBuzzTimestamp === null && currentClashPhase === 'idle') {
+                // FIRST PRESS - Start the simultaneous press window
+                setFirstBuzzTimestamp(buzzTime);
+                setClashPhase('waiting');
+                setClashingTeamIds(new Set([teamId]));
+
+                // Set visual indicator - violet flash with "?" (not answering team yet)
+                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+                setTimeout(() => {
+                  setBuzzedTeamIds(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(teamId);
+                    return newSet;
+                  });
+                }, 500);
+
+                // Set timeout to end simultaneous press window and resolve clash
+                setTimeout(() => {
+                  const finalClashingTeamIds = clashingTeamIdsRef.current;
+
+                  if (finalClashingTeamIds.size > 1) {
+                    // CLASH DETECTED - Multiple teams pressed simultaneously
+                    const teamIdsArray = Array.from(finalClashingTeamIds);
+
+                    // Select ONE random answering team from all clashing teams
+                    const shuffledForAnswer = [...teamIdsArray].sort(() => Math.random() - 0.5);
+                    const selectedAnsweringTeam = shuffledForAnswer[0];
+
+                    // Only set answering team if none exists yet (prevent hijacking)
+                    if (!currentAnsweringTeamId) {
+                      setAnsweringTeamId(selectedAnsweringTeam);
+                      // Deactivate all teams when someone becomes answering
+                      setActiveTeamIds(new Set());
+                    }
+
+                    // Mark that Clash occurred for this question
+                    setClashOccurredForQuestion(true);
+
+                    // Clear clash state - show answering team, not order numbers
+                    setFirstBuzzTimestamp(null);
+                    setClashingTeamIds(new Set());
+                    setClashPhase('idle');
+
+                  } else if (finalClashingTeamIds.size === 1) {
+                    // NO CLASH - Only one team pressed during window, they get to answer
+                    const singleTeamId = Array.from(finalClashingTeamIds)[0];
+
+                    // Only set answering team if none exists yet (prevent hijacking)
+                    if (!currentAnsweringTeamId) {
+                      setAnsweringTeamId(singleTeamId);
+                      // Deactivate all teams when someone becomes answering
+                      setActiveTeamIds(new Set());
+                    }
+
+                    // Mark that Clash window occurred for this question (even without actual clash)
+                    setClashOccurredForQuestion(true);
+
+                    // Reset clash state
+                    setFirstBuzzTimestamp(null);
+                    setClashingTeamIds(new Set());
+                    setClashPhase('idle');
+
+                  } else {
+                    // No teams in clash window - reset
+                    setFirstBuzzTimestamp(null);
+                    setClashingTeamIds(new Set());
+                    setClashPhase('idle');
+                  }
+                }, simultaneousThreshold);
+
+              } else if (isWithinSimultaneousWindow && currentClashPhase === 'waiting') {
+                // WITHIN SIMULTANEOUS WINDOW - Another team pressed
+                setClashingTeamIds(prev => new Set(prev).add(teamId));
+
+                // Set visual indicator - violet flash with "?"
+                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+                setTimeout(() => {
+                  setBuzzedTeamIds(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(teamId);
+                    return newSet;
+                  });
+                }, 500);
+              }
+            } else {
+              // NO CLASH MODE - First active team to press becomes answering team
+              if (!currentAnsweringTeamId) {
+                setAnsweringTeamId(teamId);
+                // Deactivate all teams when someone becomes answering
+                setActiveTeamIds(new Set());
+
+                // Visual feedback - green flash for answering team
+                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+                setTimeout(() => {
+                  setBuzzedTeamIds(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(teamId);
+                    return newSet;
+                  });
+                }, 500);
+              }
             }
           } else {
             // Buzz during non-response phase or when team is blocked by handicap - just visual flash
@@ -809,13 +933,23 @@ export const HostView: React.FC = () => {
   const teamsRef = useRef<Team[]>([]);
   const buzzerStateRef = useRef(buzzerState);
   const answeringTeamIdRef = useRef<string | null>(answeringTeamId);
+  const firstBuzzTimestampRef = useRef<number | null>(null);
+  const clashingTeamIdsRef = useRef<Set<string>>(new Set());
+  const clashPhaseRef = useRef<'idle' | 'waiting' | 'resolved'>('idle');
+  const activeTeamIdsRef = useRef<Set<string>>(new Set());
+  const answeringTeamLockedInRef = useRef<boolean>(false);
 
   // Keep all refs in sync with state - combined for better performance
   useEffect(() => {
     teamsRef.current = teams;
     buzzerStateRef.current = buzzerState;
     answeringTeamIdRef.current = answeringTeamId;
-  }, [teams, buzzerState, answeringTeamId]);
+    firstBuzzTimestampRef.current = firstBuzzTimestamp;
+    clashingTeamIdsRef.current = clashingTeamIds;
+    clashPhaseRef.current = clashPhase;
+    activeTeamIdsRef.current = activeTeamIds;
+    answeringTeamLockedInRef.current = answeringTeamLockedIn;
+  }, [teams, buzzerState, answeringTeamId, firstBuzzTimestamp, clashingTeamIds, clashPhase, activeTeamIds, answeringTeamLockedIn]);
 
   // Clean up buzzed clients after 3 seconds
   useEffect(() => {
@@ -915,18 +1049,33 @@ export const HostView: React.FC = () => {
       handicapTeamId: state.handicapTeamId
     });
 
-    // Reset buzz queue only when ENTERING response phase (not every update)
+    // IMMEDIATE broadcast to clients - don't wait for useEffect
+    if (p2pHost.isReady) {
+      p2pHost.broadcast({
+        category: 'state' as MessageCategory,
+        type: 'BUZZER_STATE',
+        payload: state
+      });
+    }
+
+    // Reset state only when ENTERING response phase (not every update)
     const prevPhase = prevTimerPhaseRef.current;
     if (state.timerPhase === 'response' && state.active && prevPhase !== 'response') {
-      setBuzzQueue([]);
-      setCurrentBuzzIndex(0);
+      // Reset clash state when entering response phase (new question)
+      setFirstBuzzTimestamp(null);
+      setClashingTeamIds(new Set());
+      setClashPhase('idle');
+      // Reset removed from queue state
+      setRemovedFromQueueTeamIds(new Set());
+      // Reset clash occurred flag for new question
+      setClashOccurredForQuestion(false);
     }
 
     // Update previous timer phase
     if (state.timerPhase) {
       prevTimerPhaseRef.current = state.timerPhase;
     }
-  }, []); // No dependencies - prevTimerPhaseRef doesn't trigger re-renders
+  }, [p2pHost.isReady, p2pHost.broadcast]); // Add dependencies for immediate broadcast
 
   // Helper function to broadcast arbitrary message (kept for interface compatibility)
   const broadcastMessage = useCallback((message: unknown) => {
@@ -941,27 +1090,6 @@ export const HostView: React.FC = () => {
       p2pHost.broadcast(broadcastMsg);
     }
   }, [p2pHost.isReady, p2pHost.broadcast]);
-
-  // Callback to request next team in buzz queue
-  const handleRequestNextAnsweringTeam = useCallback(() => {
-    if (buzzQueue.length > 0 && currentBuzzIndex < buzzQueue.length - 1) {
-      // Move to next team in queue
-      const nextIndex = currentBuzzIndex + 1;
-      const nextTeam = buzzQueue[nextIndex];
-
-      setCurrentBuzzIndex(nextIndex);
-      setAnsweringTeamId(nextTeam.teamId);
-    } else {
-      // Don't show answer - let GamePlay handle it when all teams have answered
-      setAnsweringTeamId(null);
-    }
-  }, [buzzQueue, currentBuzzIndex]);
-
-  // Callback to clear buzz queue when answer is shown
-  const handleClearBuzzQueue = useCallback(() => {
-    setBuzzQueue([]);
-    setCurrentBuzzIndex(0);
-  }, []);
 
   // Reset super game state when session starts/ends
   useEffect(() => {
@@ -1426,10 +1554,6 @@ export const HostView: React.FC = () => {
       sessionSettings={sessionSettings}
       answeringTeamId={answeringTeamId}
       onAnsweringTeamChange={setAnsweringTeamId}
-      onRequestNextAnsweringTeam={handleRequestNextAnsweringTeam}
-      onClearBuzzQueue={handleClearBuzzQueue}
-      buzzQueue={buzzQueue}
-      currentBuzzIndex={currentBuzzIndex}
       onBroadcastMessage={broadcastMessage}
       superGameBets={superGameBets}
       superGameAnswers={superGameAnswers}
@@ -1437,6 +1561,14 @@ export const HostView: React.FC = () => {
       onSuperGameMaxBetChange={setSuperGameMaxBet}
       onRequestStateSync={() => setStateSyncTrigger(prev => prev + 1)}
       stateSyncTrigger={stateSyncTrigger}
+      // Clash state props
+      clashingTeamIds={clashingTeamIds}
+      // Active/inactive players props
+      activeTeamIds={activeTeamIds}
+      answeringTeamLockedIn={answeringTeamLockedIn}
+      onUpdateActiveTeamIds={(teamIds: Set<string>) => {
+        setActiveTeamIds(teamIds);
+      }}
     />
   );
 };

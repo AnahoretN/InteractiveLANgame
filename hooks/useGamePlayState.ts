@@ -170,7 +170,7 @@ export function useGamePlayState({
       }
       return team;
     }));
-    setShowAnswer(true);
+    // Don't show answer automatically - will be shown manually by host with Space
     onAnsweringTeamChange?.(buzzedTeamId);
     onBuzzerStateChange({
       active: false,
