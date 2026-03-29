@@ -52,6 +52,28 @@ Card.displayName = 'Card';
 // ============= PACK IMPORT/EXPORT UTILS =============
 
 /**
+ * Convert YouTube URL to embed format
+ */
+function convertYouTubeToEmbed(url: string): string {
+  if (!url) return url;
+
+  // Regular expressions for different YouTube URL formats
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return `https://www.youtube.com/embed/${match[1]}`;
+    }
+  }
+
+  return url; // Return original if not a YouTube URL
+}
+
+/**
  * Parse pack from text format
  */
 function parsePackFromText(content: string): GamePack {
@@ -65,7 +87,7 @@ function parsePackFromText(content: string): GamePack {
     points?: number;
     answerText?: string;
     mediaUrl?: string;
-    mediaType?: 'image' | 'video' | 'audio';
+    mediaType?: 'image' | 'video' | 'audio' | 'youtube';
     answers?: string[];
     correctAnswer?: number;
   }> = [];
@@ -140,6 +162,8 @@ function parsePackFromText(content: string): GamePack {
             currentQuestion.mediaType = 'video';
           } else if (value.match(/\.(mp3|wav|ogg)$/i)) {
             currentQuestion.mediaType = 'audio';
+          } else if (value.includes('youtube.com') || value.includes('youtu.be')) {
+            currentQuestion.mediaType = 'youtube';
           }
         } else if (key === 'answers' && currentQuestion) {
           currentQuestion.answers = value.split('|');
@@ -266,7 +290,9 @@ function parsePackFromText(content: string): GamePack {
     };
 
     if (q.mediaUrl && q.mediaType) {
-      question.media = { type: q.mediaType, url: q.mediaUrl };
+      // Convert YouTube URLs to embed format
+      const mediaUrl = q.mediaType === 'youtube' ? convertYouTubeToEmbed(q.mediaUrl) : q.mediaUrl;
+      question.media = { type: q.mediaType, url: mediaUrl };
     }
     if (q.answers) {
       question.answers = q.answers;
