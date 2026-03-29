@@ -1210,7 +1210,7 @@ export const HostView: React.FC = () => {
                 />
                 <button
                   onClick={() => setIsLanMode(!isLanMode)}
-                  className={`h-13 px-5 rounded-lg border text-base font-medium transition-colors ${
+                  className={`h-13 w-20 rounded-lg border-2 text-base font-medium transition-colors ${
                     isLanMode
                       ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
                       : 'bg-gray-800 hover:bg-gray-700 text-gray-400 border-gray-700'
@@ -1238,7 +1238,7 @@ export const HostView: React.FC = () => {
                     }
                   }}
                   disabled={(!isIpLocked && !ipInput.trim()) || !isLanMode}
-                  className={`h-13 px-5 rounded-lg text-base font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`h-13 w-20 rounded-lg border-2 text-base font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     isIpLocked
                       ? 'bg-gray-600 hover:bg-gray-700 text-white'
                       : 'bg-blue-600 hover:bg-blue-700 text-white'

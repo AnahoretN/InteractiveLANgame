@@ -219,6 +219,7 @@ function parsePackFromText(content: string): GamePack {
       id: generateUUID(),
       number: roundNum,
       name: settings.name || `Round ${roundNum}`,
+      type: settings.type,
       cover: settings.cover,
       readingTimePerLetter: settings.readingTimePerLetter,
       responseWindow: settings.responseWindow,
@@ -236,6 +237,7 @@ function parsePackFromText(content: string): GamePack {
         id: generateUUID(),
         number: q.roundNum,
         name: `Round ${q.roundNum}`,
+        type: 'normal',
         themes: [],
       };
       roundsMap.set(q.roundNum, round);
