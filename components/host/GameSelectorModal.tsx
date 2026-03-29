@@ -43,7 +43,7 @@ export interface Question {
   answers?: string[];
   correctAnswer?: number;
   media?: {
-    type: 'image' | 'video' | 'audio';
+    type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;
     file?: File;
   };
@@ -525,14 +525,24 @@ export const GameSelectorModal = memo(({
       cover: pack.cover,
     };
 
+    console.log('💾 [GameSelector] Saving pack from editor:', {
+      packId: pack.id,
+      packName: pack.name,
+      questionsWithMedia: pack.rounds?.reduce((sum, r) =>
+        sum + r.themes.reduce((tSum, t) =>
+          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+    });
+
     const existingIndex = packs.findIndex(p => p.id === pack.id);
     if (existingIndex >= 0) {
       setPacks(prev => prev.map((p, idx) => idx === existingIndex ? normalizedPack : p));
+      // Also update editingPack to keep it in sync
+      setEditingPack(normalizedPack);
     } else {
       setPacks(prev => [...prev, normalizedPack]);
+      setEditingPack(normalizedPack);
     }
     setShowPackEditor(false);
-    setEditingPack(undefined);
   }, [packs]);
 
   // Handle edit existing pack
@@ -817,7 +827,11 @@ export const GameSelectorModal = memo(({
       <Suspense fallback={null}>
         <PackEditor
           isOpen={showPackEditor}
-          onClose={() => { setShowPackEditor(false); setEditingPack(undefined); }}
+          onClose={() => {
+            console.log('📝 [GameSelector] Closing pack editor');
+            setShowPackEditor(false);
+            setEditingPack(undefined);
+          }}
           onSavePack={handleSavePack}
           initialPack={editingPack}
         />
