@@ -292,10 +292,30 @@ function parsePackFromText(content: string): GamePack {
       answerText: q.answerText,
     };
 
+    // Debug logging for media parsing
+    if (q.mediaUrl) {
+      console.log('🔍 ParsePack - Question has media URL:', {
+        questionText: q.text?.slice(0, 30),
+        mediaUrl: q.mediaUrl?.slice(0, 100),
+        detectedMediaType: q.mediaType,
+        willSaveMedia: !!(q.mediaUrl && q.mediaType)
+      });
+    }
+
     if (q.mediaUrl && q.mediaType) {
       // Convert YouTube URLs to embed format
       const mediaUrl = q.mediaType === 'youtube' ? convertYouTubeToEmbed(q.mediaUrl) : q.mediaUrl;
       question.media = { type: q.mediaType, url: mediaUrl };
+
+      console.log('✅ ParsePack - Media saved:', {
+        type: q.mediaType,
+        originalUrl: q.mediaUrl?.slice(0, 50),
+        finalUrl: mediaUrl?.slice(0, 50)
+      });
+    } else if (q.mediaUrl && !q.mediaType) {
+      console.log('⚠️ ParsePack - Media URL found but no type! Media will be lost:', {
+        mediaUrl: q.mediaUrl?.slice(0, 100)
+      });
     }
     if (q.answers) {
       question.answers = q.answers;
@@ -469,6 +489,27 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
   // Sync with initialPack when it changes
   React.useEffect(() => {
     if (initialPack) {
+      console.log('🔄 PackEditor - Syncing with initialPack:', {
+        packName: initialPack.name,
+        roundsCount: initialPack.rounds?.length || 0,
+        totalQuestions: initialPack.rounds?.reduce((sum, r) =>
+          sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
+        questionsWithMedia: initialPack.rounds?.reduce((sum, r) =>
+          sum + r.themes.reduce((tSum, t) =>
+            tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+        sampleQuestions: initialPack.rounds?.slice(0, 2).map(r => ({
+          roundName: r.name,
+          themes: r.themes.slice(0, 1).map(t => ({
+            themeName: t.name,
+            questions: t.questions.slice(0, 2).map(q => ({
+              text: q.text?.slice(0, 30),
+              mediaType: q.media?.type,
+              mediaUrl: q.media?.url?.slice(0, 50)
+            }))
+          }))
+        }))
+      });
+
       setPackName(initialPack.name);
       setPackCoverType(initialPack.cover ? initialPack.cover.type : 'none');
       setPackCoverValue(initialPack.cover?.value || '');
@@ -476,7 +517,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
       setSelectedRoundId(null);
       setSelectedThemeId(null);
     }
-  }, [initialPack]);
+  }, [initialPack?.id]); // Use ID instead of object reference
 
   // Modal states
   const [showRoundModal, setShowRoundModal] = useState(false);
@@ -512,7 +553,29 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, initialPack }: Pa
           pack = parsePackFromText(content);
         }
 
+        // Debug: Check if YouTube links were parsed correctly
         console.log('📦 Pack loaded successfully:', {
+          packName: pack.name,
+          sourceFormat: file.name.endsWith('.json') ? 'JSON' : 'Text',
+          roundsCount: pack.rounds?.length || 0,
+          totalQuestions: pack.rounds?.reduce((sum, r) =>
+            sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
+          questionsWithMedia: pack.rounds?.reduce((sum, r) =>
+            sum + r.themes.reduce((tSum, t) =>
+              tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+          mediaBreakdown: pack.rounds?.map(r => ({
+            roundName: r.name,
+            themes: r.themes.map(t => ({
+              themeName: t.name,
+              questions: t.questions.map(q => ({
+                hasMedia: !!q.media,
+                mediaType: q.media?.type,
+                mediaUrlPreview: q.media?.url?.slice(0, 80)
+              }))
+            }))
+          })),
+          sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
+        });
           packName: pack.name,
           roundsCount: pack.rounds?.length || 0,
           totalQuestions: pack.rounds?.reduce((sum, r) =>

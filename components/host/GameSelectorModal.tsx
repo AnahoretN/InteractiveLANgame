@@ -539,6 +539,28 @@ export const GameSelectorModal = memo(({
   const handleEditPack = useCallback((packId: string) => {
     const pack = packs.find(p => p.id === packId);
     if (pack) {
+      console.log('📝 [GameSelector] Opening pack for editing:', {
+        packId: pack.id,
+        packName: pack.name,
+        roundsCount: pack.rounds?.length || 0,
+        totalQuestions: pack.rounds?.reduce((sum, r) =>
+          sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
+        questionsWithMedia: pack.rounds?.reduce((sum, r) =>
+          sum + r.themes.reduce((tSum, t) =>
+            tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+        sampleQuestions: pack.rounds?.slice(0, 1).map(r => ({
+          roundName: r.name,
+          themes: r.themes.slice(0, 1).map(t => ({
+            themeName: t.name,
+            firstQuestion: t.questions[0] ? {
+              text: t.questions[0].text?.slice(0, 30),
+              mediaType: t.questions[0].media?.type,
+              mediaUrl: t.questions[0].media?.url?.slice(0, 100)
+            } : null
+          }))
+        }))
+      });
+
       // Convert to PackEditor format
       const editorPack: PackGamePack = {
         id: pack.id,
@@ -549,7 +571,6 @@ export const GameSelectorModal = memo(({
         updatedAt: pack.updatedAt || Date.now(),
         cover: pack.cover,
       };
-      console.log('[GameSelector] Editing pack with cover:', pack.cover);
       setEditingPack(editorPack);
       setShowPackEditor(true);
     }
