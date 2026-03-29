@@ -5,7 +5,7 @@
  */
 
 import React, { memo, useState, useEffect } from 'react';
-import { Volume2 } from 'lucide-react';
+import { Music } from 'lucide-react';
 import type { Question, Theme } from '../../PackEditor';
 import type { TeamScore } from '../../../../types';
 import {
@@ -275,9 +275,12 @@ export const QuestionModal = memo(({
                         />
                       )}
                       {question.answerMedia.type === 'audio' && (
-                        <div className="w-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg p-4">
-                          <Volume2 className="w-16 h-16 text-blue-400" />
-                          <audio src={question.answerMedia.url} controls className="flex-1" />
+                        <div className="w-full flex flex-col items-center justify-center gap-3 bg-gray-800 rounded-lg p-4">
+                          {/* Album art placeholder for answer media */}
+                          <div className="w-20 h-20 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg flex items-center justify-center shadow-lg">
+                            <Music className="w-10 h-10 text-white" />
+                          </div>
+                          <audio src={question.answerMedia.url} controls className="w-full" />
                         </div>
                       )}
                       {question.answerMedia.type === 'youtube' && (
@@ -310,9 +313,13 @@ export const QuestionModal = memo(({
                         />
                       )}
                       {mediaType === 'audio' && (
-                        <div className="w-full h-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg">
-                          <Volume2 className="w-16 h-16 text-blue-400" />
-                          <audio src={mediaUrl} controls className="flex-1" />
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-4 bg-gray-800 rounded-lg p-6">
+                          {/* Album art placeholder */}
+                          <div className="w-32 h-32 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg flex items-center justify-center shadow-lg">
+                            <Music className="w-16 h-16 text-white" />
+                          </div>
+                          {/* Audio player */}
+                          <audio src={mediaUrl} controls className="w-full" />
                         </div>
                       )}
                       {mediaType === 'youtube' && (
@@ -448,10 +455,7 @@ export const QuestionModal = memo(({
           ) : buzzedTeam ? (
             // Legacy buzzed team (for handicap phase)
             <div className="text-yellow-400 text-xl">{buzzedTeam.teamName} is answering...</div>
-          ) : (
-            // Waiting for buzz
-            <div className="text-gray-400 text-xl">Waiting for a player to buzz...</div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

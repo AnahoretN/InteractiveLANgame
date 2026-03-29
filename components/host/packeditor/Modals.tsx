@@ -48,12 +48,37 @@ export interface FileUploadProps {
   accept?: string;
   placeholder?: string;
   label?: string;
+  onFileDetected?: (type: 'image' | 'video' | 'audio') => void; // Callback when file type is detected
 }
 
-export const FileUpload = memo(({ value, onChange, accept = 'image/*', placeholder = 'https://example.com/image.jpg', label = 'Media' }: FileUploadProps) => {
+export const FileUpload = memo(({ value, onChange, accept = 'image/*', placeholder = 'https://example.com/image.jpg', label = 'Media', onFileDetected }: FileUploadProps) => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Detect file type from MIME type
+    const mimeType = file.type;
+    let detectedType: 'image' | 'video' | 'audio' | null = null;
+
+    if (mimeType.startsWith('image/')) {
+      detectedType = 'image';
+    } else if (mimeType.startsWith('video/')) {
+      detectedType = 'video';
+    } else if (mimeType.startsWith('audio/')) {
+      detectedType = 'audio';
+    }
+
+    // Notify parent component of detected file type
+    if (detectedType && onFileDetected) {
+      onFileDetected(detectedType);
+    }
+
+    console.log('📁 File upload detected:', {
+      fileName: file.name,
+      mimeType: mimeType,
+      detectedType: detectedType,
+      size: file.size
+    });
 
     // Convert to base64 or create object URL
     if (file.size < 500 * 1024) { // < 500KB - use base64

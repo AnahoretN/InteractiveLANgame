@@ -229,6 +229,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
               value={multimediaUrl}
               onChange={setMultimediaUrl}
               accept={multimediaType === 'image' ? 'image/*' : multimediaType === 'video' ? 'video/*' : 'audio/*'}
+              onFileDetected={(detectedType) => {
+                console.log('🎯 Detected file type:', detectedType);
+                setMultimediaType(detectedType);
+              }}
               placeholder={
                 multimediaType === 'image' ? 'https://example.com/image.jpg' :
                 multimediaType === 'video' ? 'https://example.com/video.mp4' :

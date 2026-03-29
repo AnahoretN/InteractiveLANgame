@@ -487,9 +487,14 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   const [selectedThemeId, setSelectedThemeId] = useState<string | null>(null);
   const [showPackSettings, setShowPackSettings] = useState(false);
 
+  // Track if we're syncing from props to avoid triggering notifications
+  const isSyncingFromProps = useRef(false);
+
   // Sync with initialPack when it changes
   React.useEffect(() => {
     if (initialPack) {
+      isSyncingFromProps.current = true;
+
       console.log('🔄 PackEditor - Syncing with initialPack:', {
         packName: initialPack.name,
         roundsCount: initialPack.rounds?.length || 0,
@@ -508,6 +513,17 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
               mediaUrl: q.media?.url?.slice(0, 50)
             }))
           }))
+        })),
+        fullMediaBreakdown: initialPack.rounds?.map(r => ({
+          roundName: r.name,
+          themes: r.themes.map(t => ({
+            themeName: t.name,
+            questions: t.questions.map(q => ({
+              text: q.text?.slice(0, 30),
+              mediaType: q.media?.type,
+              mediaUrl: q.media?.url?.slice(0, 50)
+            }))
+          }))
         }))
       });
 
@@ -517,12 +533,18 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       setRounds(initialPack.rounds || []);
       setSelectedRoundId(null);
       setSelectedThemeId(null);
+
+      // Reset the flag after state updates
+      setTimeout(() => {
+        isSyncingFromProps.current = false;
+      }, 0);
     }
   }, [initialPack?.id]); // Use ID instead of object reference
 
   // Notify parent of pack changes
   const notifyPackChange = useCallback((updatedRounds?: Round[]) => {
-    if (!onPackChange) return;
+    // Don't notify if we're syncing from props (prevents infinite loop)
+    if (!onPackChange || isSyncingFromProps.current) return;
 
     const currentPack: GamePack = {
       id: initialPack?.id || generateUUID(),
@@ -539,18 +561,22 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       packName: currentPack.name,
       questionsWithMedia: currentPack.rounds?.reduce((sum, r) =>
         sum + r.themes.reduce((tSum, t) =>
-          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+        tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+      mediaBreakdown: currentPack.rounds?.slice(0, 1).map(r => ({
+        roundName: r.name,
+        themes: r.themes.slice(0, 1).map(t => ({
+          themeName: t.name,
+          questions: t.questions.slice(0, 2).map(q => ({
+            text: q.text?.slice(0, 30),
+            mediaType: q.media?.type,
+            mediaUrl: q.media?.url?.slice(0, 50)
+          }))
+        }))
+      }))
     });
 
     onPackChange(currentPack);
   }, [packName, packCoverType, packCoverValue, rounds, initialPack, onPackChange]);
-
-  // Notify parent when rounds change
-  useEffect(() => {
-    if (rounds.length > 0 && initialPack) {
-      notifyPackChange();
-    }
-  }, [rounds, notifyPackChange, initialPack]);
 
   // Modal states
   const [showRoundModal, setShowRoundModal] = useState(false);
@@ -692,8 +718,12 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   }, [packName, packCoverType, packCoverValue, rounds, initialPack]);
 
   const handleAddRound = useCallback((data: Partial<Round>) => {
+    let newRounds: Round[];
     if (editingRound) {
-      setRounds(prev => prev.map(r => r.id === editingRound.id ? { ...r, ...data } : r));
+      setRounds(prev => {
+        newRounds = prev.map(r => r.id === editingRound.id ? { ...r, ...data } : r);
+        return newRounds;
+      });
       setEditingRound(undefined);
     } else {
       const newRound: Round = {
@@ -703,10 +733,15 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         themes: [],
         ...data,
       };
-      setRounds(prev => [...prev, newRound]);
+      setRounds(prev => {
+        newRounds = [...prev, newRound];
+        return newRounds;
+      });
     }
     setShowRoundModal(false);
-  }, [rounds.length, editingRound]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [rounds.length, editingRound, notifyPackChange]);
 
   const handleAddTheme = useCallback((data: Partial<Theme>) => {
     if (!selectedRound) return;
@@ -726,7 +761,9 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       setRounds(prev => prev.map(r => r.id === selectedRound.id ? { ...r, themes: [...r.themes, newTheme] } : r));
     }
     setShowThemeModal(false);
-  }, [selectedRound, editingTheme]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [selectedRound, editingTheme, notifyPackChange]);
 
   const handleAddQuestion = useCallback((data: Partial<Question>) => {
     if (!selectedTheme || !selectedRound) return;
@@ -784,12 +821,16 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       ));
     }
     setShowQuestionModal(false);
-  }, [selectedTheme, selectedRound, editingQuestion]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [selectedTheme, selectedRound, editingQuestion, notifyPackChange]);
 
   const handleDeleteRound = useCallback((roundId: string) => {
     setRounds(prev => prev.filter(r => r.id !== roundId));
     if (selectedRoundId === roundId) setSelectedRoundId(null);
-  }, [selectedRoundId]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [selectedRoundId, notifyPackChange]);
 
   const handleDeleteTheme = useCallback((themeId: string) => {
     if (!selectedRound) return;
@@ -798,7 +839,9 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       : r
     ));
     if (selectedThemeId === themeId) setSelectedThemeId(null);
-  }, [selectedRound, selectedThemeId]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [selectedRound, selectedThemeId, notifyPackChange]);
 
   const handleDeleteQuestion = useCallback((questionId: string) => {
     if (!selectedRound || !selectedTheme) return;
@@ -812,7 +855,9 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         }
       : r
     ));
-  }, [selectedRound, selectedTheme]);
+    // Notify parent of changes
+    setTimeout(() => notifyPackChange(), 0);
+  }, [selectedRound, selectedTheme, notifyPackChange]);
 
   if (!isOpen) return null;
 
@@ -831,7 +876,10 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
             <input
               type="text"
               value={packName}
-              onChange={(e) => setPackName(e.target.value)}
+              onChange={(e) => {
+                setPackName(e.target.value);
+                setTimeout(() => notifyPackChange(), 0);
+              }}
               placeholder="Pack Name"
               className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white text-sm w-64 focus:outline-none focus:border-blue-500"
             />
@@ -1043,6 +1091,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
                 if (val && (packCoverType === 'none' || !packCoverType)) {
                   setPackCoverType(val.startsWith('data:') ? 'file' : 'url');
                 }
+                setTimeout(() => notifyPackChange(), 0);
               }}
               accept="image/*"
               label="Pack Cover"
@@ -1052,7 +1101,10 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
               <label className="block text-sm font-medium text-gray-300 mb-1.5">Pack Cover</label>
               <button
                 type="button"
-                onClick={() => setPackCoverType('url')}
+                onClick={() => {
+                  setPackCoverType('url');
+                  setTimeout(() => notifyPackChange(), 0);
+                }}
                 className="w-full py-3 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 hover:border-gray-600 hover:text-gray-400 transition-colors"
               >
                 + Add Pack Cover
@@ -1065,6 +1117,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
               onClick={() => {
                 setPackCoverType('none');
                 setPackCoverValue('');
+                setTimeout(() => notifyPackChange(), 0);
               }}
               className="text-xs text-red-400 hover:text-red-300"
             >

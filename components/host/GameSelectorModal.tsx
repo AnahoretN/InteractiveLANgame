@@ -97,6 +97,28 @@ const getThemeCount = (pack: GamePack | PackGamePack): number => {
   return 0;
 };
 
+/**
+ * Convert YouTube URL to embed format
+ */
+function convertYouTubeToEmbed(url: string): string {
+  if (!url) return url;
+
+  // Regular expressions for different YouTube URL formats
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return `https://www.youtube.com/embed/${match[1]}`;
+    }
+  }
+
+  return url; // Return original if not a YouTube URL
+}
+
 export const GameSelectorModal = memo(({
   isOpen,
   onClose,
@@ -181,7 +203,7 @@ export const GameSelectorModal = memo(({
       points?: number;
       answerText?: string;
       mediaUrl?: string;
-      mediaType?: 'image' | 'video' | 'audio';
+      mediaType?: 'image' | 'video' | 'audio' | 'youtube';
       answers?: string[];
       correctAnswer?: number;
     }> = [];
@@ -256,7 +278,12 @@ export const GameSelectorModal = memo(({
               currentQuestion.mediaType = 'video';
             } else if (value.match(/\.(mp3|wav|ogg)$/i)) {
               currentQuestion.mediaType = 'audio';
+            } else if (value.includes('youtube.com') || value.includes('youtu.be')) {
+              currentQuestion.mediaType = 'youtube';
             }
+          } else if (key === 'mediaType' && currentQuestion) {
+            // Explicit media type from file (overrides auto-detection)
+            currentQuestion.mediaType = value as 'image' | 'video' | 'audio' | 'youtube';
           } else if (key === 'answers' && currentQuestion) {
             currentQuestion.answers = value.split('|');
           } else if (key === 'correctAnswer' && currentQuestion) {
@@ -407,8 +434,12 @@ export const GameSelectorModal = memo(({
         answerText: q.answerText,
       };
 
-      if (q.mediaUrl && q.mediaType) {
-        question.media = { type: q.mediaType, url: q.mediaUrl };
+      if (q.mediaUrl) {
+        // Default to 'video' type if no mediaType was detected, but use 'youtube' for YouTube URLs
+        const mediaType = q.mediaType || 'video';
+        // Convert YouTube URLs to embed format
+        const mediaUrl = mediaType === 'youtube' ? convertYouTubeToEmbed(q.mediaUrl) : q.mediaUrl;
+        question.media = { type: mediaType, url: mediaUrl };
       }
       if (q.answers) {
         question.answers = q.answers;
@@ -567,6 +598,17 @@ export const GameSelectorModal = memo(({
               mediaType: t.questions[0].media?.type,
               mediaUrl: t.questions[0].media?.url?.slice(0, 100)
             } : null
+          }))
+        })),
+        fullMediaBreakdown: pack.rounds?.map(r => ({
+          roundName: r.name,
+          themes: r.themes.map(t => ({
+            themeName: t.name,
+            questions: t.questions.map(q => ({
+              text: q.text?.slice(0, 30),
+              mediaType: q.media?.type,
+              mediaUrl: q.media?.url?.slice(0, 50)
+            }))
           }))
         }))
       });

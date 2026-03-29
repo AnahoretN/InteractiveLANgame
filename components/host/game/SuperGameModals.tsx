@@ -4,7 +4,7 @@
  */
 
 import React, { memo, useState, useCallback, useEffect, useMemo } from 'react';
-import { Volume2, X } from 'lucide-react';
+import { Music, X } from 'lucide-react';
 import type { Round } from '../packeditor/types';
 import type { SuperGameBet, SuperGameAnswer } from './types';
 import { calculateQuestionFontSize } from './fontUtils';
@@ -141,9 +141,12 @@ export const SuperGameQuestionModal = memo(({
                     />
                   )}
                   {mediaType === 'audio' && (
-                    <div className="w-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg p-4">
-                      <Volume2 className="w-16 h-16 text-purple-400" />
-                      <audio src={mediaUrl} controls className="flex-1" />
+                    <div className="w-full flex flex-col items-center justify-center gap-3 bg-gray-800 rounded-lg p-4">
+                      {/* Album art placeholder */}
+                      <div className="w-20 h-20 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg flex items-center justify-center shadow-lg">
+                        <Music className="w-10 h-10 text-white" />
+                      </div>
+                      <audio src={mediaUrl} controls className="w-full" />
                     </div>
                   )}
                 </div>
