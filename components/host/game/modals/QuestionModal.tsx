@@ -262,6 +262,17 @@ export const QuestionModal = memo(({
                           <audio src={question.answerMedia.url} controls className="flex-1" />
                         </div>
                       )}
+                      {question.answerMedia.type === 'youtube' && (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <iframe
+                            src={question.answerMedia.url}
+                            className="w-full h-full rounded-lg shadow-xl"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen
+                            title="YouTube video"
+                          />
+                        </div>
+                      )}
                     </>
                   ) : (
                     // Question media
@@ -284,6 +295,17 @@ export const QuestionModal = memo(({
                         <div className="w-full h-full flex items-center justify-center gap-4 bg-gray-800 rounded-lg">
                           <Volume2 className="w-16 h-16 text-blue-400" />
                           <audio src={mediaUrl} controls className="flex-1" />
+                        </div>
+                      )}
+                      {mediaType === 'youtube' && (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <iframe
+                            src={mediaUrl}
+                            className="w-full h-full rounded-lg shadow-xl"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen
+                            title="YouTube video"
+                          />
                         </div>
                       )}
                     </>

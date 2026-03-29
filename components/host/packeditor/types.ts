@@ -58,17 +58,20 @@ export interface Question {
   correctAnswer?: number;
   answerText?: string; // Text of the correct answer (for non-multiple choice)
   answerMedia?: { // Media for the answer
-    type: 'image' | 'video' | 'audio';
+    type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;
   };
   media?: {
-    type: 'image' | 'video' | 'audio';
+    type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;
     file?: File;
   };
   points?: number;
   timeLimit?: number; // individual question time limit
 }
+
+// Add YouTube type to media types
+export type MediaType = 'image' | 'video' | 'audio' | 'youtube';
 
 export interface TimerSettings {
   readingTimePerLetter: number; // seconds per letter for reading (0.01 - 0.5)

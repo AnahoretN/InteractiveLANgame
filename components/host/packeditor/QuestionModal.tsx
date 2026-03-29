@@ -24,6 +24,14 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
   const [points, setPoints] = useState(question?.points ?? 100);
   const [mediaUrl, setMediaUrl] = useState(question?.media?.url || '');
 
+  // Multimedia fields
+  const [multimediaType, setMultimediaType] = useState<'video' | 'audio' | 'youtube' | ''>(
+    question?.media?.type === 'video' || question?.media?.type === 'audio' || question?.media?.type === 'youtube'
+      ? question.media.type
+      : ''
+  );
+  const [multimediaUrl, setMultimediaUrl] = useState('');
+
   // Answer fields
   const [answerText, setAnswerText] = useState(question?.answerText || '');
   const [answerMediaUrl, setAnswerMediaUrl] = useState(question?.answerMedia?.url || '');
@@ -36,13 +44,65 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       setAnswers(question?.answers || ['', '', '', '']);
       setCorrectAnswer(question?.correctAnswer ?? 0);
       setPoints(question?.points ?? 100);
-      setMediaUrl(question?.media?.url || '');
+
+      // Check if question has multimedia (not just image)
+      const mediaType = question?.media?.type;
+      if (mediaType === 'video' || mediaType === 'audio' || mediaType === 'youtube') {
+        setMultimediaType(mediaType);
+        setMultimediaUrl(question?.media?.url || '');
+        setMediaUrl(''); // Clear image URL if multimedia
+      } else {
+        setMediaUrl(question?.media?.url || '');
+        setMultimediaType('');
+        setMultimediaUrl('');
+      }
+
       setAnswerText(question?.answerText || '');
       setAnswerMediaUrl(question?.answerMedia?.url || '');
     }
   }, [isOpen, question]);
 
+  // Function to convert YouTube URL to embed format
+  const convertYouTubeToEmbed = (url: string): string => {
+    if (!url) return url;
+
+    // Regular expressions for different YouTube URL formats
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match && match[1]) {
+        return `https://www.youtube.com/embed/${match[1]}`;
+      }
+    }
+
+    return url; // Return original if not a YouTube URL
+  };
+
   const handleSave = useCallback(() => {
+    // Determine media type - multimedia takes priority over image
+    let mediaData: { type: 'image' | 'video' | 'audio' | 'youtube'; url: string } | undefined;
+
+    if (multimediaType && multimediaUrl) {
+      // Process URL based on type
+      let processedUrl = multimediaUrl;
+
+      if (multimediaType === 'youtube') {
+        // Convert YouTube URL to embed format
+        processedUrl = convertYouTubeToEmbed(multimediaUrl);
+      }
+
+      mediaData = {
+        type: multimediaType,
+        url: processedUrl
+      };
+    } else if (mediaUrl) {
+      mediaData = { type: 'image', url: mediaUrl };
+    }
+
     onSave({
       text,
       ...(hasAnswers ? {
@@ -50,13 +110,13 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
         correctAnswer,
       } : {}),
       points,
-      ...(mediaUrl ? { media: { type: 'image', url: mediaUrl } } : {}),
+      ...(mediaData ? { media: mediaData } : {}),
       // Save answer fields
       ...(answerText ? { answerText } : {}),
       ...(answerMediaUrl ? { answerMedia: { type: 'image', url: answerMediaUrl } } : {}),
     });
     onClose();
-  }, [text, hasAnswers, answers, correctAnswer, points, mediaUrl, answerText, answerMediaUrl, onSave, onClose]);
+  }, [text, hasAnswers, answers, correctAnswer, points, mediaUrl, multimediaType, multimediaUrl, answerText, answerMediaUrl, onSave, onClose]);
 
   if (!isOpen) return null;
 
@@ -95,6 +155,110 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
           placeholder="https://example.com/image.jpg"
           label="Question Image (optional)"
         />
+
+        {/* Question Multimedia (Video/Audio) */}
+        <div className="border-t border-gray-700 pt-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-0.5 h-4 bg-purple-500"></div>
+            <span className="text-sm font-medium text-purple-400">Question Multimedia</span>
+          </div>
+
+          {/* Multimedia Type Selection */}
+          <div className="mb-3">
+            <label className="block text-xs text-gray-400 mb-2">Media Type</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMultimediaType('youtube');
+                  setMediaUrl(''); // Clear image when youtube selected
+                }}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  multimediaType === 'youtube'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                📺 YouTube
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMultimediaType('video');
+                  setMediaUrl(''); // Clear image when video selected
+                }}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  multimediaType === 'video'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                🎥 Video
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMultimediaType('audio');
+                  setMediaUrl(''); // Clear image when audio selected
+                }}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  multimediaType === 'audio'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                🎵 Audio
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMultimediaType('');
+                  setMultimediaUrl('');
+                }}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  !multimediaType
+                    ? 'bg-gray-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                None
+              </button>
+            </div>
+          </div>
+
+          {/* Multimedia URL/File Input */}
+          {multimediaType && (
+            <>
+              {multimediaType === 'youtube' ? (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-2">YouTube URL</label>
+                  <input
+                    type="text"
+                    value={multimediaUrl}
+                    onChange={(e) => setMultimediaUrl(e.target.value)}
+                    placeholder="https://youtu.be/VIDEO_ID or https://www.youtube.com/watch?v=VIDEO_ID"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm focus:outline-none focus:border-red-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    💡 Paste any YouTube link - it will be automatically converted to embed format
+                  </p>
+                </div>
+              ) : (
+                <FileUpload
+                  value={multimediaUrl}
+                  onChange={setMultimediaUrl}
+                  accept={multimediaType === 'video' ? 'video/*' : 'audio/*'}
+                  placeholder={multimediaType === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/audio.mp3'}
+                  label={`${multimediaType === 'video' ? 'Video' : 'Audio'} File or URL`}
+                />
+              )}
+            </>
+          )}
+
+          <p className="text-xs text-gray-500 mt-2">
+            💡 If both URL and local file are provided, URL will be used. Multimedia takes priority over image.
+          </p>
+        </div>
 
         {/* ========== ANSWER SECTION ========== */}
         <div className="border-t border-gray-700 pt-4">
