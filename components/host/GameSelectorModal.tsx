@@ -13,6 +13,7 @@ import React, { memo, useState, useCallback, useRef, useMemo, lazy, Suspense } f
 import { X, Upload, Plus, FolderOpen, FileText, Gamepad2, Check, ChevronDown, Layers } from 'lucide-react';
 import { Button } from '../Button';
 import { generateUUID } from '../../utils';
+import { loadPackFromZip, isZipFile } from '../../utils/zipPackManager';
 
 // Lazy load PackEditor to reduce initial bundle size
 const PackEditor = lazy(() => import('./PackEditor').then(m => ({ default: m.PackEditor })));
@@ -470,16 +471,29 @@ export const GameSelectorModal = memo(({
     return finalPack;
   }, []);
 
-  // Handle file upload - supports both .json (old) and .txt (new) pack formats
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle file upload - supports .zip (new with media), .json (old) and .txt (new) pack formats
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const content = event.target?.result as string;
-        let pack: GamePack;
+    console.log('[GameSelector] File selected for upload:', file.name);
+
+    try {
+      let pack: GamePack;
+
+      // Check if it's a ZIP file (new format with media files)
+      if (isZipFile(file)) {
+        console.log('[GameSelector] ZIP file detected, extracting...');
+        pack = await loadPackFromZip(file);
+        console.log('[GameSelector] ZIP pack loaded successfully:', pack.name);
+      } else {
+        // Handle .txt and .json formats (old logic)
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onerror = reject;
+          reader.readAsText(file);
+        });
 
         // Try to detect format and parse accordingly
         if (file.name.endsWith('.json') || content.trim().startsWith('{')) {
@@ -511,18 +525,23 @@ export const GameSelectorModal = memo(({
           // New text format
           pack = parseTextPack(content);
         }
-
-        setPacks(prev => {
-          const newPacks = [...prev, pack];
-          // Auto-select the newly loaded pack
-          setSelectedPackIds(prevIds => [...prevIds, pack.id]);
-          return newPacks;
-        });
-      } catch (error) {
-        console.error('Failed to parse pack file:', error);
       }
-    };
-    reader.readAsText(file);
+
+      setPacks(prev => {
+        const newPacks = [...prev, pack];
+        // Auto-select the newly loaded pack
+        setSelectedPackIds(prevIds => [...prevIds, pack.id]);
+        return newPacks;
+      });
+
+      console.log('[GameSelector] Pack added to list:', pack.name);
+    } catch (error) {
+      console.error('[GameSelector] Error loading pack:', error);
+      alert(`Ошибка загрузки пакета: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`);
+    } finally {
+      // Reset input so same file can be loaded again
+      e.target.value = '';
+    }
   }, [parseTextPack]);
 
   // Handle pack selection toggle
@@ -561,7 +580,18 @@ export const GameSelectorModal = memo(({
       packName: pack.name,
       questionsWithMedia: pack.rounds?.reduce((sum, r) =>
         sum + r.themes.reduce((tSum, t) =>
-          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+      mediaTypesSample: pack.rounds?.slice(0, 1).map(r => ({
+        roundName: r.name,
+        themes: r.themes.slice(0, 1).map(t => ({
+          themeName: t.name,
+          questions: t.questions.slice(0, 2).map(q => ({
+            text: q.text?.slice(0, 30),
+            mediaType: q.media?.type,
+            mediaUrl: q.media?.url?.slice(0, 80)
+          }))
+        }))
+      }))
     });
 
     const existingIndex = packs.findIndex(p => p.id === pack.id);
@@ -748,7 +778,7 @@ export const GameSelectorModal = memo(({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".txt,.json"
+                accept=".txt,.json,.zip"
                 onChange={handleFileUpload}
                 className="hidden"
               />
@@ -881,7 +911,18 @@ export const GameSelectorModal = memo(({
               packName: updatedPack.name,
               questionsWithMedia: updatedPack.rounds?.reduce((sum, r) =>
                 sum + r.themes.reduce((tSum, t) =>
-                  tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0
+                  tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+              mediaTypesBreakdown: updatedPack.rounds?.slice(0, 1).map(r => ({
+                roundName: r.name,
+                themes: r.themes.slice(0, 1).map(t => ({
+                  themeName: t.name,
+                  questions: t.questions.slice(0, 2).map(q => ({
+                    text: q.text?.slice(0, 30),
+                    mediaType: q.media?.type,
+                    mediaUrl: q.media?.url?.slice(0, 60)
+                  }))
+                }))
+              }))
             });
             // Update the pack in the list
             setEditingPack(updatedPack);

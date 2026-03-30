@@ -11,6 +11,7 @@ export interface GamePack {
   cover?: {
     type: 'url' | 'file';
     value: string;
+    localFile?: LocalFileInfo; // Информация о локальном файле для обложки пака
   };
   gameType?: 'custom' | 'quiz' | 'trivia';
   rounds: Round[];
@@ -28,6 +29,7 @@ export interface Round {
   cover?: {
     type: 'url' | 'file';
     value: string;
+    localFile?: LocalFileInfo; // Информация о локальном файле для обложки раунда
   };
   // Timer settings
   readingTimePerLetter?: number; // seconds per letter for reading (0.01 - 0.5)
@@ -51,6 +53,13 @@ export interface ExtendedRound extends Round {
   selectedSuperThemeId?: string;
 }
 
+export interface LocalFileInfo {
+  fileName: string;      // Оригинальное имя файла
+  fileSize: number;      // Размер файла в байтах
+  fileType: string;      // MIME тип файла
+  lastModified: number;  // Время последней модификации
+}
+
 export interface Question {
   id: string;
   text: string;
@@ -60,11 +69,13 @@ export interface Question {
   answerMedia?: { // Media for the answer
     type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;
+    localFile?: LocalFileInfo; // Информация о локальном файле + base64 данные
   };
   media?: {
     type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;
     file?: File;
+    localFile?: LocalFileInfo; // Информация о локальном файле + base64 данные
   };
   points?: number;
   timeLimit?: number; // individual question time limit

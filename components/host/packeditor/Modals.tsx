@@ -49,14 +49,15 @@ export interface FileUploadProps {
   placeholder?: string;
   label?: string;
   onFileDetected?: (type: 'image' | 'video' | 'audio') => void; // Callback when file type is detected
+  onLocalFile?: (file: File, blobUrl: string) => void; // Callback when local file is selected
 }
 
-export const FileUpload = memo(({ value, onChange, accept = 'image/*', placeholder = 'https://example.com/image.jpg', label = 'Media', onFileDetected }: FileUploadProps) => {
+export const FileUpload = memo(({ value, onChange, accept = 'image/*', placeholder = 'https://example.com/image.jpg', label = 'Media', onFileDetected, onLocalFile }: FileUploadProps) => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Detect file type from MIME type
+    // Detect file type from MIME type (more reliable than accept attribute)
     const mimeType = file.type;
     let detectedType: 'image' | 'video' | 'audio' | null = null;
 
@@ -68,9 +69,16 @@ export const FileUpload = memo(({ value, onChange, accept = 'image/*', placehold
       detectedType = 'audio';
     }
 
-    // Notify parent component of detected file type
-    if (detectedType && onFileDetected) {
-      onFileDetected(detectedType);
+    // Also check file extension as backup
+    if (!detectedType) {
+      const fileName = file.name.toLowerCase();
+      if (fileName.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i)) {
+        detectedType = 'image';
+      } else if (fileName.match(/\.(mp4|webm|mov|avi|mkv)$/i)) {
+        detectedType = 'video';
+      } else if (fileName.match(/\.(mp3|wav|ogg|m4a|aac)$/i)) {
+        detectedType = 'audio';
+      }
     }
 
     console.log('📁 File upload detected:', {
@@ -80,16 +88,19 @@ export const FileUpload = memo(({ value, onChange, accept = 'image/*', placehold
       size: file.size
     });
 
-    // Convert to base64 or create object URL
-    if (file.size < 500 * 1024) { // < 500KB - use base64
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        onChange(ev.target?.result as string);
-      };
-      reader.readAsDataURL(file);
-    } else { // Large files - use object URL
-      const url = URL.createObjectURL(file);
-      onChange(url);
+    // Notify parent component of detected file type
+    if (detectedType && onFileDetected) {
+      onFileDetected(detectedType);
+    }
+
+    // Создаем простой blob URL (ZIP система обработает сохранение)
+    const blobUrl = URL.createObjectURL(file);
+    console.log('🔗 Created blob URL:', blobUrl.slice(0, 50) + '...');
+    onChange(blobUrl);
+
+    // Notify parent component about local file (для отслеживания)
+    if (onLocalFile) {
+      onLocalFile(file, blobUrl);
     }
   };
 
@@ -111,6 +122,16 @@ export const FileUpload = memo(({ value, onChange, accept = 'image/*', placehold
           className="flex-1 bg-gray-800 text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
+      {value && value.startsWith('blob:') && (
+        <p className="text-xs text-green-400 mt-1">
+          ✅ Локальный файл загружен. Информация о файле сохранена для автоматического восстановления.
+        </p>
+      )}
+      {!value && (
+        <p className="text-xs text-gray-500 mt-1">
+          💡 Введите URL или путь к файлу (например: https://youtu.be/... или ./media/audio.mp3)
+        </p>
+      )}
     </div>
   );
 });

@@ -19,6 +19,7 @@ import { Volume2 } from 'lucide-react';
 import type { GamePack } from './GameSelectorModal';
 import type { Round, Theme, Question } from './PackEditor';
 import { Team } from '../../types';
+import { restorePackBlobUrlsFromStorage } from '../../utils/mediaManager';
 import {
   calculateQuestionFontSize,
   calculateAnswerFontSizeMobile,
@@ -159,6 +160,19 @@ export const GamePlay = memo(({
 
   // Track score change type for displaying result message
   const [scoreChangeType, setScoreChangeType] = useState<'wrong' | 'correct' | null>(null);
+
+  // Restore blob URLs when pack changes
+  useEffect(() => {
+    const restoreBlobUrls = async () => {
+      if (pack) {
+        console.log('🔄 GamePlay - Restoring blob URLs for pack:', pack.name);
+        await restorePackBlobUrlsFromStorage(pack);
+        console.log('✅ GamePlay - Blob URLs restored successfully');
+      }
+    };
+
+    restoreBlobUrls();
+  }, [pack.id]); // Only restore when pack ID changes
 
   // Get current round
   const currentRound = useMemo((): Round | undefined => {

@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { Button } from '../Button';
 import { generateUUID } from '../../utils/uuid';
+import { restorePackBlobUrlsFromStorage } from '../../utils/mediaManager';
+import { savePackAsZip, loadPackFromZip, isZipFile } from '../../utils/zipPackManager';
 import type { GamePack, Round, Theme, Question, RoundType } from './packeditor/types';
 import {
   BaseModal, FileUpload, RoundModal, ThemeModal, QuestionModal
@@ -400,7 +402,8 @@ function packToTextFormat(pack: GamePack): string {
     }
     if (q.mediaUrl) {
       lines.push(`url: ${q.mediaUrl};`);
-      if (q.mediaType && q.mediaType !== 'image') {
+      // Always save mediaType explicitly for all types (including image)
+      if (q.mediaType) {
         lines.push(`mediaType: ${q.mediaType};`);
       }
     } else {
@@ -598,8 +601,38 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
     console.log('📂 Starting to load pack file:', file.name);
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
+        // Проверяем, является ли файл ZIP архивом
+        if (isZipFile(file)) {
+          console.log('📦 Обнаружен ZIP архив, загружаем...');
+          try {
+            const pack = await loadPackFromZip(file);
+
+            console.log('📦 Pack loaded successfully from ZIP:', {
+              packName: pack.name,
+              roundsCount: pack.rounds?.length || 0,
+              totalQuestions: pack.rounds?.reduce((sum, r) =>
+                sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0
+            });
+
+            setPackName(pack.name || 'Loaded Pack');
+            setPackCoverType(pack.cover ? pack.cover.type : 'none');
+            setPackCoverValue(pack.cover?.value || '');
+            setRounds(pack.rounds || []);
+            setSelectedRoundId(null);
+            setSelectedThemeId(null);
+
+            // Notify parent of loaded pack data
+            notifyPackChange(pack.rounds);
+          } catch (zipError) {
+            console.error('❌ Ошибка загрузки ZIP:', zipError);
+            alert('Ошибка при загрузке ZIP архива. Проверьте формат файла.');
+          }
+          return;
+        }
+
+        // Обычная загрузка текстового/JSON формата
         const content = event.target?.result as string;
         let pack: GamePack;
 
@@ -622,6 +655,9 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
           questionsWithMedia: pack.rounds?.reduce((sum, r) =>
             sum + r.themes.reduce((tSum, t) =>
               tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
+          questionsWithLocalFiles: pack.rounds?.reduce((sum, r) =>
+            sum + r.themes.reduce((tSum, t) =>
+              tSum + t.questions.filter(q => q.media?.localFile).length, 0), 0) || 0,
           mediaBreakdown: pack.rounds?.map(r => ({
             roundName: r.name,
             themes: r.themes.map(t => ({
@@ -629,16 +665,22 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
               questions: t.questions.map(q => ({
                 hasMedia: !!q.media,
                 mediaType: q.media?.type,
-                mediaUrlPreview: q.media?.url?.slice(0, 80)
+                mediaUrlPreview: q.media?.url?.slice(0, 80),
+                hasLocalFile: !!q.media?.localFile,
+                localFileName: q.media?.localFile?.fileName
               }))
             }))
           })),
           sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
         });
 
+        // Восстанавливаем blob URL для локальных файлов
+        await restorePackBlobUrls(pack);
+
         setPackName(pack.name || 'Loaded Pack');
         setPackCoverType(pack.cover ? pack.cover.type : 'none');
         setPackCoverValue(pack.cover?.value || '');
+        setPackCoverLocalFile(pack.cover?.localFile);
         setRounds(pack.rounds || []);
         setSelectedRoundId(null);
         setSelectedThemeId(null);
@@ -655,7 +697,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   }, []);
 
   // Handlers
-  const handleSavePack = useCallback(() => {
+  const handleSavePack = useCallback(async () => {
     const pack: GamePack = {
       id: initialPack?.id || generateUUID(),
       name: packName,
@@ -666,55 +708,53 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       updatedAt: Date.now(),
     };
 
-    console.log('💾 Saving pack:', {
+    console.log('💾 Сохранение пака как ZIP архива:', {
       packName: pack.name,
       roundsCount: pack.rounds.length,
       totalQuestions: pack.rounds.reduce((sum, r) => sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0),
       questionsWithMedia: pack.rounds.reduce((sum, r) =>
         sum + r.themes.reduce((tSum, t) =>
           tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0),
-      sampleMediaData: pack.rounds[0]?.themes[0]?.questions[0]?.media
     });
 
-    // Check if pack contains base64 data (images/videos uploaded as files)
-    const hasBase64Data = (
-      (pack.cover?.value?.startsWith('data:')) ||
+    // Проверяем, есть ли blob URL (локальные файлы)
+    const hasBlobUrls = (
+      (pack.cover?.value?.startsWith('blob:')) ||
       pack.rounds.some(round =>
-        (round.cover?.value?.startsWith('data:')) ||
+        (round.cover?.value?.startsWith('blob:')) ||
         round.themes.some(theme =>
           theme.questions.some(q =>
-            (q.media?.url?.startsWith('data:')) ||
-            (q.answerMedia?.url?.startsWith('data:'))
+            (q.media?.url?.startsWith('blob:')) ||
+            (q.answerMedia?.url?.startsWith('blob:'))
           )
         )
       )
     );
 
-    let dataStr: string;
-    let fileName: string;
-    let mimeType: string;
-
-    if (hasBase64Data) {
-      // Use JSON format for packs with base64 data
-      dataStr = JSON.stringify(pack, null, 2);
-      fileName = `${pack.name.replace(/[^a-z0-9]/gi, '_')}.json`;
-      mimeType = 'application/json';
+    if (hasBlobUrls) {
+      // Используем ZIP формат для пакетов с локальными файлами
+      console.log('📦 Используем ZIP формат (пак содержит локальные файлы)');
+      try {
+        await savePackAsZip(pack);
+      } catch (error) {
+        console.error('❌ Ошибка сохранения ZIP:', error);
+        alert('Ошибка при сохранении ZIP архива. Проверьте консоль для деталей.');
+      }
     } else {
-      // Use text format for packs without base64 data (more human-readable)
-      dataStr = packToTextFormat(pack);
-      fileName = `${pack.name.replace(/[^a-z0-9]/gi, '_')}.txt`;
-      mimeType = 'text/plain';
+      // Используем текстовый формат для пакетов с внешними URL
+      console.log('📄 Используем текстовый формат (пак без локальных файлов)');
+      const dataStr = packToTextFormat(pack);
+      const fileName = `${pack.name.replace(/[^a-z0-9]/gi, '_')}.txt`;
+      const dataBlob = new Blob([dataStr], { type: 'text/plain' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }
-
-    const dataBlob = new Blob([dataStr], { type: mimeType });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   }, [packName, packCoverType, packCoverValue, rounds, initialPack]);
 
   const handleAddRound = useCallback((data: Partial<Round>) => {
@@ -896,7 +936,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
             <input
               ref={fileInputRef}
               type="file"
-              accept=".txt,.json"
+              accept=".txt,.json,.zip"
               onChange={handleLoadPack}
               className="hidden"
             />
@@ -1092,6 +1132,10 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
                   setPackCoverType(val.startsWith('data:') ? 'file' : 'url');
                 }
                 setTimeout(() => notifyPackChange(), 0);
+              }}
+              onLocalFile={(file, blobUrl) => {
+                console.log('💾 Pack cover file selected (ZIP system will handle):', file.name);
+                // ZIP система обработает сохранение при сохранении пака
               }}
               accept="image/*"
               label="Pack Cover"

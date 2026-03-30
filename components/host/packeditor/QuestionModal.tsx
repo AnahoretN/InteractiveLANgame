@@ -7,6 +7,7 @@ import React, { memo, useState, useCallback, useEffect } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import { BaseModal, FileUpload } from './Modals';
 import type { Question } from './types';
+import type { LocalFileInfo } from './types';
 import { Button } from '../../Button';
 
 interface QuestionModalProps {
@@ -28,10 +29,16 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
     question?.media?.type || 'image' // Default to 'image'
   );
   const [multimediaUrl, setMultimediaUrl] = useState('');
+  const [multimediaLocalFile, setMultimediaLocalFile] = useState<LocalFileInfo | undefined>(
+    question?.media?.localFile
+  );
 
   // Answer fields
   const [answerText, setAnswerText] = useState(question?.answerText || '');
   const [answerMediaUrl, setAnswerMediaUrl] = useState(question?.answerMedia?.url || '');
+  const [answerMediaLocalFile, setAnswerMediaLocalFile] = useState<LocalFileInfo | undefined>(
+    question?.answerMedia?.localFile
+  );
 
   // Reset form when question changes or modal opens
   useEffect(() => {
@@ -47,14 +54,17 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       if (mediaType) {
         setMultimediaType(mediaType);
         setMultimediaUrl(question?.media?.url || '');
+        setMultimediaLocalFile(question?.media?.localFile);
       } else {
         // Default to image if no media exists
         setMultimediaType('image');
         setMultimediaUrl('');
+        setMultimediaLocalFile(undefined);
       }
 
       setAnswerText(question?.answerText || '');
       setAnswerMediaUrl(question?.answerMedia?.url || '');
+      setAnswerMediaLocalFile(question?.answerMedia?.localFile);
     }
   }, [isOpen, question]);
 
@@ -80,7 +90,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
 
   const handleSave = useCallback(() => {
     // Determine media data - unified handling for all types
-    let mediaData: { type: 'image' | 'video' | 'audio' | 'youtube'; url: string } | undefined;
+    let mediaData: { type: 'image' | 'video' | 'audio' | 'youtube'; url: string; localFile?: LocalFileInfo } | undefined;
 
     if (multimediaUrl && multimediaUrl.trim() !== '') {
       // Process URL based on type
@@ -93,13 +103,16 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
 
       mediaData = {
         type: multimediaType,
-        url: processedUrl
+        url: processedUrl,
+        ...(multimediaLocalFile ? { localFile: multimediaLocalFile } : {})
       };
 
       console.log('🎬 Saving media:', {
         type: multimediaType,
         originalUrl: multimediaUrl,
         processedUrl: processedUrl,
+        hasLocalFile: !!multimediaLocalFile,
+        localFileName: multimediaLocalFile?.fileName,
         mediaData: mediaData
       });
     }
@@ -114,13 +127,19 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       ...(mediaData ? { media: mediaData } : {}),
       // Save answer fields
       ...(answerText ? { answerText } : {}),
-      ...(answerMediaUrl ? { answerMedia: { type: 'image', url: answerMediaUrl } } : {}),
+      ...(answerMediaUrl ? {
+        answerMedia: {
+          type: 'image',
+          url: answerMediaUrl,
+          ...(answerMediaLocalFile ? { localFile: answerMediaLocalFile } : {})
+        }
+      } : {}),
     };
 
     console.log('💾 Saving question data:', saveData);
     onSave(saveData);
     onClose();
-  }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, answerText, answerMediaUrl, onSave, onClose]);
+  }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, multimediaLocalFile, answerText, answerMediaUrl, answerMediaLocalFile, onSave, onClose]);
 
   if (!isOpen) return null;
 
@@ -233,10 +252,14 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
                 console.log('🎯 Detected file type:', detectedType);
                 setMultimediaType(detectedType);
               }}
+              onLocalFile={(file, blobUrl) => {
+                console.log('💾 Local file selected (ZIP system will handle):', file.name);
+                // ZIP система обработает сохранение при сохранении пака
+              }}
               placeholder={
-                multimediaType === 'image' ? 'https://example.com/image.jpg' :
-                multimediaType === 'video' ? 'https://example.com/video.mp4' :
-                'https://example.com/audio.mp3'
+                multimediaType === 'image' ? 'https://example.com/image.jpg или ./media/image.jpg' :
+                multimediaType === 'video' ? 'https://example.com/video.mp4 или ./media/video.mp4' :
+                'https://example.com/audio.mp3 или ./media/audio.mp3'
               }
               label={`${
                 multimediaType === 'image' ? 'Image' :
@@ -246,7 +269,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
           )}
 
           <p className="text-xs text-gray-500 mt-2">
-            💡 If both URL and local file are provided, URL will be used.
+            💡 Введите URL (YouTube, https://...) или путь к локальному файлу (./media/audio.mp3)
           </p>
         </div>
 
@@ -322,6 +345,10 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
             value={answerMediaUrl}
             onChange={setAnswerMediaUrl}
             accept="image/*"
+            onLocalFile={(file, blobUrl) => {
+              console.log('💾 Saving answer local file info:', file.name);
+              setAnswerMediaLocalFile(createLocalFileInfo(file));
+            }}
             placeholder="https://example.com/answer.jpg"
             label="Answer Image (optional)"
           />

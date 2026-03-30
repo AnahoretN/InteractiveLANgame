@@ -4,7 +4,7 @@
  * Extended version with timer, buzzer state, and scoring
  */
 
-import React, { memo, useState, useEffect } from 'react';
+import React, { memo, useState, useEffect, useRef } from 'react';
 import { Music } from 'lucide-react';
 import type { Question, Theme } from '../../PackEditor';
 import type { TeamScore } from '../../../../types';
@@ -75,7 +75,14 @@ export const QuestionModal = memo(({
 
   // Calculate reading time based on question text length (letters only, excluding spaces and punctuation)
   const questionTextLetters = (question.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
-  const readingTime = readingTimePerLetter > 0 ? questionTextLetters * readingTimePerLetter : 0;
+  // For questions with media (audio, video, youtube), use half the reading time
+  const hasMedia = mediaType === 'audio' || mediaType === 'video' || mediaType === 'youtube';
+  const calculatedReadingTime = readingTimePerLetter > 0
+    ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+    : 0;
+
+  // Minimum 1 second for reading timer, even if no letters or very short text
+  const readingTime = Math.max(calculatedReadingTime, 1.0);
 
   // Find leading team for handicap
   const leadingTeamScore = teamScores.length > 0 ? Math.max(...teamScores.map(t => t.score)) : 0;
@@ -86,14 +93,29 @@ export const QuestionModal = memo(({
   const [handicapTimerRemaining, setHandicapTimerRemaining] = useState(0);
   const [timerPhase, setTimerPhase] = useState<'reading' | 'response' | 'complete'>('reading');
 
+  // Media playback state
+  const [isMediaPlaying, setIsMediaPlaying] = useState(false);
+  const [isMediaPaused, setIsMediaPaused] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const youtubeRef = useRef<HTMLIFrameElement>(null);
+
   // Reset timers when question changes
   useEffect(() => {
-    const newReadingTime = readingTimePerLetter > 0 ? questionTextLetters * readingTimePerLetter : 0;
+    // Calculate reading time considering media files
+    const hasMedia = mediaType === 'audio' || mediaType === 'video' || mediaType === 'youtube';
+    const calculatedReadingTime = readingTimePerLetter > 0
+      ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+      : 0;
+
+    // Minimum 1 second for reading timer
+    const newReadingTime = Math.max(calculatedReadingTime, 1.0);
+
     setReadingTimerRemaining(newReadingTime);
     setResponseTimerRemaining(responseWindow);
     setHandicapTimerRemaining(0);
     setTimerPhase(newReadingTime > 0 ? 'reading' : 'response');
-  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow]);
+  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType]);
 
   // Single unified timer effect
   useEffect(() => {
@@ -108,6 +130,11 @@ export const QuestionModal = memo(({
 
     // Don't run if complete
     if (timerPhase === 'complete') return;
+
+    // Pause timer when media is playing (for audio/video/youtube)
+    if (isMediaPlaying && !isMediaPaused) {
+      return; // Don't run timer while media is playing
+    }
 
     // Reading phase timer
     if (timerPhase === 'reading') {
@@ -143,7 +170,7 @@ export const QuestionModal = memo(({
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay]);
+  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay, isMediaPlaying, isMediaPaused]);
 
   // Calculate progress for timer visualization - each timer fills bar independently
   const timerProgress = (() => {
@@ -189,6 +216,150 @@ export const QuestionModal = memo(({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onScoreChange]);
 
+  // Auto-play media when question opens
+  useEffect(() => {
+    if (hasQuestionMedia && !showAnswer) {
+      console.log('🎬 Auto-playing media:', { mediaType, mediaUrl: mediaUrl?.slice(0, 50) });
+
+      // Check if URL exists
+      if (!mediaUrl || mediaUrl.length < 5) {
+        console.log('⚠️ No media URL, skipping autoplay');
+        return;
+      }
+
+      // Delay autoplay to ensure DOM is ready and media is loaded
+      const autoplayDelay = setTimeout(() => {
+        // Auto-play video
+        if (mediaType === 'video' && videoRef.current) {
+          console.log('🎬 Attempting to auto-play video');
+          videoRef.current.play().catch(err => {
+            console.log('❌ Video auto-play failed:', err.name);
+          });
+        }
+        // Auto-play audio
+        if (mediaType === 'audio' && audioRef.current) {
+          console.log('🎵 Attempting to auto-play audio');
+          audioRef.current.play().catch(err => {
+            console.log('❌ Audio auto-play failed:', err.name);
+          });
+        }
+        // For YouTube, autoplay is handled via URL parameter (no extra action needed)
+        if (mediaType === 'youtube') {
+          console.log('📺 YouTube video with autoplay enabled via URL');
+        }
+      }, 500); // 500ms delay to ensure media is ready
+
+      return () => clearTimeout(autoplayDelay);
+    }
+  }, [question.id, hasQuestionMedia, mediaType, showAnswer, mediaUrl]);
+
+  // Media event handlers for video
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handlePlay = () => {
+      console.log('🎬 Video started playing - pausing timer');
+      setIsMediaPlaying(true);
+      setIsMediaPaused(false);
+      // Unmute video after it starts playing (autoplay requires muted)
+      if (video.muted) {
+        video.muted = false;
+      }
+    };
+
+    const handlePause = () => {
+      console.log('⏸️ Video paused - resuming timer');
+      setIsMediaPaused(true);
+    };
+
+    const handleEnded = () => {
+      console.log('✅ Video ended - resuming timer');
+      setIsMediaPlaying(false);
+      setIsMediaPaused(false);
+    };
+
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('ended', handleEnded);
+
+    return () => {
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  // Media event handlers for audio
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => {
+      console.log('🎵 Audio started playing - pausing timer');
+      setIsMediaPlaying(true);
+      setIsMediaPaused(false);
+    };
+
+    const handlePause = () => {
+      console.log('⏸️ Audio paused - resuming timer');
+      setIsMediaPaused(true);
+    };
+
+    const handleEnded = () => {
+      console.log('✅ Audio ended - resuming timer');
+      setIsMediaPlaying(false);
+      setIsMediaPaused(false);
+    };
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  // Reset media state when question changes
+  useEffect(() => {
+    setIsMediaPlaying(false);
+    setIsMediaPaused(false);
+  }, [question.id]);
+
+  // YouTube playback tracking - simplified approach
+  useEffect(() => {
+    if (mediaType !== 'youtube') return;
+
+    // For YouTube, we'll assume it starts playing when loaded
+    // and set a timeout to approximate when it might end
+    // This is not perfect but provides basic functionality
+
+    const markAsPlaying = () => {
+      setIsMediaPlaying(true);
+      setIsMediaPaused(false);
+    };
+
+    const markAsEnded = () => {
+      setIsMediaPlaying(false);
+      setIsMediaPaused(false);
+    };
+
+    // Assume YouTube starts playing shortly after question opens
+    const playTimeout = setTimeout(markAsPlaying, 2000);
+
+    // For better UX, we'll use a longer timeout for typical video length
+    // This assumes most YouTube clips in quizzes are 30-60 seconds
+    const endTimeout = setTimeout(markAsEnded, 45000); // 45 seconds average
+
+    return () => {
+      clearTimeout(playTimeout);
+      clearTimeout(endTimeout);
+    };
+  }, [mediaType, question.id]);
+
   // Calculate dynamic font sizes
   const currentQuestionText = showAnswer && question.answerText ? question.answerText : question.text;
   const questionFontSizeMobile = calculateQuestionFontSize(currentQuestionText, 3); // 3rem base for mobile
@@ -225,7 +396,7 @@ export const QuestionModal = memo(({
                 </>
               )}
               <div className="text-lg font-bold text-white">{theme.name}</div>
-              {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTime > 0) || (timerPhase === 'response' && responseWindow > 0)) && (
+              {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) && (
                 <div className="text-xl font-bold text-white">
                   {timerPhase === 'reading' && (
                     <span className="text-yellow-300">{readingTimerRemaining.toFixed(1)}s</span>
@@ -241,7 +412,7 @@ export const QuestionModal = memo(({
 
           {/* Timer bar - always visible but inactive when not timing */}
           <div className="bg-gray-700 w-full overflow-hidden" style={{ height: '16px' }}>
-            {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTime > 0) || (timerPhase === 'response' && responseWindow > 0)) ? (
+            {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) ? (
               <div
                 className={`h-full transition-all duration-100 ease-linear ${getTimerColor()}`}
                 style={{ width: `${timerProgress}%` }}
@@ -307,9 +478,18 @@ export const QuestionModal = memo(({
                       )}
                       {mediaType === 'video' && (
                         <video
+                          ref={videoRef}
                           src={mediaUrl}
                           controls
+                          autoPlay
+                          muted
                           className="w-full h-auto object-contain rounded-lg shadow-xl"
+                          onLoadedData={() => {
+                            console.log('🎬 Video loaded, ready to play');
+                          }}
+                          onError={(e) => {
+                            console.log('❌ Video failed to load:', (e.target as HTMLVideoElement).error);
+                          }}
                         />
                       )}
                       {mediaType === 'audio' && (
@@ -319,13 +499,35 @@ export const QuestionModal = memo(({
                             <Music className="w-16 h-16 text-white" />
                           </div>
                           {/* Audio player */}
-                          <audio src={mediaUrl} controls className="w-full" />
+                          <audio
+                            ref={audioRef}
+                            src={mediaUrl}
+                            controls
+                            autoPlay
+                            className="w-full"
+                            onLoadedData={() => {
+                              console.log('🎵 Audio loaded, ready to play');
+                            }}
+                            onError={(e) => {
+                              console.log('❌ Audio failed to load:', (e.target as HTMLAudioElement).error);
+                            }}
+                          />
                         </div>
                       )}
                       {mediaType === 'youtube' && (
                         <div className="w-full h-full flex items-center justify-center">
                           <iframe
-                            src={mediaUrl}
+                            ref={youtubeRef}
+                            src={(() => {
+                              // Check if URL is valid before adding autoplay
+                              if (!mediaUrl || mediaUrl.length < 10) {
+                                return mediaUrl || '';
+                              }
+                              const baseUrl = mediaUrl;
+                              const separator = baseUrl.includes('?') ? '&' : '?';
+                              const params = ['autoplay=1', 'enablejsapi=1', 'origin=*'];
+                              return `${baseUrl}${separator}${params.join('&')}`;
+                            })()}
                             className="w-full h-full rounded-lg shadow-xl"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             allowFullScreen

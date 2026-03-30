@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "date-fns": "^4.1.0",
+    "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
     "peerjs": "^1.5.5",
     "qrcode.react": "^4.2.0",
