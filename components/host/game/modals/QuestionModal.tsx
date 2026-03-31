@@ -794,14 +794,6 @@ export const QuestionModal = memo(({
                 <span className="text-red-400">{buzzedTeam.teamName} loses {points} points!</span>
               )}
             </div>
-          ) : answeringTeamId ? (
-            // Team answering (set by first buzz during response phase)
-            <div className="text-green-400 text-xl font-bold">
-              {teamScores.find(t => t.teamId === answeringTeamId)?.teamName || 'Unknown'} is answering...
-            </div>
-          ) : buzzedTeam ? (
-            // Legacy buzzed team (for handicap phase)
-            <div className="text-yellow-400 text-xl">{buzzedTeam.teamName} is answering...</div>
           ) : null}
         </div>
       </div>
