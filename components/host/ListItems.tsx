@@ -59,13 +59,9 @@ export const ClientListItem = memo<ClientListItemProps>(({
             {client.connectionQuality.rtt}ms
           </span>
         )}
-        {isBuzzing ? (
+        {isBuzzing && (
           <div className="ml-1">
             <div className="w-3.5 h-3.5 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
-          </div>
-        ) : hasBuzzed && (
-          <div className="ml-1">
-            <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
         )}
       </div>
@@ -113,13 +109,9 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
             {client.connectionQuality.rtt}ms
           </span>
         )}
-        {isBuzzing ? (
+        {isBuzzing && (
           <div className="ml-1">
             <div className="w-3.5 h-3.5 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
-          </div>
-        ) : hasBuzzed && (
-          <div className="ml-1">
-            <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
         )}
       </div>
