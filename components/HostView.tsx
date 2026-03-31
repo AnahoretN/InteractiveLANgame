@@ -1052,15 +1052,15 @@ export const HostView: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Clean up disconnected clients after 30 seconds
+  // Clean up disconnected clients after 60 seconds
   useEffect(() => {
-    const DISCONNECT_TIMEOUT = 30000; // 30 seconds
+    const DISCONNECT_TIMEOUT = 60000; // 60 seconds
     const interval = setInterval(() => {
       const now = Date.now();
       setClients(prev => {
         const updated = new Map(prev);
         for (const [peerId, client] of updated.entries()) {
-          // Remove clients that haven't been seen for 30 seconds
+          // Remove clients that haven't been seen for 60 seconds
           if (now - client.lastSeen > DISCONNECT_TIMEOUT) {
             console.log('[HostView] Removing stale client:', client.name, 'peerId:', peerId);
             updated.delete(peerId);
