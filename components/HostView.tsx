@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from './Button';
 import { Smartphone, ArrowRight, Settings, Users, Activity, Copy, RefreshCw, Plus, Check } from 'lucide-react';
@@ -12,6 +12,12 @@ import { TeamList, CommandsSection, HostSetupPanel } from './host';
 import { storage, STORAGE_KEYS, generateHostUniqueId } from '../hooks/useLocalStorage';
 import { useSyncEffects } from '../hooks/useSyncEffects';
 import { generateUUID, getHealthBgColor } from '../utils';
+import { ConfirmDialog, LoadingSpinner } from './shared';
+import { DraggableQRCode } from './shared/DraggableQRCode';
+
+// Lazy load heavy components
+const SettingsModalLazy = lazy(() => import('./host/SettingsModal').then(m => ({ default: m.SettingsModal })));
+const GameSessionLazy = lazy(() => import('./host/GameSession').then(m => ({ default: m.GameSession })));
 
 // Helper function to get raw string from localStorage without JSON parsing
 function getRawStorageValue(key: string): string | null {
@@ -171,6 +177,21 @@ export const HostView: React.FC = () => {
     handicapActive: false
   });
 
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'danger' | 'warning' | 'info' | 'success';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'danger',
+    onConfirm: () => {}
+  });
+
   // Track the current answering team (the team that gets to answer the question)
   const [answeringTeamId, setAnsweringTeamId] = useState<string | null>(null);
 
@@ -207,6 +228,9 @@ export const HostView: React.FC = () => {
   const [selectedPacks, setSelectedPacks] = useState<GamePack[]>([]);
   const [selectedPackIds, setSelectedPackIds] = useState<string[]>([]);
   const [showGameSelector, setShowGameSelector] = useState<boolean>(false);
+
+  // QR Code display
+  const [showQRCode, setShowQRCode] = useState<boolean>(false);
 
   // Handle save from game selector modal
   const handleSaveGameSelection = useCallback((gameType: GameType, packIds: string[], packs: GamePack[]) => {
@@ -968,9 +992,9 @@ export const HostView: React.FC = () => {
 
   // Clean up buzzed clients after 3 seconds
   useEffect(() => {
+    const BUZZ_DURATION = 3000; // 3 seconds
     const interval = setInterval(() => {
-      const now = Date.now();
-      const BUZZ_DURATION = 3000; // 3 seconds
+      const now = Date.now(); // Пересчитываем now при каждом вызове интервала
       setBuzzedClients(prev => {
         const updated = new Map(prev);
         for (const [clientId, timestamp] of prev.entries()) {
@@ -1043,6 +1067,29 @@ export const HostView: React.FC = () => {
       }
     };
   }, [isSessionActive]);
+
+  // Handle Q key for QR code toggle (global)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'q' || e.key === 'Q' || e.key === 'й' || e.key === 'Й') {
+        // Only toggle if not in an input field
+        if (
+          !(
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement ||
+            (e.target as HTMLElement).isContentEditable
+          )
+        ) {
+          e.preventDefault();
+          setShowQRCode(prev => !prev);
+          console.log(!showQRCode ? '📱 Showing QR code' : '❌ Hiding QR code');
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showQRCode]);
 
   // Calculate stats
   const clientStats = useMemo(() => {
@@ -1193,24 +1240,24 @@ export const HostView: React.FC = () => {
   // --- LOBBY VIEW ---
   if (!isSessionActive) {
     return (
-      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col p-8 items-center justify-center">
-        <div className="w-full max-w-7xl grid lg:grid-cols-2 gap-10 md:gap-14 animate-in fade-in duration-500 cursor-default">
+      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col p-6 items-center justify-center">
+        <div className="w-full max-w-7xl grid lg:grid-cols-2 gap-5 md:gap-7 animate-in fade-in duration-500 cursor-default">
           {/* LEFT COLUMN: Setup & QR */}
-          <div className="flex flex-col space-y-5">
+          <div className="flex flex-col space-y-3">
             {/* First row: IP input + LAN button + OK button */}
-            <div className="bg-gray-900 border border-gray-800 p-5 rounded-lg shadow-lg cursor-default">
-              <div className="flex items-center gap-2">
+            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
+              <div className="flex items-center gap-1.5">
                 <input
                   type="text"
                   value={ipInput}
                   onChange={(e) => setIpInput(e.target.value)}
                   placeholder="192.168.1.x"
                   disabled={!isLanMode || isIpLocked}
-                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-5 py-3 text-white text-base focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-6 py-4 text-white text-lg focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={() => setIsLanMode(!isLanMode)}
-                  className={`h-13 w-20 rounded-lg border-2 text-base font-medium transition-colors ${
+                  className={`h-[60px] w-[91px] rounded-lg border-2 text-base font-medium transition-colors ${
                     isLanMode
                       ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
                       : 'bg-gray-800 hover:bg-gray-700 text-gray-400 border-gray-700'
@@ -1238,7 +1285,7 @@ export const HostView: React.FC = () => {
                     }
                   }}
                   disabled={(!isIpLocked && !ipInput.trim()) || !isLanMode}
-                  className={`h-13 w-20 rounded-lg border-2 text-base font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`h-[60px] w-[91px] rounded-lg border-2 text-base font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     isIpLocked
                       ? 'bg-gray-600 hover:bg-gray-700 text-white'
                       : 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -1250,14 +1297,14 @@ export const HostView: React.FC = () => {
             </div>
 
             {/* Session ID */}
-            <div className="bg-gray-900 border border-gray-800 p-5 rounded-lg shadow-lg cursor-default">
-              <div className="flex items-center gap-3">
-                <label className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Session ID</label>
+            <div className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg cursor-default">
+              <div className="flex items-center gap-2">
+                <label className="text-base font-semibold text-gray-400 uppercase tracking-wider">Session ID</label>
                 <input
                   key={sessionId}
                   type="text"
                   value={sessionId}
-                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-5 py-2 text-white text-base text-center font-mono text-2xl tracking-widest"
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-6 py-2.5 text-white text-lg text-center font-mono text-3xl tracking-widest"
                   readOnly
                 />
                 <button
@@ -1284,36 +1331,36 @@ export const HostView: React.FC = () => {
                       storage.set(STORAGE_KEYS.QR_URL, inviteUrl);
                     }
                   }}
-                  className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors flex items-center gap-2 text-base font-medium"
+                  className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors flex items-center gap-2 text-lg font-medium"
                   title="Regenerate Session ID"
                 >
-                  <RefreshCw className="w-5 h-5" />
+                  <RefreshCw className="w-6 h-6" />
                 </button>
               </div>
             </div>
 
             {/* QR Code */}
-            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-10 group cursor-default">
+            <div className="relative aspect-square w-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl overflow-hidden flex flex-col items-center justify-center p-12 group cursor-default">
               <div className="absolute inset-0 bg-blue-600/5 blur-[80px] rounded-full pointer-events-none group-hover:bg-blue-600/10 transition-colors duration-500"></div>
               <div
                 key={finalQrUrl}
                 className="relative z-10 bg-white p-5 rounded-lg shadow-xl"
               >
                 {!isIpLocked ? (
-                  <div className="w-[402px] h-[402px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-center p-7 space-y-4">
-                    <div className="w-18 h-18 bg-gray-200 rounded-full flex items-center justify-center">
-                      <Settings className="w-10 h-10 text-gray-400" />
+                  <div className="w-[456px] h-[456px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-center p-8 space-y-5">
+                    <div className="w-20 h-20 bg-gray-200 rounded-full flex items-center justify-center">
+                      <Settings className="w-12 h-12 text-gray-400" />
                     </div>
-                    <p className="text-gray-600 font-medium text-lg">Enter IP address</p>
-                    <p className="text-gray-400 text-base">Then confirm to generate QR code</p>
+                    <p className="text-gray-600 font-medium text-xl">Enter IP address</p>
+                    <p className="text-gray-400 text-lg">Then confirm to generate QR code</p>
                   </div>
                 ) : (
                   <>
-                    <QRCodeSVG value={finalQrUrl} size={402} level="H" includeMargin={true} />
+                    <QRCodeSVG value={finalQrUrl} size={456} level="H" includeMargin={true} />
                   </>
                 )}
               </div>
-              <div className="mt-8 text-center z-10 flex items-center gap-2">
+              <div className="mt-6 text-center z-10 flex items-center gap-2">
                 <button
                   onClick={() => {
                     if (finalQrUrl) {
@@ -1323,40 +1370,40 @@ export const HostView: React.FC = () => {
                     }
                   }}
                   disabled={!finalQrUrl}
-                  className={`relative flex items-center justify-center px-5 py-4 rounded-lg transition-all duration-200 pl-12 ${
+                  className={`relative flex items-center justify-center px-6 py-5 rounded-lg transition-all duration-200 pl-14 ${
                     linkCopied
                       ? 'bg-white text-blue-600'
                       : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
                   }`}
                   style={{ minWidth: '240px' }}
                 >
-                  <Copy className="absolute left-4 w-6 h-6" />
-                  <span className="font-medium text-base">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
+                  <Copy className="absolute left-5 w-7 h-7" />
+                  <span className="font-medium text-lg">{linkCopied ? 'Link copied!' : 'Copy invitation link'}</span>
                 </button>
               </div>
             </div>
           </div>
 
           {/* RIGHT COLUMN: List */}
-          <div className="flex flex-col h-full space-y-5">
-             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-7 flex flex-col min-h-[460px] shadow-xl cursor-default">
-                <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-2">
-                   <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                     <Users className="w-5 h-5 text-blue-400" /> Lobby
+          <div className="flex flex-col h-full space-y-3">
+             <div className="flex-1 bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-lg p-5 flex flex-col min-h-[460px] shadow-xl cursor-default">
+                <div className="flex justify-between items-center mb-2 border-b border-gray-800 pb-1">
+                   <h2 className="text-3xl font-bold text-white flex items-center gap-2">
+                     <Users className="w-6 h-6 text-blue-400" /> Lobby
                    </h2>
                    <div className="flex items-center gap-2">
-                     <div className="bg-gray-800 px-4 py-1.5 rounded-full text-sm font-mono text-blue-400 border border-blue-500/20">
+                     <div className="bg-gray-800 px-6 py-3 rounded-full text-base font-mono text-blue-400 border border-blue-500/20">
                        {clients.size} Ready
                      </div>
                      {clients.size > 0 && (
-                       <div className={`px-4 py-1.5 rounded-full text-sm font-mono border ${getHealthBgColor(clientStats.avgQuality)}`}>
-                         <Activity className="w-4 h-4 inline mr-1" /> {clientStats.avgQuality}%
+                       <div className={`px-6 py-3 rounded-full text-base font-mono border ${getHealthBgColor(clientStats.avgQuality)}`}>
+                         <Activity className="w-5 h-5 inline mr-1" /> {clientStats.avgQuality}%
                        </div>
                      )}
                    </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1.5 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
                    {sessionSettings.noTeamsMode ? (
                      // No Teams Mode - show all players individually
                      Array.from(clients.values()).map((client: ConnectedClient) => (
@@ -1392,9 +1439,16 @@ export const HostView: React.FC = () => {
                              }}
                              onRename={renameTeam}
                              onDelete={() => {
-                               if (confirm(`Delete team "${team.name}"?`)) {
-                                 deleteTeam(team.id);
-                               }
+                               setConfirmDialog({
+                                 isOpen: true,
+                                 title: 'Delete Team',
+                                 message: `Are you sure you want to delete team "${team.name}"?`,
+                                 type: 'danger',
+                                 onConfirm: () => {
+                                   deleteTeam(team.id);
+                                   setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                                 }
+                               });
                              }}
                              onEditingNameChange={(name) => setEditingTeamName(name)}
                              onEditingIdSet={(id) => setEditingTeamId(id)}
@@ -1425,18 +1479,18 @@ export const HostView: React.FC = () => {
                        />
 
                        {/* Create Team button - always visible */}
-                       <div className="bg-gray-900/50 backdrop-blur-sm rounded-lg p-5">
+                       <div className="bg-gray-900/50 backdrop-blur-sm rounded-lg p-4">
                            {!showCreateTeamInput ? (
                              <button
                                onClick={() => setShowCreateTeamInput(true)}
-                               className="w-full p-3 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 text-base hover:bg-gray-800/50 hover:text-gray-300 transition-colors flex items-center justify-center gap-2"
+                               className="w-full p-4 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 text-lg hover:bg-gray-800/50 hover:text-gray-300 transition-colors flex items-center justify-center gap-2.5"
                              >
-                               <Plus className="w-5 h-5 text-gray-400" />
+                               <Plus className="w-6 h-6 text-gray-400" />
                                <span>Create Team</span>
                              </button>
                            ) : (
-                             <div className="flex items-center gap-2 p-3 bg-gray-800/50 rounded-lg border-2 border-blue-500/30">
-                               <Plus className="w-5 h-5 text-blue-400" />
+                             <div className="flex items-center gap-2.5 p-4 bg-gray-800/50 rounded-lg border-2 border-blue-500/30">
+                               <Plus className="w-6 h-6 text-blue-400" />
                                <input
                                  type="text"
                                  value={newTeamName}
@@ -1454,7 +1508,7 @@ export const HostView: React.FC = () => {
                                    }
                                  }}
                                  placeholder="Team name..."
-                                 className="flex-1 bg-transparent text-white text-base font-medium focus:outline-none"
+                                 className="flex-1 bg-transparent text-white text-lg font-medium focus:outline-none"
                                  autoFocus
                                />
                                {newTeamName.trim() && (
@@ -1464,10 +1518,10 @@ export const HostView: React.FC = () => {
                                      setNewTeamName('');
                                      setShowCreateTeamInput(false);
                                    }}
-                                   className="p-2 hover:bg-gray-700 rounded text-green-400"
+                                   className="p-2.5 hover:bg-gray-700 rounded text-green-400"
                                    title="Create team"
                                  >
-                                   <Check className="w-5 h-5" />
+                                   <Check className="w-6 h-6" />
                                  </button>
                                )}
                                <button
@@ -1475,7 +1529,7 @@ export const HostView: React.FC = () => {
                                    setShowCreateTeamInput(false);
                                    setNewTeamName('');
                                  }}
-                                 className="p-2 hover:bg-gray-700 rounded text-gray-400"
+                                 className="p-2.5 hover:bg-gray-700 rounded text-gray-400 text-lg"
                                  title="Cancel"
                                >
                                  ✕
@@ -1489,52 +1543,54 @@ export const HostView: React.FC = () => {
              </div>
 
              {/* Selected game info */}
-             <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-5 py-4 flex items-center justify-between">
-               <div className="flex items-center gap-4">
-                 <div className="w-12 h-12 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center">
-                   <span className="text-xl font-bold">{selectedGame === 'custom' ? 'СИ' : selectedGame === 'quiz' ? 'К' : 'В'}</span>
+             <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-4 py-3 flex items-center justify-between">
+               <div className="flex items-center gap-2">
+                 <div className="w-14 h-14 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center">
+                   <span className="text-2xl font-bold">{selectedGame === 'custom' ? 'СИ' : selectedGame === 'quiz' ? 'К' : 'В'}</span>
                  </div>
                  <div>
-                   <div className="text-base font-medium text-white">
+                   <div className="text-xl font-medium text-white">
                      {selectedGame === 'custom' ? 'Своя игра' : selectedGame === 'quiz' ? 'Квиз' : 'Викторина'}
                    </div>
                    {selectedPacks.length > 0 ? (
-                     <div className="text-sm text-gray-500">{selectedPacks.length} pack{selectedPacks.length > 1 ? 's' : ''} selected</div>
+                     <div className="text-base text-gray-500">{selectedPacks.length} pack{selectedPacks.length > 1 ? 's' : ''} selected</div>
                    ) : (
-                     <div className="text-sm text-gray-600">No pack selected</div>
+                     <div className="text-base text-gray-600">No pack selected</div>
                    )}
                  </div>
                </div>
              </div>
 
-             <div className="flex gap-4">
-               <Button size="xl" variant="secondary" className="px-7" onClick={() => setShowSettingsModal(true)} title="Session Settings">
-                  <Settings className="w-7 h-7" />
+             <div className="flex gap-2">
+               <Button size="xl" variant="secondary" className="px-6" onClick={() => setShowSettingsModal(true)} title="Session Settings">
+                  <Settings className="w-8 h-8" />
                </Button>
-               <Button size="xl" variant="secondary" className="px-7" onClick={() => setShowGameSelector(true)} disabled={!isOnline || !isIpLocked}>
+               <Button size="xl" variant="secondary" className="px-5" onClick={() => setShowGameSelector(true)} disabled={!isOnline || !isIpLocked}>
                   Select Game
                </Button>
-               <Button size="xl" className="flex-1 shadow-blue-900/20" onClick={() => {
+               <Button size="xl" className="flex-1 text-lg shadow-blue-900/20" onClick={() => {
                  // Generate new session version to help clients detect this is a fresh session
                  const newVersion = `v_${Date.now()}`;
                  setSessionVersion(newVersion);
                  storage.set(STORAGE_KEYS.SESSION_VERSION, newVersion);
                  setIsSessionActive(true);
                }} disabled={!isOnline || !isIpLocked}>
-                  Start Session <ArrowRight className="ml-3 w-6 h-6" />
+                  Start Session <ArrowRight className="ml-3 w-7 h-7" />
                </Button>
              </div>
           </div>
         </div>
 
-        {/* Settings Modal */}
-        <SettingsModal
-          isOpen={showSettingsModal}
-          onClose={() => setShowSettingsModal(false)}
-          settings={sessionSettings}
-          onSave={updateSessionSettings}
-          onClearCache={handleClearCache}
-        />
+        {/* Settings Modal - Lazy Loaded */}
+        <Suspense fallback={<LoadingSpinner message="Loading Settings..." size="sm" />}>
+          <SettingsModalLazy
+            isOpen={showSettingsModal}
+            onClose={() => setShowSettingsModal(false)}
+            settings={sessionSettings}
+            onSave={updateSessionSettings}
+            onClearCache={handleClearCache}
+          />
+        </Suspense>
 
         {/* Game Selector Modal */}
         <GameSelectorModal
@@ -1551,39 +1607,60 @@ export const HostView: React.FC = () => {
 
   // --- GAME SESSION ---
   return (
-    <GameSession
-      teams={teams}
-      clients={clients}
-      buzzedClients={buzzedClients}
-      buzzedTeamIds={buzzedTeamIds}
-      lateBuzzTeamIds={lateBuzzTeamIds}
-      status={status}
-      isOnline={isOnline}
-      onBackToLobby={() => setIsSessionActive(false)}
-      onClearBuzz={() => setBuzzedClients(new Map())}
-      onBuzzerStateChange={handleBuzzerStateChange}
-      buzzerState={buzzerState}
-      gameType={selectedGame}
-      mergedPack={mergedSessionPack}
-      noTeamsMode={sessionSettings.noTeamsMode}
-      sessionSettings={sessionSettings}
-      answeringTeamId={answeringTeamId}
-      onAnsweringTeamChange={setAnsweringTeamId}
-      onBroadcastMessage={broadcastMessage}
-      superGameBets={superGameBets}
-      superGameAnswers={superGameAnswers}
-      onSuperGamePhaseChange={setSuperGamePhase}
-      onSuperGameMaxBetChange={setSuperGameMaxBet}
-      onRequestStateSync={() => setStateSyncTrigger(prev => prev + 1)}
-      stateSyncTrigger={stateSyncTrigger}
-      // Clash state props
-      clashingTeamIds={clashingTeamIds}
-      // Active/inactive players props
-      activeTeamIds={activeTeamIds}
-      answeringTeamLockedIn={answeringTeamLockedIn}
-      onUpdateActiveTeamIds={(teamIds: Set<string>) => {
-        setActiveTeamIds(teamIds);
-      }}
-    />
+    <>
+      <Suspense fallback={<LoadingSpinner message="Loading Game Session..." size="lg" />}>
+        <GameSessionLazy
+          teams={teams}
+          clients={clients}
+          buzzedClients={buzzedClients}
+          buzzedTeamIds={buzzedTeamIds}
+          lateBuzzTeamIds={lateBuzzTeamIds}
+          status={status}
+          isOnline={isOnline}
+          onBackToLobby={() => setIsSessionActive(false)}
+          onClearBuzz={() => setBuzzedClients(new Map())}
+          onBuzzerStateChange={handleBuzzerStateChange}
+          buzzerState={buzzerState}
+          gameType={selectedGame}
+          mergedPack={mergedSessionPack}
+          noTeamsMode={sessionSettings.noTeamsMode}
+          sessionSettings={sessionSettings}
+          answeringTeamId={answeringTeamId}
+          onAnsweringTeamChange={setAnsweringTeamId}
+          onBroadcastMessage={broadcastMessage}
+          superGameBets={superGameBets}
+          superGameAnswers={superGameAnswers}
+          onSuperGamePhaseChange={setSuperGamePhase}
+          onSuperGameMaxBetChange={setSuperGameMaxBet}
+          onRequestStateSync={() => setStateSyncTrigger(prev => prev + 1)}
+          stateSyncTrigger={stateSyncTrigger}
+          // Clash state props
+          clashingTeamIds={clashingTeamIds}
+          // Active/inactive players props
+          activeTeamIds={activeTeamIds}
+          answeringTeamLockedIn={answeringTeamLockedIn}
+          onUpdateActiveTeamIds={(teamIds: Set<string>) => {
+            setActiveTeamIds(teamIds);
+          }}
+        />
+      </Suspense>
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        type={confirmDialog.type}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+      />
+
+      {/* Draggable QR Code */}
+      <DraggableQRCode
+        hostId={hostId}
+        isVisible={showQRCode}
+        onClose={() => setShowQRCode(false)}
+      />
+    </>
   );
 };

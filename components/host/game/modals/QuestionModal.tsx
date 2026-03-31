@@ -14,6 +14,24 @@ import {
   calculateAnswerFontSizeDesktop
 } from '../fontUtils';
 
+// TypeScript declarations for YouTube IFrame API
+declare global {
+  interface Window {
+    YT: {
+      Player: any;
+      PlayerState: {
+        UNSTARTED: number;
+        ENDED: number;
+        PLAYING: number;
+        PAUSED: number;
+        BUFFERING: number;
+        VIDEO_CUED: number;
+      };
+    };
+    onYouTubeIframeAPIReady: () => void;
+  }
+}
+
 export interface QuestionModalProps {
   question: Question;
   theme: Theme;
@@ -96,6 +114,8 @@ export const QuestionModal = memo(({
   // Media playback state
   const [isMediaPlaying, setIsMediaPlaying] = useState(false);
   const [isMediaPaused, setIsMediaPaused] = useState(false);
+  const [waitingForFirstMediaPlay, setWaitingForFirstMediaPlay] = useState(false);
+  const [isManuallyPaused, setIsManuallyPaused] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const youtubeRef = useRef<HTMLIFrameElement>(null);
@@ -115,7 +135,15 @@ export const QuestionModal = memo(({
     setResponseTimerRemaining(responseWindow);
     setHandicapTimerRemaining(0);
     setTimerPhase(newReadingTime > 0 ? 'reading' : 'response');
-  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType]);
+
+    // If question has media, wait for first play before starting timer
+    setWaitingForFirstMediaPlay(hasQuestionMedia);
+    setIsManuallyPaused(false);
+    setIsMediaPlaying(false);
+    setIsMediaPaused(false);
+
+    console.log('🔄 Question reset - waiting for first media play:', hasQuestionMedia);
+  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia]);
 
   // Single unified timer effect
   useEffect(() => {
@@ -130,6 +158,16 @@ export const QuestionModal = memo(({
 
     // Don't run if complete
     if (timerPhase === 'complete') return;
+
+    // Pause timer when manually paused
+    if (isManuallyPaused) {
+      return; // Don't run timer when manually paused
+    }
+
+    // Pause timer when waiting for first media play
+    if (waitingForFirstMediaPlay) {
+      return; // Don't run timer while waiting for first media play
+    }
 
     // Pause timer when media is playing (for audio/video/youtube)
     if (isMediaPlaying && !isMediaPaused) {
@@ -170,7 +208,7 @@ export const QuestionModal = memo(({
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay, isMediaPlaying, isMediaPaused]);
+  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay, isMediaPlaying, isMediaPaused, waitingForFirstMediaPlay, isManuallyPaused]);
 
   // Calculate progress for timer visualization - each timer fills bar independently
   const timerProgress = (() => {
@@ -210,6 +248,25 @@ export const QuestionModal = memo(({
         onScoreChange('wrong');
       } else if (e.key === '=') {
         onScoreChange('correct');
+      } else if (e.key === 'Backspace') {
+        // Toggle manual timer pause
+        e.preventDefault();
+        setIsManuallyPaused(prev => {
+          const newState = !prev;
+          // If manually resuming timer, stop waiting for first media play
+          if (!newState) {
+            setWaitingForFirstMediaPlay(false);
+            console.log('▶️ Timer manually resumed - no longer waiting for media');
+          } else {
+            console.log('⏸️ Timer manually paused');
+          }
+          return newState;
+        });
+      } else if (e.key === 'q' || e.key === 'Q' || e.key === 'й' || e.key === 'Й') {
+        // Toggle QR code display (handle both English and Russian layout)
+        e.preventDefault();
+        // This will be handled by a parent component or global state
+        window.dispatchEvent(new CustomEvent('toggle-qr-code'));
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -228,7 +285,7 @@ export const QuestionModal = memo(({
       }
 
       // Delay autoplay to ensure DOM is ready and media is loaded
-      const autoplayDelay = setTimeout(() => {
+      const autoplayDelay = setTimeout(async () => {
         // Auto-play video
         if (mediaType === 'video' && videoRef.current) {
           console.log('🎬 Attempting to auto-play video');
@@ -262,6 +319,7 @@ export const QuestionModal = memo(({
       console.log('🎬 Video started playing - pausing timer');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
+      setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
       // Unmute video after it starts playing (autoplay requires muted)
       if (video.muted) {
         video.muted = false;
@@ -299,6 +357,7 @@ export const QuestionModal = memo(({
       console.log('🎵 Audio started playing - pausing timer');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
+      setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
     };
 
     const handlePause = () => {
@@ -329,36 +388,134 @@ export const QuestionModal = memo(({
     setIsMediaPaused(false);
   }, [question.id]);
 
-  // YouTube playback tracking - simplified approach
+  // YouTube playback tracking using YouTube IFrame Player API
   useEffect(() => {
     if (mediaType !== 'youtube') return;
 
-    // For YouTube, we'll assume it starts playing when loaded
-    // and set a timeout to approximate when it might end
-    // This is not perfect but provides basic functionality
+    // Load YouTube IFrame API if not already loaded
+    if (!window.YT) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    }
 
-    const markAsPlaying = () => {
-      setIsMediaPlaying(true);
-      setIsMediaPaused(false);
+    // Initialize player when API is ready
+    const initializePlayer = () => {
+      if (!youtubeRef.current) {
+        console.error('❌ YouTube ref not available');
+        return;
+      }
+
+      // Extract video ID from URL
+      const videoId = extractYouTubeId(mediaUrl);
+      if (!videoId) {
+        console.error('❌ Could not extract YouTube video ID from URL:', mediaUrl);
+        return;
+      }
+
+      console.log('🎬 Initializing YouTube player for video:', videoId);
+
+      // Create new player
+      const player = new window.YT.Player(youtubeRef.current, {
+        videoId: videoId,
+        playerVars: {
+          autoplay: 1,
+          controls: 1,
+          enablejsapi: 1,
+          origin: window.location.origin
+        },
+        events: {
+          onReady: () => {
+            console.log('✅ YouTube player ready');
+          },
+          onError: (event) => {
+            console.error('❌ YouTube player error:', event.data);
+          },
+          onStateChange: (event) => {
+            const state = event.data;
+            console.log('🎬 YouTube player state changed:', state);
+
+            // YouTube Player API states:
+            // -1: unstarted
+            // 0: ended
+            // 1: playing
+            // 2: paused
+            // 3: buffering
+            // 5: video cued
+
+            if (state === window.YT.PlayerState.PLAYING) {
+              setIsMediaPlaying(true);
+              setIsMediaPaused(false);
+              setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
+              console.log('▶️ YouTube video started playing - timers paused');
+            } else if (state === window.YT.PlayerState.PAUSED) {
+              setIsMediaPlaying(false);
+              setIsMediaPaused(true);
+              console.log('⏸️ YouTube video paused - timers resumed');
+            } else if (state === window.YT.PlayerState.ENDED) {
+              setIsMediaPlaying(false);
+              setIsMediaPaused(false);
+              console.log('🏁 YouTube video ended - timers resumed');
+            } else if (state === window.YT.PlayerState.BUFFERING) {
+              // Buffering - keep playing state
+              console.log('⏳ YouTube video buffering');
+            }
+          }
+        }
+      });
+
+      // Store player reference for cleanup
+      (youtubeRef.current as any)._player = player;
     };
 
-    const markAsEnded = () => {
-      setIsMediaPlaying(false);
-      setIsMediaPaused(false);
-    };
-
-    // Assume YouTube starts playing shortly after question opens
-    const playTimeout = setTimeout(markAsPlaying, 2000);
-
-    // For better UX, we'll use a longer timeout for typical video length
-    // This assumes most YouTube clips in quizzes are 30-60 seconds
-    const endTimeout = setTimeout(markAsEnded, 45000); // 45 seconds average
+    // Wait for YouTube API to be ready
+    if (window.YT && window.YT.Player) {
+      // API already loaded, initialize immediately
+      initializePlayer();
+    } else {
+      // API not loaded yet, wait for it
+      console.log('⏳ Waiting for YouTube API to load...');
+      window.onYouTubeIframeAPIReady = initializePlayer;
+    }
 
     return () => {
-      clearTimeout(playTimeout);
-      clearTimeout(endTimeout);
+      // Cleanup player
+      if (youtubeRef.current && (youtubeRef.current as any)._player) {
+        const player = (youtubeRef.current as any)._player;
+        if (player.destroy) {
+          console.log('🧹 Cleaning up YouTube player');
+          player.destroy();
+        }
+      }
+      window.onYouTubeIframeAPIReady = null;
     };
-  }, [mediaType, question.id]);
+  }, [mediaType, question.id, mediaUrl]);
+
+  // Helper function to extract YouTube video ID from URL
+  const extractYouTubeId = (url: string): string | null => {
+    if (!url) return null;
+
+    // Match patterns:
+    // youtube.com/watch?v=VIDEO_ID
+    // youtu.be/VIDEO_ID
+    // youtube.com/embed/VIDEO_ID
+    // youtube.com/shorts/VIDEO_ID
+    // Direct video ID (11 characters)
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([^&\n?#]+)/,
+      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+
+    return null;
+  };
 
   // Calculate dynamic font sizes
   const currentQuestionText = showAnswer && question.answerText ? question.answerText : question.text;
@@ -516,22 +673,10 @@ export const QuestionModal = memo(({
                       )}
                       {mediaType === 'youtube' && (
                         <div className="w-full h-full flex items-center justify-center">
-                          <iframe
+                          {/* YouTube Player API will replace this div */}
+                          <div
                             ref={youtubeRef}
-                            src={(() => {
-                              // Check if URL is valid before adding autoplay
-                              if (!mediaUrl || mediaUrl.length < 10) {
-                                return mediaUrl || '';
-                              }
-                              const baseUrl = mediaUrl;
-                              const separator = baseUrl.includes('?') ? '&' : '?';
-                              const params = ['autoplay=1', 'enablejsapi=1', 'origin=*'];
-                              return `${baseUrl}${separator}${params.join('&')}`;
-                            })()}
                             className="w-full h-full rounded-lg shadow-xl"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                            allowFullScreen
-                            title="YouTube video"
                           />
                         </div>
                       )}
