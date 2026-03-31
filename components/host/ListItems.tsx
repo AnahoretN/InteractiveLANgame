@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import { GripVertical, Settings, Trash2, Signal, Users } from 'lucide-react';
 import { Team, ConnectionQuality } from '../../types';
 import { getHealthBgColor } from '../../utils';
@@ -46,33 +46,43 @@ export const ClientListItem = memo<ClientListItemProps>(({
       draggable
       onDragStart={() => onDragStart(client.id)}
       onDragEnd={onDragEnd}
-      className={`flex items-center justify-between p-2 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
+      className={`flex items-center justify-between p-2.5 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
     >
-      <div className="flex items-center gap-2">
-        {isDragging && <GripVertical className="w-4 h-4 text-gray-600" />}
-        <div className={`w-5 h-5 rounded-full ${showTeam ? 'bg-gray-600' : 'bg-blue-500/80'} flex items-center justify-center text-[9px] font-bold text-white`}>
+      <div className="flex items-center gap-2.5">
+        {isDragging && <GripVertical className="w-5 h-5 text-gray-600" />}
+        <div className={`w-6 h-6 rounded-full ${showTeam ? 'bg-gray-600' : 'bg-blue-500/80'} flex items-center justify-center text-[10px] font-bold text-white`}>
           {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
         </div>
-        <span className={`text-sm ${showTeam ? 'text-gray-400' : 'text-gray-300'}`}>{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
+        <span className={`text-base ${showTeam ? 'text-gray-400' : 'text-gray-300'}`}>{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
         {client.connectionQuality.rtt > 0 && getHealthBgColor && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
+          <span className={`text-[11px] px-2 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
             {client.connectionQuality.rtt}ms
           </span>
         )}
         {isBuzzing ? (
           <div className="ml-1">
-            <div className="w-3 h-3 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+            <div className="w-3.5 h-3.5 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
           </div>
         ) : hasBuzzed && (
           <div className="ml-1">
-            <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
+            <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
         )}
       </div>
-      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors">
-        <Trash2 className="w-3.5 h-3.5" />
+      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors">
+        <Trash2 className="w-4 h-4" />
       </button>
     </div>
+  );
+}, (prevProps, nextProps) => {
+  // Only re-render if relevant props change
+  return (
+    prevProps.client.id === nextProps.client.id &&
+    prevProps.client.name === nextProps.client.name &&
+    prevProps.client.teamId === nextProps.client.teamId &&
+    prevProps.hasBuzzed === nextProps.hasBuzzed &&
+    prevProps.isBuzzing === nextProps.isBuzzing &&
+    prevProps.isDragging === nextProps.isDragging
   );
 });
 
@@ -92,31 +102,38 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
   const stale = isStale(client.lastSeen);
 
   return (
-    <div className={`flex items-center justify-between p-2 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
-      <div className="flex items-center gap-2">
-        <div className="w-5 h-5 rounded-full bg-blue-500/80 flex items-center justify-center text-[9px] font-bold text-white">
+    <div className={`flex items-center justify-between p-2.5 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
+      <div className="flex items-center gap-2.5">
+        <div className="w-6 h-6 rounded-full bg-blue-500/80 flex items-center justify-center text-[10px] font-bold text-white">
           {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
         </div>
-        <span className="text-sm text-gray-300">{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
+        <span className="text-base text-gray-300">{typeof client.name === 'string' ? client.name : 'Unnamed'}</span>
         {client.connectionQuality.rtt > 0 && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
+          <span className={`text-[11px] px-2 py-0.5 rounded ${getHealthBgColor(client.connectionQuality.healthScore)}`}>
             {client.connectionQuality.rtt}ms
           </span>
         )}
         {isBuzzing ? (
           <div className="ml-1">
-            <div className="w-3 h-3 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+            <div className="w-3.5 h-3.5 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
           </div>
         ) : hasBuzzed && (
           <div className="ml-1">
-            <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
+            <div className="w-3.5 h-3.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
           </div>
         )}
       </div>
-      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors">
-        <Trash2 className="w-3.5 h-3.5" />
+      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors">
+        <Trash2 className="w-4 h-4" />
       </button>
     </div>
+  );
+}, (prevProps, nextProps) => {
+  return (
+    prevProps.client.id === nextProps.client.id &&
+    prevProps.client.name === nextProps.client.name &&
+    prevProps.hasBuzzed === nextProps.hasBuzzed &&
+    prevProps.isBuzzing === nextProps.isBuzzing
   );
 });
 
@@ -168,6 +185,15 @@ export const TeamListItem = memo<TeamListItemProps>(({
   onDragEnd,
   onRemoveClient
 }) => {
+  // Memoize expensive calculations
+  const hasBuzzedClient = useMemo(() => {
+    return teamClients.some(client => buzzedClients.has(client.id));
+  }, [teamClients, buzzedClients]);
+
+  const hasBuzzingClient = useMemo(() => {
+    return teamClients.some(client => buzzingClientIds.has(client.id));
+  }, [teamClients, buzzingClientIds]);
+
   return (
     <div
       key={team.id}
@@ -176,8 +202,8 @@ export const TeamListItem = memo<TeamListItemProps>(({
       onDrop={onDrop}
     >
       {/* Team header with edit/delete controls */}
-      <div className={`flex items-center gap-2 p-2 rounded-lg border ${isDraggingOver ? 'bg-blue-500/20 border-blue-500/50' : 'bg-gray-800/50 border-gray-700/50'} group`}>
-        <div className="w-6 h-6 rounded-full bg-violet-500 flex items-center justify-center text-[10px] font-bold text-white">
+      <div className={`flex items-center gap-2.5 p-2.5 rounded-lg border ${isDraggingOver ? 'bg-blue-500/20 border-blue-500/50' : 'bg-gray-800/50 border-gray-700/50'} group`}>
+        <div className="w-7 h-7 rounded-full bg-violet-500 flex items-center justify-center text-[11px] font-bold text-white">
           {typeof team.name === 'string' && team.name.length > 0 ? team.name.charAt(0).toUpperCase() : '?'}
         </div>
         {isEditing ? (
@@ -199,28 +225,28 @@ export const TeamListItem = memo<TeamListItemProps>(({
               }
               onEditingIdSet(null);
             }}
-            className="flex-1 bg-gray-900 border border-blue-500 rounded px-2 py-0.5 text-sm text-white focus:outline-none"
+            className="flex-1 bg-gray-900 border border-blue-500 rounded px-2.5 py-1 text-base text-white focus:outline-none"
             autoFocus
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
           <>
-            <span className="font-medium text-gray-200 text-sm">{team.name}</span>
-            <span className={`text-xs ${teamClients.length === 0 ? 'text-gray-600' : 'text-gray-500'}`}>({teamClients.length})</span>
-            <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span className="font-medium text-gray-200 text-base">{team.name}</span>
+            <span className={`text-sm ${teamClients.length === 0 ? 'text-gray-600' : 'text-gray-500'}`}>({teamClients.length})</span>
+            <div className="ml-auto flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={onEditStart}
-                className="text-gray-500 hover:text-blue-400 p-1 hover:bg-gray-700 rounded transition-colors"
+                className="text-gray-500 hover:text-blue-400 p-1.5 hover:bg-gray-700 rounded transition-colors"
                 title="Rename team"
               >
-                <Settings className="w-3 h-3" />
+                <Settings className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={onDelete}
-                className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors"
+                className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors"
                 title="Delete team"
               >
-                <Trash2 className="w-3 h-3" />
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             </div>
           </>
@@ -246,6 +272,20 @@ export const TeamListItem = memo<TeamListItemProps>(({
         </div>
       )}
     </div>
+  );
+}, (prevProps, nextProps) => {
+  // Custom comparison function to prevent unnecessary re-renders
+  return (
+    prevProps.team.id === nextProps.team.id &&
+    prevProps.team.name === nextProps.team.name &&
+    prevProps.isEditing === nextProps.isEditing &&
+    prevProps.editingTeamName === nextProps.editingTeamName &&
+    prevProps.isDraggingOver === nextProps.isDraggingOver &&
+    prevProps.teamClients.length === nextProps.teamClients.length &&
+    prevProps.draggedClientId === nextProps.draggedClientId &&
+    // Compare buzzed clients by size (content doesn't matter for rendering)
+    prevProps.buzzedClients.size === nextProps.buzzedClients.size &&
+    prevProps.buzzingClientIds.size === nextProps.buzzingClientIds.size
   );
 });
 
@@ -289,9 +329,9 @@ export const NoTeamSection = memo<NoTeamSectionProps>(({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <div className={`flex items-center gap-2 p-2 rounded-lg border ${isDraggingOver ? 'bg-blue-500/20 border-blue-500/50' : 'bg-gray-800/30 border-gray-700/30'}`}>
-        <Users className="w-4 h-4 text-gray-500" />
-        <span className="text-sm text-gray-500">No Team ({noTeamClients.length})</span>
+      <div className={`flex items-center gap-2 p-2.5 rounded-lg border ${isDraggingOver ? 'bg-blue-500/20 border-blue-500/50' : 'bg-gray-800/30 border-gray-700/30'}`}>
+        <Users className="w-5 h-5 text-gray-500" />
+        <span className="text-base text-gray-500">No Team ({noTeamClients.length})</span>
       </div>
       <div className="ml-6 mt-1 space-y-1">
         {noTeamClients.map((client: ConnectedClient) => (
