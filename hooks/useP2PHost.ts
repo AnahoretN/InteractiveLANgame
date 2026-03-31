@@ -13,6 +13,7 @@ import {
 } from '../types';
 import { storage, STORAGE_KEYS } from './useLocalStorage';
 import { generateUUID, getSignallingServer } from '../utils';
+import { createOptimizedMessageSender } from '../utils/messageQueue';
 
 /**
  * P2P Host Hook - manages WebRTC connections for the host
@@ -40,6 +41,30 @@ export const useP2PHost = (config: P2PConfig & {
   const pendingConnectionsRef = useRef<Map<string, DataConnection>>(new Map());
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [connectedClients, setConnectedClients] = useState<string[]>([]);
+
+  // Optimized message sender with batching
+  const messageQueueRef = useRef(createOptimizedMessageSender((message, peerId) => {
+    const conn = peerId ? connectionsRef.current.get(peerId) : null;
+    if (conn && conn.open) {
+      try {
+        conn.send(message);
+      } catch (err) {
+        console.error('[P2P Host] Error sending message:', err);
+      }
+    } else if (!peerId) {
+      // Broadcast to all connected clients
+      connectionsRef.current.forEach((conn) => {
+        if (conn.open) {
+          try {
+            conn.send(message);
+          } catch (err) {
+            console.error('[P2P Host] Error broadcasting to client:', err);
+          }
+        }
+      });
+    }
+  }));
 
   // Get signalling server URL based on LAN mode
   const getSignallingServerUrl = useCallback(() => {
@@ -127,6 +152,8 @@ export const useP2PHost = (config: P2PConfig & {
       console.log('[P2P Host] Connection closed:', clientId);
       connectionsRef.current.delete(clientId);
       pendingConnectionsRef.current.delete(clientId);
+      // Update connected clients list
+      setConnectedClients(Array.from(connectionsRef.current.keys()));
       config.onClientDisconnected?.(clientId);
     });
 
@@ -134,6 +161,8 @@ export const useP2PHost = (config: P2PConfig & {
       console.error('[P2P Host] Connection error:', clientId, err);
       connectionsRef.current.delete(clientId);
       pendingConnectionsRef.current.delete(clientId);
+      // Update connected clients list
+      setConnectedClients(Array.from(connectionsRef.current.keys()));
       config.onClientDisconnected?.(clientId);
     });
 
@@ -185,6 +214,9 @@ export const useP2PHost = (config: P2PConfig & {
     pendingConnectionsRef.current.delete(clientIdReal);
     connectionsRef.current.set(clientIdReal, conn);
 
+    // Update connected clients list
+    setConnectedClients(Array.from(connectionsRef.current.keys()));
+
     // Notify app with persistent client ID and team ID for reconnection handling
     config.onClientConnected?.(clientIdReal, {
       name: clientName,
@@ -210,7 +242,7 @@ export const useP2PHost = (config: P2PConfig & {
     conn.send(pong);
   }, [config.hostId]);
 
-  // Broadcast message to all connected clients
+  // Broadcast message to all connected clients (optimized with batching)
   const broadcast = useCallback((message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
     const fullMessage: P2PSMessage = {
       ...message,
@@ -219,20 +251,14 @@ export const useP2PHost = (config: P2PConfig & {
       senderId: config.hostId
     } as P2PSMessage;
 
-    connectionsRef.current.forEach((conn, peerId) => {
-      if (conn.open) {
-        try {
-          conn.send(fullMessage);
-        } catch (err) {
-          console.error('[P2P Host] Error sending to', peerId, err);
-        }
-      }
-    });
+    // Use optimized message queue with batching
+    const priority = fullMessage.category === 'event' ? 'high' : 'normal';
+    messageQueueRef.current.send(fullMessage, undefined, priority);
 
     return fullMessage;
   }, [config.hostId]);
 
-  // Send to specific client
+  // Send to specific client (optimized with batching)
   const sendToClient = useCallback((clientId: string, message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
     const conn = connectionsRef.current.get(clientId);
     if (!conn || !conn.open) {
@@ -247,23 +273,15 @@ export const useP2PHost = (config: P2PConfig & {
       senderId: config.hostId
     } as P2PSMessage;
 
-    try {
-      conn.send(fullMessage);
-      return true;
-    } catch (err) {
-      console.error('[P2P Host] Error sending to', clientId, err);
-      return false;
-    }
+    // Use optimized message queue with immediate sending for direct messages
+    messageQueueRef.current.send(fullMessage, clientId, 'high');
+
+    return true;
   }, [config.hostId]);
 
   // Get connection count
   const getConnectionCount = useCallback(() => {
     return connectionsRef.current.size;
-  }, []);
-
-  // Get all connected client IDs
-  const getConnectedClients = useCallback(() => {
-    return Array.from(connectionsRef.current.keys());
   }, []);
 
   // Disconnect specific client
@@ -288,7 +306,7 @@ export const useP2PHost = (config: P2PConfig & {
     error,
     hostId: config.hostId,
     connectionCount: getConnectionCount(),
-    connectedClients: getConnectedClients(),
+    connectedClients,
     broadcast,
     sendToClient,
     disconnectClient,

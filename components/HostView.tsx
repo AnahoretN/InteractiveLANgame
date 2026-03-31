@@ -242,7 +242,13 @@ export const HostView: React.FC = () => {
   // Define removeClient early (needed by P2P callbacks)
   const removeClient = useCallback((clientId: string) => {
     setClients((prev: Map<string, ConnectedClient>) => {
-      prev.delete(clientId);
+      const client = prev.get(clientId);
+      if (client) {
+        // Mark as disconnected but keep for potential reconnection
+        client.lastSeen = Date.now();
+        // Don't delete immediately - give time for reconnection
+        // Client will be cleaned up by stale check if not reconnected
+      }
       return prev;
     });
   }, []);
@@ -641,8 +647,8 @@ export const HostView: React.FC = () => {
       // to avoid circular dependency with p2pHost initialization
 
       // Check if this is a returning client (same persistent ID)
-      if (data.persistentClientId && data.teamId) {
-        // Look for existing client with this persistent ID
+      if (data.persistentClientId) {
+        // Look for existing client with this persistent ID (including disconnected clients)
         let oldPeerId: string | null = null;
         let existingClient: ConnectedClient | null = null;
 
@@ -655,7 +661,7 @@ export const HostView: React.FC = () => {
         }
 
         if (existingClient && oldPeerId) {
-          console.log('[HostView] Returning client detected:', existingClient.name, 'old peerId:', oldPeerId, 'new peerId:', clientId);
+          console.log('[HostView] Returning client detected:', existingClient.name, 'old peerId:', oldPeerId, 'new peerId:', clientId, 'teamId:', data.teamId);
 
           // Update existing client's peer ID and last seen
           updateClients((prev: Map<string, ConnectedClient>) => {
@@ -667,13 +673,19 @@ export const HostView: React.FC = () => {
               client.peerId = clientId;
               client.lastSeen = Date.now();
               client.name = data.name; // Update name in case it changed
+              // Update teamId if provided (might be null if reconnecting before team selection)
+              if (data.teamId) {
+                client.teamId = data.teamId;
+              }
               prev.set(clientId, client);
             }
             return prev;
           });
 
-          // Queue TEAM_CONFIRMED for returning client (will be sent by useEffect)
-          setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
+          // Queue TEAM_CONFIRMED for returning client if they have a team (will be sent by useEffect)
+          if (data.teamId) {
+            setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
+          }
           return;
         }
       }
@@ -1008,6 +1020,53 @@ export const HostView: React.FC = () => {
 
     return () => clearInterval(interval);
   }, []);
+
+  // Clean up disconnected clients after 30 seconds
+  useEffect(() => {
+    const DISCONNECT_TIMEOUT = 30000; // 30 seconds
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setClients(prev => {
+        const updated = new Map(prev);
+        for (const [peerId, client] of updated.entries()) {
+          // Remove clients that haven't been seen for 30 seconds
+          if (now - client.lastSeen > DISCONNECT_TIMEOUT) {
+            console.log('[HostView] Removing stale client:', client.name, 'peerId:', peerId);
+            updated.delete(peerId);
+          }
+        }
+        return updated;
+      });
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update lastSeen for all connected clients periodically
+  useEffect(() => {
+    if (!isSessionActive) return;
+
+    const interval = setInterval(() => {
+      setClients(prev => {
+        const connectedPeerIds = new Set(p2pHost?.connectedClients || []);
+        const updated = new Map(prev);
+
+        for (const [peerId, client] of updated.entries()) {
+          // Update lastSeen for clients that are still connected
+          // This prevents active clients from being marked as stale
+          if (connectedPeerIds.has(peerId)) {
+            updated.set(peerId, {
+              ...client,
+              lastSeen: Date.now()
+            });
+          }
+        }
+        return updated;
+      });
+    }, 5000); // Update every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [isSessionActive, p2pHost]);
 
   // Save host ID
   useEffect(() => {
@@ -1410,7 +1469,10 @@ export const HostView: React.FC = () => {
                        <SimpleClientItem
                          key={client.id}
                          client={client}
-                         isStale={() => false}
+                         isStale={(lastSeen) => {
+                           // Consider client stale if not seen for 10 seconds
+                           return Date.now() - lastSeen > 10000;
+                         }}
                          hasBuzzed={buzzedClients.has(client.id)}
                          isBuzzing={buzzingClientIds.has(client.peerId)}
                          onRemove={removeClient}
