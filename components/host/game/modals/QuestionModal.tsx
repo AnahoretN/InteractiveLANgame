@@ -41,6 +41,7 @@ export interface QuestionModalProps {
   teamScores: TeamScore[];
   onClose: () => void;
   onScoreChange: (change: 'wrong' | 'correct') => void;
+  onShowAnswer?: () => void;
   scoreChangeType: 'wrong' | 'correct' | null;
   // Timer settings
   readingTimePerLetter: number;
@@ -60,6 +61,7 @@ export const QuestionModal = memo(({
   teamScores,
   onClose: _onClose,
   onScoreChange,
+  onShowAnswer,
   scoreChangeType,
   readingTimePerLetter,
   responseWindow,
@@ -144,6 +146,14 @@ export const QuestionModal = memo(({
 
     console.log('🔄 Question reset - waiting for first media play:', hasQuestionMedia);
   }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia]);
+
+  // Auto-show answer when correct answer is given
+  useEffect(() => {
+    if (scoreChangeType === 'correct' && !showAnswer && onShowAnswer) {
+      console.log('✅ Correct answer given - auto-showing answer');
+      onShowAnswer();
+    }
+  }, [scoreChangeType, showAnswer, onShowAnswer]);
 
   // Single unified timer effect
   useEffect(() => {

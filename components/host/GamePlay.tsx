@@ -19,7 +19,7 @@ import { Volume2 } from 'lucide-react';
 import type { GamePack } from './GameSelectorModal';
 import type { Round, Theme, Question } from './PackEditor';
 import { Team } from '../../types';
-import { restorePackBlobUrlsFromStorage } from '../../utils/mediaManager';
+import { restorePackBlobUrlsFromStorage, restoreBlobFromStorage } from '../../utils/mediaManager';
 import {
   calculateQuestionFontSize,
   calculateAnswerFontSizeMobile,
@@ -910,8 +910,25 @@ export const GamePlay = memo(({
   }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange, onUpdateActiveTeamIds, currentRound, attemptedTeamIds, teams]);
 
   // Open question
-  const openQuestion = useCallback((question: Question, theme: Theme, points: number) => {
+  const openQuestion = useCallback(async (question: Question, theme: Theme, points: number) => {
     const key = `${theme.id}-${question.id}`;
+
+    // Восстанавливаем blob URL для медиа файлов вопроса перед открытием
+    if (question.media?.localFile?.mediaId) {
+      const restoredUrl = await restoreBlobFromStorage(question.media.localFile.mediaId);
+      if (restoredUrl) {
+        question.media.url = restoredUrl;
+        console.log('✅ Question media blob URL restored:', question.media.localFile.mediaId);
+      }
+    }
+
+    if (question.answerMedia?.localFile?.mediaId) {
+      const restoredUrl = await restoreBlobFromStorage(question.answerMedia.localFile.mediaId);
+      if (restoredUrl) {
+        question.answerMedia.url = restoredUrl;
+        console.log('✅ Answer media blob URL restored:', question.answerMedia.localFile.mediaId);
+      }
+    }
 
     console.log('🎯 GamePlay - Opening question:', {
       questionId: question.id,
@@ -1277,6 +1294,7 @@ export const GamePlay = memo(({
           teamScores={teamScores}
           onClose={closeQuestion}
           onScoreChange={handleScoreChange}
+          onShowAnswer={() => setShowAnswer(true)}
           scoreChangeType={scoreChangeType}
           readingTimePerLetter={currentRound?.readingTimePerLetter ?? 0.05}
           responseWindow={currentRound?.responseWindow ?? 30}
