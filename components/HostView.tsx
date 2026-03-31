@@ -485,17 +485,20 @@ export const HostView: React.FC = () => {
           break;
         }
         case 'JOIN_TEAM': {
-          // Client joined a team - add client to lobby if not already present
+          // Client joined a team - update client if already exists, or add new one
           const { clientName, teamId } = message.payload;
           console.log('[HostView] JOIN_TEAM received from', peerId, 'name:', clientName, 'team:', teamId);
           updateClients((prev: Map<string, ConnectedClient>) => {
             const existingClient = prev.get(peerId);
             if (existingClient) {
-              // Client exists, just update team
+              // Client exists (was added at handshake), just update team
+              console.log('[HostView] Updating existing client team:', existingClient.name, 'to:', teamId);
               existingClient.teamId = teamId;
               existingClient.name = clientName;
+              existingClient.lastSeen = Date.now();
             } else {
-              // New client - add to lobby
+              // Client doesn't exist yet (shouldn't happen with new handshake logic, but kept for compatibility)
+              console.log('[HostView] Creating new client for JOIN_TEAM:', clientName);
               const newClient: ConnectedClient = {
                 id: peerId,
                 peerId: peerId,
@@ -688,10 +691,38 @@ export const HostView: React.FC = () => {
           }
           return;
         }
+
+        // New client with persistent ID - add immediately for reconnection support
+        console.log('[HostView] New client with persistent ID, adding to client list:', data.name, 'persistentId:', data.persistentClientId);
+        updateClients((prev: Map<string, ConnectedClient>) => {
+          const newClient: ConnectedClient = {
+            id: data.persistentClientId!,
+            peerId: clientId,
+            name: data.name,
+            joinedAt: Date.now(),
+            lastSeen: Date.now(),
+            teamId: data.teamId,
+            connectionQuality: {
+              rtt: 0,
+              packetLoss: 0,
+              jitter: 0,
+              lastPing: Date.now(),
+              healthScore: 100
+            }
+          };
+          prev.set(clientId, newClient);
+          return prev;
+        });
+
+        // If client already has a team, queue confirmation
+        if (data.teamId) {
+          setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
+        }
+        return;
       }
 
-      // New client - will be added when JOIN_TEAM is received
-      console.log('[HostView] New client, waiting for JOIN_TEAM message');
+      // New client without persistent ID - wait for JOIN_TEAM
+      console.log('[HostView] New client without persistent ID, waiting for JOIN_TEAM message');
     }, [clients, updateClients, setPendingConfirmations]),
                 onClientDisconnected: useCallback((clientId: string) => {
       console.log('[HostView] Client disconnected:', clientId);
