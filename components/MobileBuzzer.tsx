@@ -93,6 +93,14 @@ export const MobileBuzzer = memo(({
       <div className="flex-1 flex items-center justify-center">
         <button
           onClick={handleBuzz}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            handleBuzz();
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            handleBuzz();
+          }}
           disabled={!canBuzz}
           className={`
             relative w-64 h-64 rounded-full
@@ -105,6 +113,7 @@ export const MobileBuzzer = memo(({
               ? 'bg-gradient-to-br from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 shadow-2xl shadow-blue-500/50 cursor-pointer'
               : 'bg-gray-800 cursor-not-allowed opacity-50'
             }
+            select-none
           `}
         >
           {/* Button content */}

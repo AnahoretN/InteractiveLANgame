@@ -902,7 +902,15 @@ export const MobileView: React.FC = () => {
                 <div className="flex items-start justify-center pt-[20vh] w-full animate-in zoom-in duration-300">
                   <button
                     onClick={handleBuzz}
-                    className={`group relative rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none touch-manipulation ${
+                    onTouchStart={(e) => {
+                      e.preventDefault();
+                      handleBuzz();
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      handleBuzz();
+                    }}
+                    className={`group relative rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none touch-manipulation select-none ${
                       status !== ConnectionStatus.CONNECTED ? 'grayscale' : ''
                     }`}
                     style={{ width: 'min(60vw, 60vh)', height: 'min(60vw, 60vh)' }}
