@@ -58,6 +58,7 @@ export interface LocalFileInfo {
   fileSize: number;      // Размер файла в байтах
   fileType: string;      // MIME тип файла
   lastModified: number;  // Время последней модификации
+  mediaId?: string;      // ID для восстановления из IndexedDB
 }
 
 export interface Question {

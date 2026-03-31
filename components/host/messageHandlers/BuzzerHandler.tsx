@@ -26,10 +26,10 @@ export const BuzzerHandler: React.FC<BuzzerHandlerProps> = ({
 }) => {
   // Clear expired buzzes (older than 3 seconds)
   React.useEffect(() => {
-    const now = Date.now();
     const BUZZ_DURATION = 3000;
 
     const interval = setInterval(() => {
+      const now = Date.now(); // Пересчитываем now при каждом вызове интервала
       setBuzzedClients((prev: Map<string, number>) => {
         const updated = new Map(prev);
         for (const [clientId, timestamp] of prev.entries()) {

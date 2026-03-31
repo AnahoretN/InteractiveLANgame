@@ -4,6 +4,7 @@
  */
 
 import type { LocalFileInfo } from '../components/host/packeditor/types';
+import type { GamePack } from '../components/host/packeditor/types';
 
 // IndexedDB база данных для хранения медиа файлов
 const DB_NAME = 'GamePackMedia';
@@ -207,7 +208,7 @@ export async function restoreBlobFromStorage(
 /**
  * Массовое восстановление blob URL для всего пака из IndexedDB
  */
-export async function restorePackBlobUrlsFromStorage(pack: any): Promise<void> {
+export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<void> {
   console.log('🔄 Восстановление blob URL из IndexedDB для пака:', pack.name);
 
   let restoredCount = 0;

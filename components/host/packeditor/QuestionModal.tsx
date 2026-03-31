@@ -9,6 +9,7 @@ import { BaseModal, FileUpload } from './Modals';
 import type { Question } from './types';
 import type { LocalFileInfo } from './types';
 import { Button } from '../../Button';
+import { convertYouTubeToEmbed, createLocalFileInfo } from '../../../utils/mediaUtils';
 
 interface QuestionModalProps {
   isOpen: boolean;
@@ -67,26 +68,6 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       setAnswerMediaLocalFile(question?.answerMedia?.localFile);
     }
   }, [isOpen, question]);
-
-  // Function to convert YouTube URL to embed format
-  const convertYouTubeToEmbed = (url: string): string => {
-    if (!url) return url;
-
-    // Regular expressions for different YouTube URL formats
-    const patterns = [
-      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
-    ];
-
-    for (const pattern of patterns) {
-      const match = url.match(pattern);
-      if (match && match[1]) {
-        return `https://www.youtube.com/embed/${match[1]}`;
-      }
-    }
-
-    return url; // Return original if not a YouTube URL
-  };
 
   const handleSave = useCallback(() => {
     // Determine media data - unified handling for all types

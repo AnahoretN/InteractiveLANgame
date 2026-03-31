@@ -5,6 +5,7 @@
 
 import React, { memo, useState, useCallback } from 'react';
 import { Users, Plus, Trash2 } from 'lucide-react';
+import { ConfirmDialog } from '../shared';
 
 export interface Command {
   id: string;
@@ -23,6 +24,21 @@ const CommandsSection = memo(({ commands, onCreateCommand, onRenameCommand, onDe
   const [editingName, setEditingName] = useState<string>('');
   const [showCreateInput, setShowCreateInput] = useState(false);
   const [newCommandName, setNewCommandName] = useState('');
+
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'danger' | 'warning' | 'info' | 'success';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'danger',
+    onConfirm: () => {}
+  });
 
   const handleStartEdit = useCallback((commandId: string, commandName: string) => {
     setEditingId(commandId);
@@ -145,9 +161,16 @@ const CommandsSection = memo(({ commands, onCreateCommand, onRenameCommand, onDe
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete room "${command.name}"?`)) {
-                      onDeleteCommand(command.id);
-                    }
+                    setConfirmDialog({
+                      isOpen: true,
+                      title: 'Delete Room',
+                      message: `Are you sure you want to delete room "${command.name}"?`,
+                      type: 'danger',
+                      onConfirm: () => {
+                        onDeleteCommand(command.id);
+                        setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                      }
+                    });
                   }}
                   className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors opacity-0 group-hover:opacity-100"
                   title="Delete room"
@@ -159,6 +182,16 @@ const CommandsSection = memo(({ commands, onCreateCommand, onRenameCommand, onDe
           ))}
         </div>
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        type={confirmDialog.type}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 });

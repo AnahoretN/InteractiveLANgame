@@ -1,26 +1,58 @@
-// Team interface
+/**
+ * Team interface
+ * Represents a team in the game session
+ * @property {string} id - Unique team identifier
+ * @property {string} name - Team name displayed to players
+ * @property {number} createdAt - Unix timestamp when team was created
+ * @property {number} lastUsedAt - Unix timestamp when team was last active
+ * @property {number} [score] - Current team score (optional)
+ * @example
+ * ```typescript
+ * const team: Team = {
+ *   id: 'team-123',
+ *   name: 'Alpha Squad',
+ *   createdAt: Date.now(),
+ *   lastUsedAt: Date.now(),
+ *   score: 100
+ * };
+ * ```
+ */
 export interface Team {
   id: string;
   name: string;
   createdAt: number;
-  lastUsedAt: number;  // Timestamp when last player joined/left
+  lastUsedAt: number;
   score?: number;
 }
 
-// Team score interface (for game play)
+/**
+ * TeamScore interface
+ * Used during gameplay to track team scores
+ * @property {string} teamId - Unique team identifier
+ * @property {string} teamName - Team name
+ * @property {number} score - Current score
+ */
 export interface TeamScore {
   teamId: string;
   teamName: string;
   score: number;
 }
 
-// Connection Quality Metrics (simplified - no network)
+/**
+ * ConnectionQuality Metrics
+ * Measures the quality of P2P connection between host and client
+ * @property {number} rtt - Round-trip time in milliseconds
+ * @property {number} packetLoss - Percentage of lost packets (0-100)
+ * @property {number} jitter - Variance in latency in milliseconds
+ * @property {number} lastPing - Unix timestamp of last successful ping
+ * @property {number} healthScore - Overall connection quality score (0-100)
+ */
 export interface ConnectionQuality {
-  rtt: number;           // Round-trip time in ms
-  packetLoss: number;    // Percentage of lost packets
-  jitter: number;        // Variance in latency
-  lastPing: number;      // Timestamp of last successful ping
-  healthScore: number;   // 0-100 score based on all metrics
+  rtt: number;
+  packetLoss: number;
+  jitter: number;
+  lastPing: number;
+  healthScore: number;
 }
 
 // Extended client info with health tracking

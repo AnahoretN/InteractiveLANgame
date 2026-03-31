@@ -5,6 +5,17 @@
 
 import type { LocalFileInfo } from '../components/host/packeditor/types';
 
+// Type definition for File System Access API support
+interface FileSystemAccessAPI {
+  showSaveFilePicker: (options: {
+    suggestedName?: string;
+    types?: Array<{
+      description?: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<FileSystemFileHandle>;
+}
+
 // Хранилище для FileSystemHandles
 const fileHandlesStore = new Map<string, FileSystemFileHandle>();
 
@@ -118,7 +129,7 @@ export async function saveFileWithHandle(file: File, key: string): Promise<void>
 
   try {
     // Запрашиваем разрешение на сохранение файла
-    const handle = await (window as any).showSaveFilePicker({
+    const handle = await (window as unknown as FileSystemAccessAPI).showSaveFilePicker({
       suggestedName: file.name,
       types: [{
         description: 'Media File',
@@ -198,8 +209,8 @@ export async function createBlobUrlWithHandle(
   }
 
   // Пробуем сохранить handle для автоматического восстановления
-  if (supportsFileSystemAccessAPI()) {
-    storeFileHandle(key, file as any); // Type assertion для совместимости
+  if (supportsFileSystemAccessAPI() && file instanceof FileSystemFileHandle) {
+    storeFileHandle(key, file);
   }
 
   console.log('🔗 Создан blob URL с handle:', {

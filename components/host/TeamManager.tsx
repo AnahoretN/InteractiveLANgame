@@ -2,10 +2,11 @@
  * TeamManager Component
  * Displays teams, commands, and clients with drag-and-drop support
  */
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useState } from 'react';
 import { Users, Settings, Trash2, GripVertical } from 'lucide-react';
 import { Team, ConnectionQuality } from '../../types';
 import { isStale } from '../../hooks';
+import { ConfirmDialog } from '../shared';
 
 // Command type (same structure as Team for quick rooms)
 export interface Command {
@@ -69,6 +70,21 @@ export const TeamManager = memo(({
   onCreateCommand,
   onDeleteCommand,
 }: TeamManagerProps) => {
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'danger' | 'warning' | 'info' | 'success';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'danger',
+    onConfirm: () => {}
+  });
+
   const handleRenameSubmit = useCallback((teamId: string) => {
     if (editingTeamName.trim()) {
       onRenameTeam(teamId, editingTeamName);
@@ -138,9 +154,16 @@ export const TeamManager = memo(({
                         </button>
                         <button
                           onClick={() => {
-                            if (confirm(`Delete team "${team.name}"?`)) {
-                              onDeleteTeam(team.id);
-                            }
+                            setConfirmDialog({
+                              isOpen: true,
+                              title: 'Delete Team',
+                              message: `Are you sure you want to delete team "${team.name}"?`,
+                              type: 'danger',
+                              onConfirm: () => {
+                                onDeleteTeam(team.id);
+                                setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                              }
+                            });
                           }}
                           className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors"
                           title="Delete team"
@@ -187,6 +210,16 @@ export const TeamManager = memo(({
           />
         </>
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        type={confirmDialog.type}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 });

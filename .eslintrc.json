@@ -1,29 +1,145 @@
 {
   "env": {
     "browser": true,
-    "es2021": false
+    "es2021": true
   },
   "extends": [
-    "eslint:recommended"
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react-hooks/recommended",
+    "plugin:react/recommended",
+    "plugin:jsx-a11y/recommended"
   ],
+  "parser": "@typescript-eslint/parser",
   "parserOptions": {
     "ecmaVersion": "latest",
     "sourceType": "module",
     "ecmaFeatures": {
       "jsx": true
-    }
+    },
+    "project": "./tsconfig.json"
   },
+  "plugins": [
+    "@typescript-eslint",
+    "react",
+    "react-hooks",
+    "jsx-a11y"
+  ],
   "rules": {
+    // ===============================
+    // БАЗОВЫЕ ПРАВИЛА
+    // ===============================
     "no-console": "off",
     "no-unused-vars": "warn",
-    "no-undef": "warn",
+    "no-undef": "error",
     "eqeqeqeq": "error",
     "curly": "error",
-    "no-throw-literal": "warn",
-    "prefer-const": "warn",
-    "no-var-requires": "warn"
+    "no-throw-literal": "error",
+    "prefer-const": "error",
+    "no-var": "error",
+    "no-var-requires": "error",
+
+    // ===============================
+    // REACT/JSX ПРАВИЛА
+    // ===============================
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off",
+    "react/display-name": "warn",
+    "react/jsx-no-target-blank": "error",
+    "react/jsx-key": "warn",
+    "react/jsx-no-comment-textnodes": "warn",
+    "react/jsx-no-duplicate-props": "error",
+    "react/jsx-no-undef": "error",
+    "react/no-direct-mutation-state": "warn",
+    "react/no-unescaped-entities": "error",
+    "react/self-closing-comp": "warn",
+
+    // React Hooks правила
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn",
+
+    // ===============================
+    // TYPESCRIPT ПРАВИЛА
+    // ===============================
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/no-unused-vars": ["warn", {
+      "argsIgnorePattern": "^_",
+      "varsIgnorePattern": "^_"
+    }],
+    "@typescript-eslint/explicit-module-boundary-types": "off",
+    "@typescript-eslint/no-empty-function": "warn",
+    "@typescript-eslint/no-inferrable-types": "warn",
+    "@typescript-eslint/ban-types": "warn",
+    "@typescript-eslint/no-non-null-assertion": "warn",
+    "@typescript-eslint/consistent-type-assertions": "warn",
+
+    // ===============================
+    // КАЧЕСТВО КОДА - СЛОЖНОСТЬ
+    // ===============================
+    "max-lines": ["warn", {
+      "max": 300,
+      "skipBlankLines": true,
+      "skipComments": true
+    }],
+    "max-lines-per-function": ["warn", {
+      "max": 150,
+      "skipBlankLines": true,
+      "skipComments": true
+    }],
+    "max-depth": ["warn", 4],
+    "max-params": ["warn", 5],
+    "max-statements": ["warn", 30],
+    "complexity": ["warn", 12],
+    "max-nested-callbacks": ["warn", 4],
+
+    // ===============================
+    // КАЧЕСТВО КОДА - СТИЛЬ
+    // ===============================
+    "indent": ["warn", 2, { "SwitchCase": 1 }],
+    "quotes": ["warn", "single", { "avoidEscape": true }],
+    "semi": ["warn", "always"],
+    "comma-dangle": ["warn", "always-multiline"],
+    "object-curly-spacing": ["warn", "always"],
+    "array-bracket-spacing": ["warn", "never"],
+    "space-before-function-paren": ["warn", "never"],
+    "keyword-spacing": ["warn", "always"],
+    "space-infix-ops": ["warn", "always"],
+    "no-multiple-empty-lines": ["warn", { "max": 2, "maxEOF": 1 }],
+    "no-trailing-spaces": "warn",
+
+    // ===============================
+    // ЛУЧШИЕ ПРАКТИКИ
+    // ===============================
+    "no-return-await": "warn",
+    "require-await": "warn",
+    "no-else-return": "warn",
+    "prefer-template": "warn",
+    "prefer-arrow-callback": "warn",
+    "arrow-body-style": ["warn", "as-needed"],
+    "no-duplicate-imports": "warn",
+    "no-useless-concat": "warn",
+    "no-useless-return": "warn",
+
+    // ===============================
+    // БЕЗОПАСНОСТЬ
+    // ===============================
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-throw-literal": "error"
   },
   "settings": {
-    "resolveJsonModules": false
-  }
+    "resolveJsonModules": false,
+    "react": {
+      "version": "detect"
+    }
+  },
+  "ignorePatterns": [
+    "dist",
+    "build",
+    "node_modules",
+    "*.config.js",
+    "*.config.ts",
+    "vite.config.ts"
+  ]
 }

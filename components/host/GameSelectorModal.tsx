@@ -14,6 +14,8 @@ import { X, Upload, Plus, FolderOpen, FileText, Gamepad2, Check, ChevronDown, La
 import { Button } from '../Button';
 import { generateUUID } from '../../utils';
 import { loadPackFromZip, isZipFile } from '../../utils/zipPackManager';
+import { convertYouTubeToEmbed } from '../../utils/mediaUtils';
+import { AlertDialog } from '../shared';
 
 // Lazy load PackEditor to reduce initial bundle size
 const PackEditor = lazy(() => import('./PackEditor').then(m => ({ default: m.PackEditor })));
@@ -98,28 +100,6 @@ const getThemeCount = (pack: GamePack | PackGamePack): number => {
   return 0;
 };
 
-/**
- * Convert YouTube URL to embed format
- */
-function convertYouTubeToEmbed(url: string): string {
-  if (!url) return url;
-
-  // Regular expressions for different YouTube URL formats
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
-  ];
-
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      return `https://www.youtube.com/embed/${match[1]}`;
-    }
-  }
-
-  return url; // Return original if not a YouTube URL
-}
-
 export const GameSelectorModal = memo(({
   isOpen,
   onClose,
@@ -135,6 +115,19 @@ export const GameSelectorModal = memo(({
   const [showPackEditor, setShowPackEditor] = useState(false);
   const [editingPack, setEditingPack] = useState<PackGamePack | undefined>();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Alert dialog state
+  const [alertDialog, setAlertDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'error' | 'warning' | 'info' | 'success';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
 
   // Initialize from props when modal opens
   React.useEffect(() => {
@@ -537,7 +530,12 @@ export const GameSelectorModal = memo(({
       console.log('[GameSelector] Pack added to list:', pack.name);
     } catch (error) {
       console.error('[GameSelector] Error loading pack:', error);
-      alert(`Ошибка загрузки пакета: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`);
+      setAlertDialog({
+        isOpen: true,
+        title: 'Ошибка загрузки',
+        message: `Ошибка загрузки пакета: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`,
+        type: 'error'
+      });
     } finally {
       // Reset input so same file can be loaded again
       e.target.value = '';
@@ -938,6 +936,15 @@ export const GameSelectorModal = memo(({
           initialPack={editingPack}
         />
       </Suspense>
+
+      {/* Alert Dialog */}
+      <AlertDialog
+        isOpen={alertDialog.isOpen}
+        title={alertDialog.title}
+        message={alertDialog.message}
+        type={alertDialog.type}
+        onClose={() => setAlertDialog(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 });

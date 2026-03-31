@@ -1,0 +1,60 @@
+{
+  "budgets": [
+    {
+      "name": "initial-js",
+      "type": "initial",
+      "maxSize": "200 kB",
+      "warningSize": "150 kB"
+    },
+    {
+      "name": "initial-css",
+      "type": "initial",
+      "maxSize": "50 kB",
+      "warningSize": "35 kB"
+    },
+    {
+      "name": "all-js",
+      "type": "total",
+      "maxSize": "500 kB",
+      "warningSize": "350 kB"
+    },
+    {
+      "name": "all-css",
+      "type": "total",
+      "maxSize": "100 kB",
+      "warningSize": "70 kB"
+    },
+    {
+      "name": "any-chunk-js",
+      "type": "anyChunk",
+      "maxSize": "150 kB",
+      "warningSize": "100 kB"
+    },
+    {
+      "name": "any-chunk-css",
+      "type": "anyChunk",
+      "maxSize": "40 kB",
+      "warningSize": "25 kB"
+    }
+  ],
+  "performance": {
+    "lighthouse": {
+      "performance": 90,
+      "accessibility": 95,
+      "best-practices": 90,
+      "seo": 85
+    },
+    "metrics": {
+      "firstContentfulPaint": 1.5,
+      "largestContentfulPaint": 2.5,
+      "cumulativeLayoutShift": 0.1,
+      "firstInputDelay": 100,
+      "timeToInteractive": 3.5
+    }
+  },
+  "bundleAnalysis": {
+    "enabled": true,
+    "reportPath": "./dist/bundle-analysis",
+    "comparisonThreshold": 5
+  }
+}

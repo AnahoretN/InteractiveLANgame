@@ -14,10 +14,12 @@ import { Button } from '../Button';
 import { generateUUID } from '../../utils/uuid';
 import { restorePackBlobUrlsFromStorage } from '../../utils/mediaManager';
 import { savePackAsZip, loadPackFromZip, isZipFile } from '../../utils/zipPackManager';
+import { convertYouTubeToEmbed } from '../../utils/mediaUtils';
 import type { GamePack, Round, Theme, Question, RoundType } from './packeditor/types';
 import {
   BaseModal, FileUpload, RoundModal, ThemeModal, QuestionModal
 } from './packeditor/index';
+import { AlertDialog } from '../shared';
 
 // ============= CARD COMPONENT =============
 
@@ -52,28 +54,6 @@ const Card = memo(({ title, subtitle, icon, onClick, onEdit, isActive }: CardPro
 Card.displayName = 'Card';
 
 // ============= PACK IMPORT/EXPORT UTILS =============
-
-/**
- * Convert YouTube URL to embed format
- */
-function convertYouTubeToEmbed(url: string): string {
-  if (!url) return url;
-
-  // Regular expressions for different YouTube URL formats
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
-  ];
-
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      return `https://www.youtube.com/embed/${match[1]}`;
-    }
-  }
-
-  return url; // Return original if not a YouTube URL
-}
 
 /**
  * Parse pack from text format
@@ -490,6 +470,19 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   const [selectedThemeId, setSelectedThemeId] = useState<string | null>(null);
   const [showPackSettings, setShowPackSettings] = useState(false);
 
+  // Alert dialog state
+  const [alertDialog, setAlertDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'error' | 'warning' | 'info' | 'success';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
+
   // Track if we're syncing from props to avoid triggering notifications
   const isSyncingFromProps = useRef(false);
 
@@ -627,7 +620,12 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
             notifyPackChange(pack.rounds);
           } catch (zipError) {
             console.error('❌ Ошибка загрузки ZIP:', zipError);
-            alert('Ошибка при загрузке ZIP архива. Проверьте формат файла.');
+            setAlertDialog({
+              isOpen: true,
+              title: 'Ошибка загрузки',
+              message: 'Ошибка при загрузке ZIP архива. Проверьте формат файла.',
+              type: 'error'
+            });
           }
           return;
         }
@@ -675,12 +673,12 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         });
 
         // Восстанавливаем blob URL для локальных файлов
-        await restorePackBlobUrls(pack);
+        await restorePackBlobUrlsFromStorage(pack);
 
         setPackName(pack.name || 'Loaded Pack');
         setPackCoverType(pack.cover ? pack.cover.type : 'none');
         setPackCoverValue(pack.cover?.value || '');
-        setPackCoverLocalFile(pack.cover?.localFile);
+        // localFile уже хранится в pack.cover объекте, отдельный state не нужен
         setRounds(pack.rounds || []);
         setSelectedRoundId(null);
         setSelectedThemeId(null);
@@ -738,7 +736,12 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         await savePackAsZip(pack);
       } catch (error) {
         console.error('❌ Ошибка сохранения ZIP:', error);
-        alert('Ошибка при сохранении ZIP архива. Проверьте консоль для деталей.');
+        setAlertDialog({
+          isOpen: true,
+          title: 'Ошибка сохранения',
+          message: 'Ошибка при сохранении ZIP архива. Проверьте консоль для деталей.',
+          type: 'error'
+        });
       }
     } else {
       // Используем текстовый формат для пакетов с внешними URL
@@ -1174,6 +1177,15 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
           </div>
         </div>
       </BaseModal>
+
+      {/* Alert Dialog */}
+      <AlertDialog
+        isOpen={alertDialog.isOpen}
+        title={alertDialog.title}
+        message={alertDialog.message}
+        type={alertDialog.type}
+        onClose={() => setAlertDialog(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 });

@@ -1,13 +1,67 @@
 /**
  * Media Utilities
- * Утилиты для работы с локальными файлами и blob URL
+ *
+ * Utility functions for handling media files, blob URLs, and media conversions.
+ *
+ * @module utils/mediaUtils
  */
 
 import type { LocalFileInfo } from '../components/host/packeditor/types';
+import type { GamePack } from '../components/host/packeditor/types';
+
+/**
+ * Converts YouTube URL to embed format
+ *
+ * Transforms various YouTube URL formats (watch, youtu.be, embed) into
+ * the standardized embed format suitable for iframe embedding.
+ *
+ * @param {string} url - YouTube URL to convert
+ * @returns {string} Embed-ready YouTube URL, or original URL if not a YouTube link
+ *
+ * @example
+ * ```typescript
+ * const watchUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+ * const embedUrl = convertYouTubeToEmbed(watchUrl);
+ * // Returns: 'https://www.youtube.com/embed/dQw4w9WgXcQ'
+ *
+ * const shortUrl = 'https://youtu.be/dQw4w9WgXcQ';
+ * const embedUrl = convertYouTubeToEmbed(shortUrl);
+ * // Also returns: 'https://www.youtube.com/embed/dQw4w9WgXcQ'
+ * ```
+ */
+export function convertYouTubeToEmbed(url: string): string {
+  if (!url) return url;
+
+  // Regular expressions for different YouTube URL formats
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    /^([a-zA-Z0-9_-]{11})$/ // Direct video ID
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return `https://www.youtube.com/embed/${match[1]}`;
+    }
+  }
+
+  return url; // Return original if not a YouTube URL
+}
 import { base64ToFile, getMimeTypeFromBase64 } from './fileSystemManager';
 
 /**
- * Создает информацию о локальном файле из File объекта
+ * Creates local file information from a File object
+ *
+ * Extracts metadata from a File object for storage and later reference.
+ *
+ * @param {File} file - File object to extract information from
+ * @returns {LocalFileInfo} Object containing file metadata
+ * @example
+ * ```typescript
+ * const file = new File(['content'], 'image.jpg', { type: 'image/jpeg' });
+ * const fileInfo = createLocalFileInfo(file);
+ * // Returns: { fileName: 'image.jpg', fileSize: 1234, fileType: 'image/jpeg', lastModified: 1234567890 }
+ * ```
  */
 export function createLocalFileInfo(file: File): LocalFileInfo {
   return {
@@ -65,7 +119,7 @@ export function restoreBlobFromBase64(base64: string, fileName: string, mimeType
  * Массовое восстановление blob URL для всего пака
  * Восстанавливает blob URL для всех медиа элементов в паке
  */
-export async function restorePackBlobUrls(pack: any): Promise<void> {
+export async function restorePackBlobUrls(pack: GamePack): Promise<void> {
   console.log('🔄 Начинаем восстановление blob URL для пака:', pack.name);
 
   let restoredCount = 0;

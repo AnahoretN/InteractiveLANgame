@@ -1,0 +1,68 @@
+name: Performance Budget CI
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+
+jobs:
+  performance-budget:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch full history for comparison
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Check performance budgets
+        run: npm run check:budget
+
+      - name: Upload bundle analysis
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: bundle-analysis
+          path: dist/bundle-analysis/
+          retention-days: 30
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            try {
+              // Run budget check and capture output
+              const output = execSync('npm run check:budget', { encoding: 'utf8' });
+
+              // Comment on PR
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## 📊 Performance Budget Results\n\n\`\`\`\n${output}\n\`\`\``
+              });
+            } catch (error) {
+              // Budget check failed, but still comment
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## ❌ Performance Budget Failed\n\n\`\`\`\n${error.stdout || error.message}\n\`\`\``
+              });
+            }

@@ -10,6 +10,7 @@ import { P2PSMessage, BuzzEventMessage, Team, TeamsSyncMessage, CommandsListMess
 import type { P2PHostResult } from './useP2PHost';
 import type { SuperGameBet, SuperGameAnswer } from '../components/host/game/types';
 import { useBuzz } from './useBuzz';
+import type { ConnectedClient } from '../components/host/ListItems';
 
 export interface Command {
   id: string;
@@ -19,26 +20,11 @@ export interface Command {
 interface UseHostStateManagerProps {
   teams: Team[];
   setTeams: Dispatch<SetStateAction<Team[]>>;
-  clients: Map<string, any>;
-  setClients: Dispatch<SetStateAction<Map<string, any>>>;
+  clients: Map<string, ConnectedClient>;
+  setClients: Dispatch<SetStateAction<Map<string, ConnectedClient>>>;
   p2pHost?: P2PHostResult;
   commands: Command[];
   setCommands: Dispatch<SetStateAction<Command[]>>;
-}
-
-export interface Command {
-  id: string;
-  name: string;
-}
-
-interface UseHostStateManagerProps {
-  teams: Team[];
-  setTeams: React.Dispatch<React.SetStateAction<Team[]>>;
-  clients: Map<string, any>;
-  setClients: React.Dispatch<React.SetStateAction<Map<string, any>>>;
-  p2pHost?: P2PHostResult;
-  commands: Command[];
-  setCommands: React.Dispatch<React.SetStateAction<Command[]>>;
 }
 
 export const useHostStateManager = ({
@@ -59,7 +45,7 @@ export const useHostStateManager = ({
   const [superGameAnswers, setSuperGameAnswers] = useState<SuperGameAnswer[]>([]);
 
   // Wrapper to update clients - MUTATES the existing Map in-place
-  const updateClients = useCallback((updater: (prev: Map<string, any>) => Map<string, any>) => {
+  const updateClients = useCallback((updater: (prev: Map<string, ConnectedClient>) => Map<string, ConnectedClient>) => {
     setClients(prev => {
       const updated = updater(prev);
       return updated;
@@ -71,9 +57,9 @@ export const useHostStateManager = ({
     setTeams(prev => {
       const updated = prev.filter(t => t.id !== teamId);
       // Remove team from all clients
-      setClients((clientsPrev: Map<string, any>) => {
+      setClients((clientsPrev: Map<string, ConnectedClient>) => {
         const updated = new Map(clientsPrev);
-        updated.forEach((client, clientId) => {
+        updated.forEach((client) => {
           if (client?.teamId === teamId) {
             client.teamId = undefined;
           }
@@ -116,13 +102,13 @@ export const useHostStateManager = ({
       }
       case 'JOIN_TEAM': {
         const { clientName, teamId } = message.payload;
-        updateClients((prev: Map<string, any>) => {
+        updateClients((prev: Map<string, ConnectedClient>) => {
           const existingClient = prev.get(peerId);
           if (existingClient) {
             existingClient.teamId = teamId;
             existingClient.name = clientName;
           } else {
-            const newClient = {
+            const newClient: ConnectedClient = {
               id: peerId,
               peerId: peerId,
               name: clientName,

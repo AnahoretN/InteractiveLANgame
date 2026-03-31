@@ -308,10 +308,9 @@ export const useP2PMessageHandlers = (options: UseP2PMessageHandlersOptions) => 
 
   // Clean up buzzed clients after 3 seconds
   useEffect(() => {
+    const BUZZ_DURATION = 3000; // 3 seconds
     const interval = setInterval(() => {
-      const now = Date.now();
-      const BUZZ_DURATION = 3000; // 3 seconds
-
+      const now = Date.now(); // Пересчитываем now при каждом вызове интервала
       setBuzzedClients((prev) => {
         const updated = new Map(prev);
         for (const [clientId, timestamp] of prev.entries()) {
