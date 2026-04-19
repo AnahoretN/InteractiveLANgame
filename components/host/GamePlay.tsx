@@ -15,6 +15,7 @@
  */
 
 import React, { memo, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { Volume2 } from 'lucide-react';
 import type { GamePack } from './GameSelectorModal';
 import type { Round, Theme, Question } from './PackEditor';
@@ -36,6 +37,7 @@ import {
 } from './game';
 import { QuestionModal as ModalQuestionModal } from './game/modals';
 import { SuperGameQuestionModal, SuperGameAnswersModal } from './game/SuperGameModals';
+import { MediaStreamer } from './game/MediaStreamer';
 
 interface TeamScore {
   teamId: string;
@@ -72,6 +74,7 @@ interface GamePlayProps {
   activeTeamIds?: Set<string>;  // Players who can BUZZ to become answering (active = blue, inactive = white)
   answeringTeamLockedIn?: boolean;  // Answering team is locked (answered incorrectly/correctly)
   onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
+  showQRCode?: boolean;  // QR code visibility state
 }
 
 export const GamePlay = memo(({
@@ -97,6 +100,7 @@ export const GamePlay = memo(({
   activeTeamIds = new Set(),
   answeringTeamLockedIn = false,
   onUpdateActiveTeamIds,
+  showQRCode = false,
 }: GamePlayProps) => {
   // Game state
   const [currentScreen, setCurrentScreen] = useState<GameScreen>('cover');
@@ -131,12 +135,19 @@ export const GamePlay = memo(({
   const responseWindowRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stateUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Ref for broadcast throttling (avoid excessive updates)
+  const lastBroadcastRef = useRef<number>(0);
+  const lastScreenChangeRef = useRef<number>(0);
+  const broadcastThrottleMs = 100; // Minimum time between broadcasts
+  const screenChangeBroadcastMs = 50; // Shorter throttle for screen changes
+
   // Refs for double-press tracking (R/E for round navigation)
   const doublePressRef = useRef<{ lastKey: string; lastTime: number }>({ lastKey: '', lastTime: 0 });
 
   // Ref for themes scroll container
   const themesScrollRef = useRef<HTMLDivElement>(null);
   const scrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [themesScrollPosition, setThemesScrollPosition] = useState<number>(0);
 
   // Ref to track if we're processing a wrong answer (for queue logic)
   const processingWrongAnswerRef = useRef<boolean>(false);
@@ -151,6 +162,44 @@ export const GamePlay = memo(({
   // Ref to store stable callback for buzzer state changes
   const onBuzzerStateChangeRef = useRef(onBuzzerStateChange);
   onBuzzerStateChangeRef.current = onBuzzerStateChange;
+
+  // Ref to store current buzzer state for broadcastGameState
+  const buzzerStateRef = useRef<{
+    active: boolean;
+    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+    handicapActive: boolean;
+    handicapTeamId?: string;
+    isPaused: boolean;
+    readingTimeTotal?: number;
+    responseTimeTotal?: number;
+    timerColor?: 'yellow' | 'green' | 'gray';
+    timerBarColor?: string;
+    timerTextColor?: string;
+  }>({
+    active: false,
+    timerPhase: 'inactive',
+    readingTimerRemaining: 0,
+    responseTimerRemaining: 0,
+    handicapActive: false,
+    isPaused: false,
+    readingTimeTotal: 0,
+    responseTimeTotal: 30,
+    timerColor: 'gray',
+    timerBarColor: 'bg-gray-500',
+    timerTextColor: 'text-gray-300'
+  });
+
+  // State for timer pause control
+  const [timerPaused, setTimerPaused] = useState(false);
+
+  // Ref for timer paused state to access in closures
+  const timerPausedRef = useRef(false);
+  timerPausedRef.current = timerPaused;
+
+  // Ref to track when QuestionModal is managing the timer (don't send updates from GamePlay)
+  const questionModalActiveRef = useRef(false);
 
   // Track teams that answered wrong in current question (for red card display)
   const [wrongAnswerTeams, setWrongAnswerTeams] = useState<Set<string>>(new Set());
@@ -180,13 +229,15 @@ export const GamePlay = memo(({
     return pack.rounds[currentRoundIndex];
   }, [pack.rounds, currentRoundIndex]);
 
-  // Reset super game state when entering selectSuperThemes screen
+  // Auto-select first theme for super rounds (removed selectSuperThemes screen)
   useEffect(() => {
-    if (currentScreen === 'selectSuperThemes') {
-      setSelectedSuperThemeId(null);
-      setDisabledSuperThemeIds(new Set());
+    if (currentScreen === 'round' && currentRound?.type === 'super' && currentRound.themes && currentRound.themes.length > 0) {
+      // Auto-select the first theme for super game
+      if (!selectedSuperThemeId) {
+        setSelectedSuperThemeId(currentRound.themes[0].id);
+      }
     }
-  }, [currentScreen]);
+  }, [currentScreen, currentRound, selectedSuperThemeId]);
 
   // Auto-transition from round cover to selectSuperThemes for super rounds - REMOVED
   // Now requires manual Space press to advance
@@ -210,6 +261,303 @@ export const GamePlay = memo(({
 
   // Auto-transition to superQuestion when all teams have placed bets - REMOVED
   // Now requires manual Space press to advance from placeBets to superQuestion
+
+  // Ref to track the last active question that was set (for broadcastGameState)
+  const lastActiveQuestionRef = useRef<{
+    question: Question;
+    theme: Theme;
+    points: number;
+    roundName?: string;
+  } | null>(null);
+
+  // Function to broadcast current game state to ScreenView
+  const broadcastGameState = useCallback((force: boolean = false) => {
+    if (!onBroadcastMessage) {
+      console.log('[GamePlay] broadcastGameState called but onBroadcastMessage is null');
+      return;
+    }
+
+    // Throttle broadcasts to avoid excessive updates (max 1 per 100ms)
+    // BUT: Always allow broadcast when screen just changed (within 50ms of screen change)
+    // OR when force=true (for critical updates like question open)
+    const now = Date.now();
+    const timeSinceLastBroadcast = now - lastBroadcastRef.current;
+    const timeSinceScreenChange = now - lastScreenChangeRef.current;
+
+    // Allow broadcast if:
+    // 1. It's been long enough since last broadcast, OR
+    // 2. Screen just changed (within screenChangeBroadcastMs), OR
+    // 3. Forced broadcast (for critical updates)
+    const shouldBroadcast = timeSinceLastBroadcast >= broadcastThrottleMs ||
+                           timeSinceLastBroadcast === 0 ||
+                           timeSinceScreenChange < screenChangeBroadcastMs ||
+                           force;
+
+    if (!shouldBroadcast && timeSinceLastBroadcast > 0) {
+      console.log(`[GamePlay] Broadcast throttled - only ${timeSinceLastBroadcast}ms since last (min ${broadcastThrottleMs}ms)`);
+      return; // Skip this broadcast - too soon
+    }
+
+    lastBroadcastRef.current = now;
+    console.log('[GamePlay] Broadcasting game state' + (force ? ' (FORCED)' : ''));
+
+    // Use ref value for activeQuestion instead of state to avoid stale closures
+    // This ensures we always use the latest activeQuestion value
+    const currentActiveQuestion = lastActiveQuestionRef.current;
+
+    // Debug logging for activeQuestion
+    if (!currentActiveQuestion && activeQuestion) {
+      console.warn('[GamePlay] ⚠️ activeQuestion state exists but ref is null!', {
+        stateQuestion: activeQuestion.question?.text?.slice(0, 30),
+        refQuestion: currentActiveQuestion?.question?.text?.slice(0, 30)
+      });
+    }
+
+    // Prepare full themes data for all screens
+    const allThemes = pack.rounds?.flatMap((round, roundIndex) =>
+      (round.themes || []).map(theme => ({
+        id: theme.id,
+        name: theme.name,
+        color: theme.color,
+        textColor: theme.textColor,
+        roundNumber: round.number,
+        roundName: round.name,
+        questions: (theme.questions || []).map(q => ({
+          id: q.id,
+          points: q.points,
+          answered: isQuestionAnswered(q.id, theme.id)
+        }))
+      }))
+    ) || [];
+
+    // Prepare board data (themes and questions for current round)
+    const boardData = currentRound ? {
+      themes: (currentRound.themes || []).map(theme => ({
+        id: theme.id,
+        name: theme.name,
+        color: theme.color,
+        textColor: theme.textColor,
+        questions: (theme.questions || []).map(q => ({
+          id: q.id,
+          points: q.points,
+          answered: isQuestionAnswered(q.id, theme.id)
+        }))
+      }))
+    } : null;
+
+    // Broadcast comprehensive game state for ScreenView
+    // When activeQuestion exists, ensure currentScreen is 'board' for demo screen
+    const broadcastScreen = currentActiveQuestion ? 'board' : currentScreen;
+    console.log('[GamePlay] Broadcasting screen:', broadcastScreen, '(original:', currentScreen, ')');
+    console.log('[GamePlay] Broadcasting with activeQuestion:', !!currentActiveQuestion);
+    console.log('[GamePlay] Broadcasting with showAnswer:', showAnswer);
+    if (!currentActiveQuestion) {
+      console.warn('[GamePlay] ⚠️ Broadcasting without activeQuestion, ref is null');
+    }
+
+    onBroadcastMessage({
+      type: 'GAME_STATE_UPDATE',
+      state: {
+        currentScreen: broadcastScreen,
+        currentRoundIndex,
+        activeQuestion: currentActiveQuestion ? {
+          text: currentActiveQuestion.question.text,
+          media: currentActiveQuestion.question.media,
+          answer: currentActiveQuestion.question.answerText,
+          answerMedia: currentActiveQuestion.question.answerMedia,
+          points: currentActiveQuestion.points,
+          themeName: currentActiveQuestion.theme.name,
+          roundName: currentActiveQuestion.roundName,
+          questionId: currentActiveQuestion.question.id // Add question ID for proper comparison
+        } : null,
+        showAnswer,
+        teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
+        buzzerState: {
+          active: buzzerStateRef.current?.active || (buzzerStateRef.current?.timerPhase === 'reading' || buzzerStateRef.current?.timerPhase === 'response'),
+          timerPhase: buzzerStateRef.current?.timerPhase || 'inactive',
+          readingTimerRemaining: buzzerStateRef.current?.readingTimerRemaining || 0,
+          responseTimerRemaining: buzzerStateRef.current?.responseTimerRemaining || 0,
+          handicapActive: buzzerStateRef.current?.handicapActive || false,
+          handicapTeamId: buzzerStateRef.current?.handicapTeamId,
+          isPaused: buzzerStateRef.current?.isPaused || false,
+          // Add total times from current round settings (authoritative source)
+          readingTimeTotal: buzzerStateRef.current?.readingTimeTotal ?? 5,
+          responseTimeTotal: currentRound?.responseWindow ?? 30, // Always use current round value
+          // Add color information from host (authoritative source)
+          timerColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'yellow' : buzzerStateRef.current?.timerPhase === 'response' ? 'green' : 'gray',
+          timerBarColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'bg-yellow-500' : buzzerStateRef.current?.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
+          timerTextColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'text-yellow-300' : buzzerStateRef.current?.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300'
+        },
+        answeringTeamId,
+        currentRound: currentRound ? {
+          id: currentRound.id,
+          name: currentRound.name,
+          number: currentRound.number,
+          type: currentRound.type,
+          cover: currentRound.cover
+        } : null,
+        // Add all themes data for themes screen
+        allThemes: allThemes,
+        // Add board data for board screen
+        boardData: boardData,
+        // Add pack cover for cover screen
+        packCover: pack.cover,
+        packName: pack.name,
+        // Add super game data
+        selectedSuperThemeId,
+        disabledSuperThemeIds: Array.from(disabledSuperThemeIds),
+        superGameBets: superGameBets.map(b => ({
+          teamId: b.teamId,
+          bet: b.bet,
+          ready: b.ready
+        })),
+        superGameAnswers: superGameAnswers.map(a => ({
+          teamId: a.teamId,
+          answer: a.answer,
+          revealed: a.revealed
+        })),
+        selectedSuperAnswerTeam,
+        // Add team states for player panel colors
+        teamStates: {
+          wrongAnswerTeams: Array.from(wrongAnswerTeams),
+          activeTeamIds: Array.from(activeTeamIds),
+          clashingTeamIds: Array.from(clashingTeamIds)
+        },
+        // Add QR code state
+        showQRCode: showQRCode,
+        // Add highlighted question for visual feedback
+        highlightedQuestion: highlightedQuestion,
+        // Add themes scroll position for sync
+        themesScrollPosition: themesScrollPosition
+      }
+    });
+
+    console.log('[GamePlay] Broadcast sent successfully', {
+      buzzerPhase: buzzerStateRef.current?.timerPhase,
+      isPaused: buzzerStateRef.current?.isPaused,
+      activeQuestion: !!activeQuestion,
+      timeSinceLastBroadcast: `${timeSinceLastBroadcast}ms`,
+      teamStates: {
+        wrongAnswerTeams: Array.from(wrongAnswerTeams),
+        activeTeamIds: Array.from(activeTeamIds),
+        clashingTeamIds: Array.from(clashingTeamIds)
+      }
+    });
+  }, [currentScreen, currentRoundIndex, showAnswer, teamScores, answeringTeamId, currentRound, onBroadcastMessage, pack, selectedSuperThemeId, disabledSuperThemeIds, superGameBets, superGameAnswers, selectedSuperAnswerTeam, wrongAnswerTeams, activeTeamIds, clashingTeamIds, showQRCode, themesScrollPosition, highlightedQuestion]); // Removed activeQuestion - now using ref to avoid stale closures
+
+  // Handle buzzer state changes from QuestionModal (media playback auto-pause)
+  const handleQuestionModalBuzzerStateChange = useCallback((state: {
+    active: boolean;
+    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+    handicapActive: boolean;
+    handicapTeamId?: string;
+    isPaused: boolean;
+  }) => {
+    console.log('[GamePlay] QuestionModal buzzer state change:', state);
+
+    // Update buzzerStateRef with new state from QuestionModal
+    if (buzzerStateRef.current) {
+      buzzerStateRef.current.active = state.active;
+      buzzerStateRef.current.timerPhase = state.timerPhase;
+      buzzerStateRef.current.readingTimerRemaining = state.readingTimerRemaining;
+      buzzerStateRef.current.responseTimerRemaining = state.responseTimerRemaining;
+      buzzerStateRef.current.handicapActive = state.handicapActive;
+      buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
+      buzzerStateRef.current.isPaused = state.isPaused;
+
+      // IMPORTANT: Preserve totals from QuestionModal unless they're missing
+      // QuestionModal calculates these based on actual question text and settings
+      if (!buzzerStateRef.current.readingTimeTotal || !buzzerStateRef.current.responseTimeTotal) {
+        if (activeQuestion && currentRound) {
+          const questionTextLetters = (activeQuestion.question.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
+          const hasMedia = activeQuestion.question.media?.type === 'audio' ||
+                           activeQuestion.question.media?.type === 'video' ||
+                           activeQuestion.question.media?.type === 'youtube';
+          // Same calculation as in QuestionModal: media questions get 50% reading time
+          buzzerStateRef.current.readingTimeTotal = hasMedia
+            ? Math.max(1, questionTextLetters * currentRound.readingTimePerLetter * 0.5)
+            : Math.max(1, questionTextLetters * currentRound.readingTimePerLetter);
+          buzzerStateRef.current.responseTimeTotal = currentRound.responseWindow || 30;
+        }
+      }
+
+      // IMPORTANT: Sync timerPausedRef with isPaused state from QuestionModal
+      // This ensures the GamePlay timer respects the pause state from QuestionModal
+      timerPausedRef.current = state.isPaused;
+
+      // CRITICAL: Update buzzerStateRef.current with QuestionModal's ACTUAL current values
+      // This prevents GamePlay from broadcasting stale timer values
+      buzzerStateRef.current.readingTimerRemaining = state.readingTimerRemaining;
+      buzzerStateRef.current.responseTimerRemaining = state.responseTimerRemaining;
+      buzzerStateRef.current.active = state.active;
+      buzzerStateRef.current.timerPhase = state.timerPhase;
+      buzzerStateRef.current.handicapActive = state.handicapActive;
+      buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
+
+      // Update colors based on timer phase (host is authoritative)
+      buzzerStateRef.current.timerColor = state.timerPhase === 'reading' ? 'yellow' : state.timerPhase === 'response' ? 'green' : 'gray';
+      buzzerStateRef.current.timerBarColor = state.timerPhase === 'reading' ? 'bg-yellow-500' : state.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500';
+      buzzerStateRef.current.timerTextColor = state.timerPhase === 'reading' ? 'text-yellow-300' : state.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300';
+    }
+
+    // Sync timer paused state
+    setTimerPaused(state.isPaused);
+
+    // Notify parent component - this sends BUZZER_STATE messages
+    // NO NEED to call broadcastGameState() here - it causes duplicate messages and UI flicker
+    onBuzzerStateChange(buzzerStateRef.current);
+  }, [onBuzzerStateChange]);
+
+  // Handle timer pause state changes from QuestionModal (manual pause button)
+  const handleTimerPauseChange = useCallback((isPaused: boolean) => {
+    console.log('[GamePlay] Timer pause state changed:', isPaused);
+    setTimerPaused(isPaused);
+    timerPausedRef.current = isPaused;
+
+    // Update buzzer state to sync with demo screen
+    const timerPhase = buzzerStateRef.current?.timerPhase || 'inactive';
+    const newState = {
+      active: buzzerStateRef.current?.active || false,
+      timerPhase: timerPhase,
+      readingTimerRemaining: buzzerStateRef.current?.readingTimerRemaining || 0,
+      responseTimerRemaining: buzzerStateRef.current?.responseTimerRemaining || 0,
+      handicapActive: buzzerStateRef.current?.handicapActive || false,
+      handicapTeamId: buzzerStateRef.current?.handicapTeamId,
+      isPaused: isPaused,
+      // Add total times from current round settings (authoritative source)
+      readingTimeTotal: buzzerStateRef.current?.readingTimeTotal || buzzerStateRef.current?.readingTimerRemaining || 0,
+      responseTimeTotal: currentRound?.responseWindow || buzzerStateRef.current?.responseTimerRemaining || 30, // Always prefer current round value
+      // Add colors based on timer phase (host is authoritative)
+      timerColor: (timerPhase === 'reading' ? 'yellow' : timerPhase === 'response' ? 'green' : 'gray') as 'yellow' | 'green' | 'gray',
+      timerBarColor: timerPhase === 'reading' ? 'bg-yellow-500' : timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
+      timerTextColor: timerPhase === 'reading' ? 'text-yellow-300' : timerPhase === 'response' ? 'text-green-300' : 'text-gray-300'
+    };
+    buzzerStateRef.current = newState;
+    onBuzzerStateChange(newState);
+    // NO broadcastGameState() call here - onBuzzerStateChange already sends BUZZER_STATE
+  }, [onBuzzerStateChange, currentRound]); // Add currentRound dependency for responseWindow
+
+  // Sync buzzerStateRef.isPaused with timerPaused state and broadcast
+  useEffect(() => {
+    if (buzzerStateRef.current && activeQuestion && !showAnswer) {
+      buzzerStateRef.current.isPaused = timerPaused;
+
+      console.log('[GamePlay] Syncing pause state:', {
+        isPaused: timerPaused,
+        timerPhase: buzzerStateRef.current.timerPhase,
+        fullState: buzzerStateRef.current
+      });
+
+      onBuzzerStateChange(buzzerStateRef.current);
+      // NO broadcastGameState() call here - onBuzzerStateChange already sends BUZZER_STATE
+    }
+  }, [timerPaused, activeQuestion, showAnswer, onBuzzerStateChange]); // Removed broadcastGameState dependency
+
+  // Broadcast current screen to demo screen when screen changes (without triggering full state update cycle)
+  // REMOVED: Now handled by main broadcastGameState which includes currentScreen in dependencies
+  // This prevents duplicate broadcasts and ensures full state is always sent
 
   // Function to broadcast current super game state
   const broadcastSuperGameState = useCallback(() => {
@@ -270,7 +618,7 @@ export const GamePlay = memo(({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
       });
-    } else if (['board', 'cover', 'themes', 'round', 'selectSuperThemes'].includes(currentScreen)) {
+    } else if (['board', 'cover', 'themes', 'round', 'placeBets'].includes(currentScreen)) {
       onSuperGamePhaseChange?.('idle');
       onBroadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
@@ -318,6 +666,54 @@ export const GamePlay = memo(({
       setSuperGameAnswers(externalSuperGameAnswers);
     }
   }, [externalSuperGameAnswers]);
+
+  // Update buzzerStateRef when buzzer state changes
+  useEffect(() => {
+    // Only update inactive state - active timer phases are managed by the timer logic
+    if (!activeQuestion || showAnswer) {
+      buzzerStateRef.current = {
+        active: false,
+        timerPhase: 'inactive',
+        readingTimerRemaining: 0,
+        responseTimerRemaining: 0,
+        handicapActive: false,
+        isPaused: false,
+        readingTimeTotal: 0,
+        responseTimeTotal: 30, // Default response time
+        timerColor: 'gray',
+        timerBarColor: 'bg-gray-500',
+        timerTextColor: 'text-gray-300'
+      };
+      setTimerPaused(false);
+    }
+    // Don't override timerPhase when question is active - let timer logic manage it
+  }, [activeQuestion, showAnswer]);
+
+  // Broadcast game state when important values change (EXCEPT currentScreen - handled separately)
+  useEffect(() => {
+    broadcastGameState(true); // Force broadcast for important state changes
+    console.log('[GamePlay] Broadcast triggered by value change');
+  }, [currentRoundIndex, activeQuestion, showAnswer, answeringTeamId, themesScrollPosition, highlightedQuestion]); // Added highlightedQuestion for visual feedback
+
+  // Immediate broadcast on screen changes (bypass throttling)
+  useEffect(() => {
+    if (currentScreen) {
+      console.log('[GamePlay] Screen changed to:', currentScreen, '- broadcasting immediately');
+      lastScreenChangeRef.current = Date.now(); // Mark as screen change to bypass throttling
+      broadcastGameState();
+    }
+  }, [currentScreen]); // This ensures screen changes are broadcast immediately without throttling
+
+  // Initial broadcast when component mounts to ensure teamScores are sent immediately
+  useEffect(() => {
+    console.log('[GamePlay] Initial broadcast on mount');
+    lastScreenChangeRef.current = Date.now(); // Mark as screen change to bypass throttling
+    broadcastGameState();
+  }, []); // Empty deps - run only on mount
+
+  // REMOVED: Periodic buzzer state broadcast - this was causing timer flicker on demo screen
+  // Demo screen now handles countdown locally from initial BUZZER_STATE messages
+  // Only state changes (pause, phase change, etc.) trigger updates
 
   // Clear super game state on clients when transitioning away from super game screens
   useEffect(() => {
@@ -415,18 +811,13 @@ export const GamePlay = memo(({
         setCurrentScreen(prev => {
           const nextScreen = (() => {
             switch (prev) {
-              case 'cover': return isSuperRound ? 'selectSuperThemes' : 'themes';
+              case 'cover': return isSuperRound ? 'placeBets' : 'themes';
               case 'themes':
                 // Always show round cover
                 return 'round';
-              case 'selectSuperThemes':
-                // Only proceed to placeBets when exactly one theme remains (not disabled)
-                const themeCount = currentRound?.themes?.length || 0;
-                const remainingCount = themeCount - disabledSuperThemeIds.size;
-                return remainingCount === 1 ? 'placeBets' : 'selectSuperThemes';
               case 'round':
-                // For super rounds, skip board and go to selectSuperThemes
-                return isSuperRound ? 'selectSuperThemes' : 'board';
+                // For super rounds, go to placeBets directly; for normal rounds, go to board
+                return isSuperRound ? 'placeBets' : 'board';
               case 'placeBets':
                 // Always proceed to superQuestion when Space is pressed
                 return 'superQuestion';
@@ -438,6 +829,8 @@ export const GamePlay = memo(({
             }
           })();
 
+          // useEffect will handle broadcast automatically
+          console.log('[GamePlay] Screen changing to:', nextScreen);
           return nextScreen;
         });
       }
@@ -447,11 +840,29 @@ export const GamePlay = memo(({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeQuestion, currentRoundIndex, pack.rounds, selectedSuperThemeId, superGameBets, teamScores]);
 
-  // Handle continuous scroll with ArrowDown/ArrowUp on themes/superThemes screens
+  // Track themes scroll position for ScreenView sync
+  useEffect(() => {
+    if (currentScreen === 'themes' && themesScrollRef.current) {
+      const handleScroll = () => {
+        if (themesScrollRef.current) {
+          setThemesScrollPosition(themesScrollRef.current.scrollTop);
+        }
+      };
+
+      const scrollElement = themesScrollRef.current;
+      scrollElement?.addEventListener('scroll', handleScroll);
+
+      return () => {
+        scrollElement?.removeEventListener('scroll', handleScroll);
+      };
+    }
+  }, [currentScreen]);
+
+  // Handle continuous scroll with ArrowDown/ArrowUp on themes screen
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Only on themes or superThemes screens, not when question modal is open
-      if ((currentScreen !== 'themes' && currentScreen !== 'selectSuperThemes') || activeQuestion) return;
+      // Only on themes screen, not when question modal is open
+      if (currentScreen !== 'themes' || activeQuestion) return;
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
 
       e.preventDefault();
@@ -522,6 +933,8 @@ export const GamePlay = memo(({
             setCurrentRoundIndex(nextRoundIndex);
             // Always go to round preview
             setCurrentScreen('round');
+            // Immediate broadcast to prevent screen jumping
+            setTimeout(() => broadcastGameState(), 10);
           }
         } else if (code === 'KeyE') {
           // Previous round - only if there is a previous round
@@ -567,6 +980,8 @@ export const GamePlay = memo(({
           setCurrentRoundIndex(targetRoundIndex);
           // Always go to round preview when selecting a specific round
           setCurrentScreen('round');
+          // Immediate broadcast to prevent screen jumping
+          setTimeout(() => broadcastGameState(), 10);
         }
       }
     };
@@ -575,7 +990,7 @@ export const GamePlay = memo(({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeQuestion, pack.rounds]);
 
-  // Handle Space to show answer
+  // Handle Space to show answer and P to pause timer
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Space shows answer - always works when question is open
@@ -584,19 +999,47 @@ export const GamePlay = memo(({
         setShowAnswer(true);
         setBuzzerActive(false);
         processingWrongAnswerRef.current = false;
-        onBuzzerStateChange({
+        const newState = {
           active: false,
-          timerPhase: 'inactive',
+          timerPhase: 'inactive' as const,
           readingTimerRemaining: 0,
           responseTimerRemaining: 0,
-          handicapActive: false
-        });
+          handicapActive: false,
+          isPaused: false,
+          readingTimeTotal: 0,
+          responseTimeTotal: 30, // Default response time
+          timerColor: 'gray' as const,
+          timerBarColor: 'bg-gray-500',
+          timerTextColor: 'text-gray-300'
+        };
+        buzzerStateRef.current = newState;
+        onBuzzerStateChange(newState);
+        setTimerPaused(false);
+      }
+
+      // P key pauses/resumes timer
+      if ((e.key === 'p' || e.key === 'P' || e.code === 'KeyP') && activeQuestion && !showAnswer) {
+        e.preventDefault();
+        const newPausedState = !timerPaused;
+        setTimerPaused(newPausedState);
+
+        // Update buzzer state with pause status
+        const currentState = buzzerStateRef.current;
+        const newState = {
+          ...currentState,
+          isPaused: newPausedState
+        };
+        buzzerStateRef.current = newState;
+        onBuzzerStateChange(newState);
+
+        // Immediately broadcast state to demo screen
+        broadcastGameState();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeQuestion, showAnswer, onBuzzerStateChange]);
+  }, [activeQuestion, showAnswer, onBuzzerStateChange, timerPaused]); // Removed broadcastGameState to prevent circular dependency
 
   // Handle closing question with any key after answer shown
   useEffect(() => {
@@ -632,7 +1075,11 @@ export const GamePlay = memo(({
 
       // Calculate reading time based on question text length
       const questionTextLetters = (activeQuestion.question.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
-      const readingTime = readingTimePerLetter > 0 ? questionTextLetters * readingTimePerLetter : 0;
+      // Apply 0.5x multiplier for media files (same logic as QuestionModal)
+      const hasMedia = activeQuestion.question.media?.type === 'audio' || activeQuestion.question.media?.type === 'video' || activeQuestion.question.media?.type === 'youtube';
+      const readingTime = readingTimePerLetter > 0
+        ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+        : 0;
 
       // Find leading team for handicap
       const leadingTeamScore = teamScores.length > 0 ? Math.max(...teamScores.map(t => t.score)) : 0;
@@ -657,15 +1104,36 @@ export const GamePlay = memo(({
         const isHandicapActiveForTeam = handicapActive && leadingTeam?.teamId;
         // Buzzer is active during response phase (regardless of handicap)
         // Handicap only blocks the specific leading team, not all teams
-        const isActive = currentPhase === 'response';
-        onBuzzerStateChangeRef.current({
+        const isActive = currentPhase === 'reading' || currentPhase === 'response';
+        const state = {
           active: isActive,
           timerPhase: currentPhase,
           readingTimerRemaining: Math.max(0, readingRemaining),
           responseTimerRemaining: Math.max(0, responseRemaining),
           handicapActive: handicapActive,
-          handicapTeamId: isHandicapActiveForTeam ? leadingTeam?.teamId : undefined
+          handicapTeamId: isHandicapActiveForTeam ? leadingTeam?.teamId : undefined,
+          isPaused: timerPausedRef.current, // Use ref to get current value
+          // Add total times for demo screen display
+          readingTimeTotal: readingTime,
+          responseTimeTotal: responseWindow,
+          // Add colors (host is authoritative)
+          timerColor: currentPhase === 'reading' ? 'yellow' : currentPhase === 'response' ? 'green' : 'gray',
+          timerBarColor: currentPhase === 'reading' ? 'bg-yellow-500' : currentPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
+          timerTextColor: currentPhase === 'reading' ? 'text-yellow-300' : currentPhase === 'response' ? 'text-green-300' : 'text-gray-300'
+        };
+
+        console.log('[GamePlay] Sending buzzer state:', {
+          timerPhase: state.timerPhase,
+          readingTimerRemaining: state.readingTimerRemaining,
+          responseTimerRemaining: state.responseTimerRemaining,
+          isPaused: state.isPaused,
+          active: state.active,
+          handicapActive: state.handicapActive,
+          timerColor: state.timerColor
         });
+
+        buzzerStateRef.current = state;
+        onBuzzerStateChangeRef.current(state);
       };
 
       // Initial state
@@ -677,6 +1145,15 @@ export const GamePlay = memo(({
       }
 
       setBuzzerActive(initiallyActive && !handicapActive);
+
+      console.log('[GamePlay] Timer initialized - Initial state:', {
+        currentPhase,
+        readingTime,
+        responseWindow,
+        timerPaused: timerPausedRef.current,
+        initialBuzzerState: buzzerStateRef.current
+      });
+
       sendBuzzerState();
 
       // If handicap is needed and we start in response phase, schedule its end
@@ -690,8 +1167,10 @@ export const GamePlay = memo(({
 
       // Periodic state update (every 100ms)
       stateUpdateRef.current = setInterval(() => {
-        if (currentPhase === 'reading') {
-          readingRemaining -= 0.1;
+        // Check if timer is paused - don't update time if paused
+        if (!timerPausedRef.current) {
+          if (currentPhase === 'reading') {
+            readingRemaining -= 0.1;
           if (readingRemaining <= 0) {
             readingRemaining = 0;
             currentPhase = 'response';
@@ -744,7 +1223,7 @@ export const GamePlay = memo(({
             }
           }
         }
-        sendBuzzerState();
+        }
       }, 100);
 
       // Set cleanup for when timers would naturally end
@@ -777,7 +1256,8 @@ export const GamePlay = memo(({
         timerPhase: 'inactive',
         readingTimerRemaining: 0,
         responseTimerRemaining: 0,
-        handicapActive: false
+        handicapActive: false,
+        isPaused: false
       });
     };
   }, [activeQuestion, showAnswer, currentRound, teams]);
@@ -790,6 +1270,8 @@ export const GamePlay = memo(({
       setAnsweredQuestions(prev => new Set(prev).add(key));
     }
     setActiveQuestion(null);
+    lastActiveQuestionRef.current = null; // Clear ref when question closes
+    questionModalActiveRef.current = false; // QuestionModal closed, GamePlay can manage timer
     setShowAnswer(false);
     setBuzzerActive(false);
     // Reset wrong answer teams when question closes
@@ -801,26 +1283,41 @@ export const GamePlay = memo(({
       onUpdateActiveTeamIdsRef.current(new Set());
     }
     processingWrongAnswerRef.current = false;
-    onBuzzerStateChange({
+    const closeState = {
       active: false,
-      timerPhase: 'inactive',
+      timerPhase: 'inactive' as const,
       readingTimerRemaining: 0,
       responseTimerRemaining: 0,
-      handicapActive: false
-    });
+      handicapActive: false,
+      isPaused: false,
+      readingTimeTotal: 0,
+      responseTimeTotal: 30, // Default response time
+      timerColor: 'gray' as const,
+      timerBarColor: 'bg-gray-500',
+      timerTextColor: 'text-gray-300'
+    };
+    buzzerStateRef.current = closeState;
+    onBuzzerStateChange(closeState);
+    setTimerPaused(false);
     onBuzzTriggered(null);
+    // Broadcast to demo screen that question is closed
+    broadcastGameState(true); // Force broadcast to ensure demo screen updates immediately
     // Reset answering team when question closes
     if (onAnsweringTeamChange) {
       onAnsweringTeamChange(null);
     }
-  }, [activeQuestion, currentRound, onBuzzerStateChange, onBuzzTriggered, onAnsweringTeamChange]);
+  }, [activeQuestion, currentRound, onBuzzerStateChange, onBuzzTriggered, onAnsweringTeamChange, broadcastGameState]);
+
+  // Check if question is answered
+  const isQuestionAnswered = useCallback((questionId: string, themeId: string) => {
+    const key = `${currentRound?.id}-${themeId}-${questionId}`;
+    return answeredQuestions.has(key);
+  }, [answeredQuestions, currentRound]);
 
   // Reset score change type when question changes
   useEffect(() => {
     setScoreChangeType(null);
   }, [activeQuestion]);
-
-  // Handle score change from keyboard (-, =)
   const handleScoreChange = useCallback((change: 'wrong' | 'correct') => {
     if (!activeQuestion) return;
 
@@ -853,18 +1350,52 @@ export const GamePlay = memo(({
 
         if (onUpdateActiveTeamIdsRef.current) {
           onUpdateActiveTeamIdsRef.current(newActiveTeamIds);
-        } else {
         }
 
-        // Keep buzzer active for other teams - use current timer value
-        setBuzzerActive(true);
-        onBuzzerStateChange({
-          active: true,
-          timerPhase: 'response',
-          readingTimerRemaining: 0,
-          responseTimerRemaining: responseTimerRemainingRef.current,
-          handicapActive: false
-        });
+        // Send updated team states to demo screen
+        broadcastGameState(false); // Don't force - use throttle
+      } else {
+
+        // Keep buzzer active for other teams ONLY if timer is still running
+        const currentResponseRemaining = buzzerStateRef.current?.responseTimerRemaining || 0;
+        const isTimerStillRunning = currentResponseRemaining > 0 && buzzerStateRef.current?.active;
+
+        if (isTimerStillRunning) {
+          setBuzzerActive(true);
+          const responseState = {
+            active: true,
+            timerPhase: 'response' as const,
+            readingTimerRemaining: 0,
+            responseTimerRemaining: currentResponseRemaining,
+            handicapActive: false,
+            isPaused: timerPaused,
+            readingTimeTotal: 0,
+            responseTimeTotal: currentRound?.responseWindow || 30, // Always use current round value
+            timerColor: 'green' as const,
+            timerBarColor: 'bg-green-500',
+            timerTextColor: 'text-green-300'
+          };
+          buzzerStateRef.current = responseState;
+          onBuzzerStateChange(responseState);
+        } else {
+          // Timer has expired - don't reactivate buzzer
+          setBuzzerActive(false);
+          const inactiveState = {
+            active: false,
+            timerPhase: 'inactive' as const,
+            readingTimerRemaining: 0,
+            responseTimerRemaining: 0,
+            handicapActive: false,
+            isPaused: false,
+            readingTimeTotal: 0,
+            responseTimeTotal: currentRound?.responseWindow || 30,
+            timerColor: 'gray' as const,
+            timerBarColor: 'bg-gray-500',
+            timerTextColor: 'text-gray-300'
+          };
+          buzzerStateRef.current = inactiveState;
+          onBuzzerStateChange(inactiveState);
+        }
 
         // Clear answering team
         if (onAnsweringTeamChange) {
@@ -898,13 +1429,22 @@ export const GamePlay = memo(({
 
         // Turn off buzzer - answer will be shown manually with Space
         setBuzzerActive(false);
-        onBuzzerStateChange({
+        const newState = {
           active: false,
-          timerPhase: 'inactive',
+          timerPhase: 'inactive' as const,
           readingTimerRemaining: 0,
           responseTimerRemaining: 0,
-          handicapActive: false
-        });
+          handicapActive: false,
+          isPaused: false,
+          readingTimeTotal: 0,
+          responseTimeTotal: 30, // Default response time
+          timerColor: 'gray' as const,
+          timerBarColor: 'bg-gray-500',
+          timerTextColor: 'text-gray-300'
+        };
+        buzzerStateRef.current = newState;
+        onBuzzerStateChange(newState);
+        setTimerPaused(false);
       }
     }
   }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange, onUpdateActiveTeamIds, currentRound, attemptedTeamIds, teams]);
@@ -937,7 +1477,9 @@ export const GamePlay = memo(({
       points: points,
       mediaData: question.media,
       mediaUrl: question.media?.url,
-      mediaType: question.media?.type
+      mediaType: question.media?.type,
+      timerPaused: timerPaused,
+      timerPausedRef: timerPausedRef.current
     });
 
     // Reset answering team when opening a new question
@@ -948,6 +1490,16 @@ export const GamePlay = memo(({
     setWrongAnswerTeams(new Set());
     // Reset attempted teams when opening a new question
     setAttemptedTeamIds(new Set());
+    // Set initial pause state - pause if question has media
+    const hasMedia = !!(question.media && question.media.url && question.media.url.trim() !== '');
+    const initialPauseState = hasMedia;
+
+    console.log('[GamePlay] Opening question with initial pause state:', {
+      hasMedia,
+      initialPauseState,
+      questionId: question.id,
+      mediaUrl: question.media?.url
+    });
     // Deactivate all teams when opening a new question (will be activated when green timer starts)
     if (onUpdateActiveTeamIdsRef.current) {
       onUpdateActiveTeamIdsRef.current(new Set());
@@ -956,20 +1508,100 @@ export const GamePlay = memo(({
     setHighlightedQuestion(key);
     setTimeout(() => {
       setHighlightedQuestion(null);
-      setActiveQuestion({ question, theme, points, roundName: currentRound?.name });
-      setShowAnswer(false);
-      setBuzzerActive(false);
-    }, 1000);
-  }, [currentRound?.name, onAnsweringTeamChange, onUpdateActiveTeamIds]);
 
-  // Check if question is answered
-  const isQuestionAnswered = useCallback((questionId: string, themeId: string) => {
-    const key = `${currentRound?.id}-${themeId}-${questionId}`;
-    return answeredQuestions.has(key);
-  }, [answeredQuestions, currentRound]);
+      // Create the new active question object
+      const newActiveQuestion = { question, theme, points, roundName: currentRound?.name };
+
+      // Use flushSync to force synchronous state update
+      // This ensures activeQuestion is updated before broadcast
+      flushSync(() => {
+        setActiveQuestion(newActiveQuestion);
+        lastActiveQuestionRef.current = newActiveQuestion; // Update ref immediately
+        console.log('[GamePlay] ✅ Updated lastActiveQuestionRef:', {
+          question: newActiveQuestion.question?.text?.slice(0, 30),
+          theme: newActiveQuestion.theme.name
+        });
+        questionModalActiveRef.current = true; // QuestionModal open, will manage timer values
+        setShowAnswer(false);
+        setBuzzerActive(false);
+      });
+
+      // Now broadcast immediately after state is guaranteed to be updated
+      console.log('[GamePlay] Broadcasting new question after flushSync');
+
+      // Initialize buzzerStateRef for new question BEFORE broadcast
+      if (buzzerStateRef.current) {
+        const questionTextLetters = (question.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
+        const hasMedia = question.media?.type === 'audio' || question.media?.type === 'video' || question.media?.type === 'youtube';
+        const calculatedReadingTime = currentRound?.readingTimePerLetter > 0
+          ? (hasMedia ? questionTextLetters * currentRound.readingTimePerLetter * 0.5 : questionTextLetters * currentRound.readingTimePerLetter)
+          : 0;
+        const newReadingTime = Math.max(calculatedReadingTime, 1.0);
+
+        buzzerStateRef.current = {
+          ...buzzerStateRef.current,
+          active: !initialPauseState,
+          timerPhase: newReadingTime > 0 ? 'reading' : 'response',
+          readingTimerRemaining: newReadingTime,
+          responseTimerRemaining: currentRound?.responseWindow || 30,
+          handicapActive: false,
+          handicapTeamId: undefined,
+          isPaused: initialPauseState,
+          readingTimeTotal: newReadingTime,
+          responseTimeTotal: currentRound?.responseWindow || 30,
+          timerColor: newReadingTime > 0 ? 'yellow' : 'green',
+          timerBarColor: newReadingTime > 0 ? 'bg-yellow-500' : 'bg-green-500',
+          timerTextColor: newReadingTime > 0 ? 'text-yellow-300' : 'text-green-300'
+        };
+
+        console.log('[GamePlay] ✅ Initialized buzzerStateRef for new question:', {
+          isPaused: initialPauseState,
+          timerPhase: buzzerStateRef.current.timerPhase,
+          readingTime: newReadingTime,
+          responseTimeTotal: currentRound?.responseWindow || 30,
+          hasMedia
+        });
+      }
+
+      // NO broadcastGameState() call - BUZZER_STATE is sent by QuestionModal
+      // This prevents duplicate messages that reset local countdown on demo screen
+    }, 1000);
+  }, [currentRound?.name, onAnsweringTeamChange, onUpdateActiveTeamIds]); // Removed broadcastGameState to prevent circular dependency
+
+  // Handle team card click - set as answering team or toggle wrong answer state
+  const handleTeamClick = useCallback((teamId: string) => {
+    // If clicking on answering team, just clear it (make it gray, not red)
+    if (answeringTeamId === teamId) {
+      // Clear answering team when clicking on it - don't mark as wrong
+      if (onAnsweringTeamChange) {
+        onAnsweringTeamChange(null);
+      }
+    }
+    // If clicking on a team that already has wrong answer, remove it from wrong set
+    else if (wrongAnswerTeams.has(teamId)) {
+      setWrongAnswerTeams(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(teamId);
+        return newSet;
+      });
+    }
+    // Otherwise, set as answering team
+    else if (onAnsweringTeamChange) {
+      onAnsweringTeamChange(teamId);
+    }
+  }, [answeringTeamId, wrongAnswerTeams, onAnsweringTeamChange]);
 
   return (
     <>
+      {/* Media Streamer - Transfers media files to demo screen */}
+      {onBroadcastMessage && (
+        <MediaStreamer
+          activeQuestion={activeQuestion}
+          onBroadcastMessage={(message) => onBroadcastMessage(message)}
+          hostId={pack.id || 'host'}
+        />
+      )}
+
       {/* Player Panel - Always visible on top layer */}
       <div className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
         {teamScores.map(team => {
@@ -990,9 +1622,10 @@ export const GamePlay = memo(({
           return (
             <div
               key={team.teamId}
-              className={`px-6 py-2 rounded-lg border-2 transition-all relative ${
+              onClick={() => handleTeamClick(team.teamId)}
+              className={`px-6 py-2 rounded-lg border-2 transition-all relative cursor-pointer hover:scale-105 ${
                 hasWrongAnswer
-                  ? 'bg-red-500/40 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.6)]'
+                  ? 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
                   : hasPlacedBet || hasSubmittedAnswer
                     ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
                     : isAnsweringTeam
@@ -1121,105 +1754,9 @@ export const GamePlay = memo(({
         </div>
       )}
 
-      {/* Screen 5: Select Super Game Themes (disable themes until one remains) */}
-      {currentScreen === 'selectSuperThemes' && currentRound && (() => {
-        const themeCount = currentRound.themes?.length || 0;
-        const gridConfig = calculateThemeGrid(themeCount);
-        const remainingCount = themeCount - disabledSuperThemeIds.size;
-
-        return (
-          <div className="w-full h-full flex flex-col items-center justify-center p-8">
-            {/* Title */}
-            <h2 className="text-4xl font-bold text-center text-white mb-6 uppercase tracking-wide">
-              Exclude Themes
-            </h2>
-
-            {/* Themes grid - dynamic size based on theme count */}
-            <div
-              className="grid gap-5"
-              style={{
-                gridTemplateColumns: `repeat(${gridConfig.columns}, 1fr)`,
-                gridTemplateRows: `repeat(${gridConfig.rows}, 1fr)`,
-                width: `${gridConfig.width}px`,
-                height: `${gridConfig.height}px`,
-              }}
-            >
-              {currentRound.themes?.map(theme => {
-                const isDisabled = disabledSuperThemeIds.has(theme.id);
-                const fontSize = calculateThemeCardFontSize(theme.name, gridConfig.cardSizeFactor);
-                const isLastRemaining = !isDisabled && remainingCount === 1;
-
-                return (
-                  <div
-                    key={theme.id}
-                    onClick={() => {
-                      // Allow toggle on all themes
-                      setDisabledSuperThemeIds(prev => {
-                        const newSet = new Set(prev);
-                        if (newSet.has(theme.id)) {
-                          newSet.delete(theme.id);
-                        } else {
-                          newSet.add(theme.id);
-                        }
-                        return newSet;
-                      });
-                    }}
-                    className={`rounded-xl shadow-lg flex flex-col items-center justify-center relative transition-all cursor-pointer ${
-                      isDisabled
-                        ? 'opacity-30 grayscale'
-                        : isLastRemaining
-                          ? 'ring-4 ring-green-400 scale-105'
-                          : 'hover:scale-105'
-                    }`}
-                    style={{
-                      backgroundColor: theme.color || '#3b82f6',
-                      padding: `${Math.round(24 * gridConfig.cardSizeFactor)}px`,
-                    }}
-                  >
-                    <h3
-                      className="font-bold text-center leading-tight"
-                      style={{
-                        color: theme.textColor || '#ffffff',
-                        fontSize: `${fontSize}px`,
-                      }}
-                    >
-                      {theme.name}
-                    </h3>
-                    {/* Disabled indicator */}
-                    {isDisabled && (
-                      <div
-                        className="absolute top-2 right-2 bg-red-500 rounded-full flex items-center justify-center shadow-lg"
-                        style={{
-                          width: `${Math.round(24 * gridConfig.cardSizeFactor)}px`,
-                          height: `${Math.round(24 * gridConfig.cardSizeFactor)}px`,
-                        }}
-                      >
-                        <span className="text-white font-bold" style={{ fontSize: `${Math.round(12 * gridConfig.cardSizeFactor)}px` }}>✕</span>
-                      </div>
-                    )}
-                    {/* Last remaining indicator */}
-                    {isLastRemaining && (
-                      <div
-                        className="absolute top-2 right-2 bg-green-500 rounded-full flex items-center justify-center shadow-lg"
-                        style={{
-                          width: `${Math.round(24 * gridConfig.cardSizeFactor)}px`,
-                          height: `${Math.round(24 * gridConfig.cardSizeFactor)}px`,
-                        }}
-                      >
-                        <span className="text-white font-bold" style={{ fontSize: `${Math.round(12 * gridConfig.cardSizeFactor)}px` }}>✓</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Screen 6: Place Your Bets - Wait for teams to bet */}
+      {/* Screen 5: Place Your Bets - Wait for teams to bet */}
       {currentScreen === 'placeBets' && currentRound && (() => {
-        // Get the selected theme (auto-selected when only one remains on selectSuperThemes screen)
+        // Get the selected theme (auto-selected for super rounds)
         const remainingTheme = selectedSuperThemeId
           ? currentRound.themes?.find((t: Theme) => t.id === selectedSuperThemeId)
           : null;
@@ -1241,7 +1778,11 @@ export const GamePlay = memo(({
         <SuperGameQuestionModal
           round={currentRound}
           selectedSuperThemeId={selectedSuperThemeId}
-          onClose={() => setCurrentScreen('superAnswers')}
+          onClose={() => {
+            setCurrentScreen('superAnswers');
+            // Immediate broadcast to prevent screen jumping
+            setTimeout(() => broadcastGameState(), 10);
+          }}
         />
       )}
 
@@ -1271,7 +1812,11 @@ export const GamePlay = memo(({
               return a;
             }));
           }}
-          onClose={() => setCurrentScreen('showWinner')}
+          onClose={() => {
+            setCurrentScreen('showWinner');
+            // Immediate broadcast to prevent screen jumping
+            setTimeout(() => broadcastGameState(), 10);
+          }}
         />
       )}
 
@@ -1302,6 +1847,8 @@ export const GamePlay = memo(({
           handicapDelay={currentRound?.handicapDelay ?? 1}
           answeringTeamId={answeringTeamId}
           roundName={activeQuestion.roundName}
+          onBuzzerStateChange={handleQuestionModalBuzzerStateChange}
+          onTimerPauseChange={handleTimerPauseChange}
         />
       )}
       </div>

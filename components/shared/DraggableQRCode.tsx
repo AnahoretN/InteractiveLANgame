@@ -11,35 +11,42 @@ export interface DraggableQRCodeProps {
   hostId: string;
   isVisible: boolean;
   onClose: () => void;
+  onPositionChange?: (position: { x: number; y: number }) => void;  // Callback for position changes
+  initialPosition?: { x: number; y: number };  // Initial position from sync
+  draggable?: boolean;  // Whether QR code can be dragged (default: true)
 }
 
-export const DraggableQRCode = ({ hostId, isVisible, onClose }: DraggableQRCodeProps) => {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
+export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, initialPosition, draggable = true }: DraggableQRCodeProps) => {
+  const [position, setPosition] = useState(initialPosition || { x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Center the QR code on initial mount
+  // Center the QR code on initial mount or use provided position
   useEffect(() => {
-    if (isVisible && containerRef.current) {
+    if (initialPosition) {
+      setPosition(initialPosition);
+    } else if (isVisible && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      setPosition({
+      const centeredPosition = {
         x: (window.innerWidth - rect.width) / 2,
         y: (window.innerHeight - rect.height) / 2
-      });
+      };
+      setPosition(centeredPosition);
+      onPositionChange?.(centeredPosition);
     }
-  }, [isVisible]);
+  }, [isVisible, initialPosition, onPositionChange]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    // Only allow dragging from the header, not the QR code itself
-    if ((e.target as HTMLElement).closest('.qr-header')) {
+    // Only allow dragging from the header, not the QR code itself, and only if draggable
+    if (draggable && (e.target as HTMLElement).closest('.qr-header')) {
       setIsDragging(true);
       dragStartPos.current = {
         x: e.clientX - position.x,
         y: e.clientY - position.y
       };
     }
-  }, [position]);
+  }, [position, draggable]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (isDragging) {
@@ -50,9 +57,11 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose }: DraggableQRCodeP
       const boundedX = Math.max(0, Math.min(newX, window.innerWidth - 400));
       const boundedY = Math.max(0, Math.min(newY, window.innerHeight - 500));
 
-      setPosition({ x: boundedX, y: boundedY });
+      const newPosition = { x: boundedX, y: boundedY };
+      setPosition(newPosition);
+      onPositionChange?.(newPosition);
     }
-  }, [isDragging]);
+  }, [isDragging, onPositionChange]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
@@ -92,8 +101,21 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose }: DraggableQRCodeP
 
   if (!isVisible) return null;
 
-  // Generate connection URL
-  const connectionUrl = `${window.location.origin}/?host=${hostId}`;
+  // Get session ID and signalling server from current URL
+  const currentUrlParams = new URLSearchParams(window.location.hash.split('?')[1]);
+  const sessionId = currentUrlParams.get('session') || '';
+  const signallingServer = currentUrlParams.get('signalling') || '';
+
+  // Generate connection URL for demo screen
+  // Format: http://localhost:3000#/screen?host=HOST_ID&session=SESSION_ID&signalling=IP
+  let connectionUrl: string;
+  if (signallingServer) {
+    // LAN mode - include signalling server parameter
+    connectionUrl = `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}&signalling=${encodeURIComponent(signallingServer)}`;
+  } else {
+    // Internet mode - no signalling parameter
+    connectionUrl = `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}`;
+  }
 
   return (
     <div
@@ -102,7 +124,7 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose }: DraggableQRCodeP
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
-        cursor: isDragging ? 'grabbing' : 'grab',
+        cursor: draggable ? (isDragging ? 'grabbing' : 'grab') : 'default',
         userSelect: 'none'
       }}
       onMouseDown={handleMouseDown}
