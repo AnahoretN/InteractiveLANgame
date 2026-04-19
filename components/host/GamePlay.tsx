@@ -207,6 +207,11 @@ export const GamePlay = memo(({
   // Track teams that have attempted to answer in current question (for activation/deactivation logic)
   const [attemptedTeamIds, setAttemptedTeamIds] = useState<Set<string>>(new Set());
 
+  // Refs to track previous Set values for change detection
+  const prevWrongAnswerTeamsRef = useRef<Set<string>>(new Set());
+  const prevActiveTeamIdsRef = useRef<Set<string>>(new Set());
+  const prevClashingTeamIdsRef = useRef<Set<string>>(new Set());
+
   // Track score change type for displaying result message
   const [scoreChangeType, setScoreChangeType] = useState<'wrong' | 'correct' | null>(null);
 
@@ -689,11 +694,18 @@ export const GamePlay = memo(({
     // Don't override timerPhase when question is active - let timer logic manage it
   }, [activeQuestion, showAnswer]);
 
-  // Broadcast game state when important values change (EXCEPT currentScreen - handled separately)
+  // Broadcast game state when important values change (EXCEPT currentScreen - teamStates handled separately)
   useEffect(() => {
     broadcastGameState(true); // Force broadcast for important state changes
     console.log('[GamePlay] Broadcast triggered by value change');
-  }, [currentRoundIndex, activeQuestion, showAnswer, answeringTeamId, themesScrollPosition, highlightedQuestion]); // Added highlightedQuestion for visual feedback
+  }, [
+    currentRoundIndex,
+    activeQuestion,
+    showAnswer,
+    answeringTeamId,
+    themesScrollPosition,
+    highlightedQuestion
+  ]); // Team states (wrongAnswerTeams, activeTeamIds, clashingTeamIds) handled in separate useEffect
 
   // Immediate broadcast on screen changes (bypass throttling)
   useEffect(() => {
@@ -778,6 +790,42 @@ export const GamePlay = memo(({
       return combined;
     });
   }, [teams]);
+
+  // Track changes in team states (wrongAnswerTeams, activeTeamIds, clashingTeamIds)
+  // and trigger broadcast when they change (comparing by content, not by reference)
+  useEffect(() => {
+    const wrongChanged = !areSetsEqual(prevWrongAnswerTeamsRef.current, wrongAnswerTeams);
+    const activeChanged = !areSetsEqual(prevActiveTeamIdsRef.current, activeTeamIds);
+    const clashingChanged = !areSetsEqual(prevClashingTeamIdsRef.current, clashingTeamIds);
+
+    if (wrongChanged || activeChanged || clashingChanged) {
+      console.log('[GamePlay] 🔄 Team states changed, broadcasting update:', {
+        wrongChanged,
+        activeChanged,
+        clashingChanged,
+        wrongAnswerTeams: Array.from(wrongAnswerTeams),
+        activeTeamIds: Array.from(activeTeamIds),
+        clashingTeamIds: Array.from(clashingTeamIds)
+      });
+
+      // Update refs
+      prevWrongAnswerTeamsRef.current = new Set(wrongAnswerTeams);
+      prevActiveTeamIdsRef.current = new Set(activeTeamIds);
+      prevClashingTeamIdsRef.current = new Set(clashingTeamIds);
+
+      // Broadcast to demo screen
+      broadcastGameState(true);
+    }
+  }, [wrongAnswerTeams, activeTeamIds, clashingTeamIds]);
+
+  // Helper function to compare Sets by content
+  const areSetsEqual = useCallback((setA: Set<string>, setB: Set<string>): boolean => {
+    if (setA.size !== setB.size) return false;
+    for (const item of setA) {
+      if (!setB.has(item)) return false;
+    }
+    return true;
+  }, []);
 
   // Broadcast updated maxBet to clients when team scores change (during super game)
   useEffect(() => {
@@ -1195,6 +1243,7 @@ export const GamePlay = memo(({
                 // Activate all teams when green timer starts (after handicap ends)
                 const allTeamIds = new Set(teams.map(t => t.id));
                 if (onUpdateActiveTeamIdsRef.current) {
+                  console.log('[GamePlay] 🟡 Activating all teams (after handicap ends):', Array.from(allTeamIds));
                   onUpdateActiveTeamIdsRef.current(allTeamIds);
                 }
                 sendBuzzerState();
@@ -1204,6 +1253,7 @@ export const GamePlay = memo(({
               // Activate all teams when green timer starts
               const allTeamIds = new Set(teams.map(t => t.id));
               if (onUpdateActiveTeamIdsRef.current) {
+                console.log('[GamePlay] 🟡 Activating all teams (green timer starts):', Array.from(allTeamIds));
                 onUpdateActiveTeamIdsRef.current(allTeamIds);
               }
               sendBuzzerState();
@@ -1219,6 +1269,7 @@ export const GamePlay = memo(({
             setBuzzerActive(false);
             // Deactivate all teams when time expires
             if (onUpdateActiveTeamIdsRef.current) {
+              console.log('[GamePlay] ⚫ Deactivating all teams (timer expired)');
               onUpdateActiveTeamIdsRef.current(new Set());
             }
           }
@@ -1339,6 +1390,7 @@ export const GamePlay = memo(({
         processingWrongAnswerRef.current = true;
 
         // Mark team as having answered wrong
+        console.log(`[GamePlay] ❌ Team ${targetTeamId} marked as WRONG ANSWER`);
         setWrongAnswerTeams(prev => new Set(prev).add(targetTeamId));
 
         // Mark as attempted IMMEDIATELY (synchronous update - create proper new Set)
@@ -1349,6 +1401,11 @@ export const GamePlay = memo(({
         const newActiveTeamIds = new Set(teams.map(t => t.id).filter(id => id !== targetTeamId && !updatedAttemptedIds.has(id)));
 
         if (onUpdateActiveTeamIdsRef.current) {
+          console.log('[GamePlay] 🔄 Updating active teams after wrong answer:', {
+            deactivatedTeam: targetTeamId,
+            newActiveTeams: Array.from(newActiveTeamIds),
+            attemptedTeams: Array.from(updatedAttemptedIds)
+          });
           onUpdateActiveTeamIdsRef.current(newActiveTeamIds);
         }
 
@@ -1579,6 +1636,7 @@ export const GamePlay = memo(({
     }
     // If clicking on a team that already has wrong answer, remove it from wrong set
     else if (wrongAnswerTeams.has(teamId)) {
+      console.log(`[GamePlay] ✅ Team ${teamId} removed from WRONG ANSWER state`);
       setWrongAnswerTeams(prev => {
         const newSet = new Set(prev);
         newSet.delete(teamId);

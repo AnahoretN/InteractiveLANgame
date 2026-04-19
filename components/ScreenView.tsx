@@ -762,7 +762,16 @@ export const ScreenView: React.FC = () => {
         // Include showAnswer from state (important for answer display)
         showAnswer: state.showAnswer ?? prevState.showAnswer ?? false,
         // Preserve teamStates if not provided (critical for player panel colors)
-        teamStates: state.teamStates || prevState.teamStates || {}
+        // ALWAYS create new object to trigger re-render, even if data hasn't changed
+        teamStates: state.teamStates ? {
+          wrongAnswerTeams: state.teamStates.wrongAnswerTeams ? [...state.teamStates.wrongAnswerTeams] : [],
+          activeTeamIds: state.teamStates.activeTeamIds ? [...state.teamStates.activeTeamIds] : [],
+          clashingTeamIds: state.teamStates.clashingTeamIds ? [...state.teamStates.clashingTeamIds] : []
+        } : (prevState.teamStates || {
+          wrongAnswerTeams: [],
+          activeTeamIds: [],
+          clashingTeamIds: []
+        })
       };
       return updatedState;
     });
@@ -780,6 +789,15 @@ export const ScreenView: React.FC = () => {
       activeTeamIds: state.teamStates?.activeTeamIds,
       clashingTeamIds: state.teamStates?.clashingTeamIds
     });
+
+    // Enhanced logging for team card states
+    if (state.teamStates) {
+      console.log('[ScreenView] 🎨 Team Card States Summary:');
+      console.log(`  ❌ Wrong Answer Teams: ${state.teamStates.wrongAnswerTeams?.join(', ') || 'none'}`);
+      console.log(`  ✅ Active Teams: ${state.teamStates.activeTeamIds?.join(', ') || 'none'}`);
+      console.log(`  ⚔️ Clashing Teams: ${state.teamStates.clashingTeamIds?.join(', ') || 'none'}`);
+      console.log(`  🎯 Answering Team: ${state.answeringTeamId || 'none'}`);
+    }
 
     // Sync local timer state with host buzzer state
     if (state.buzzerState) {
@@ -1719,7 +1737,16 @@ export const ScreenView: React.FC = () => {
                 <>
                   {/* Player Panel - Always visible on top layer */}
                   {detailedGameState.teamScores && detailedGameState.teamScores.length > 0 && (
-                      <div className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
+                      <div
+                        key={`player-panel-${
+                          JSON.stringify({
+                            wrong: detailedGameState.teamStates?.wrongAnswerTeams?.sort(),
+                            active: detailedGameState.teamStates?.activeTeamIds?.sort(),
+                            clashing: detailedGameState.teamStates?.clashingTeamIds?.sort(),
+                            answering: detailedGameState.answeringTeamId
+                          })
+                        }`}
+                        className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
                         {detailedGameState.teamScores.map((team: { id: string; name: string; score: number }) => {
                           const isAnswering = detailedGameState.answeringTeamId === team.id;
                           const isHandicapTeam = detailedGameState.buzzerState?.handicapTeamId === team.id;
@@ -1729,9 +1756,39 @@ export const ScreenView: React.FC = () => {
                           const hasPlacedBet = detailedGameState.currentScreen === 'placeBets' && detailedGameState.superGameBets?.find(b => b.teamId === team.id)?.ready;
                           const hasSubmittedAnswer = detailedGameState.currentScreen === 'superQuestion' && detailedGameState.superGameAnswers?.find(a => a.teamId === team.id)?.answer;
 
+                          // Determine card state for logging and debugging
+                          let cardState = 'default';
+                          if (hasWrongAnswer) cardState = 'wrong-answer (gray)';
+                          else if (hasPlacedBet || hasSubmittedAnswer) cardState = 'bet-placed (green)';
+                          else if (isAnswering) cardState = 'answering (green)';
+                          else if (isClashing) cardState = 'clashing (blue)';
+                          else if (isActive) cardState = 'active (yellow)';
+
+                          // Store previous state in a ref to detect changes
+                          const prevStateKey = `team-state-${team.id}`;
+                          const previousState = (window as any)[prevStateKey];
+                          const stateChanged = previousState !== cardState;
+
+                          // Update stored state
+                          (window as any)[prevStateKey] = cardState;
+
+                          // Log when state changes
+                          if (stateChanged) {
+                            console.log(`[ScreenView] 🎨 Team "${team.name}" card state changed: "${previousState}" → "${cardState}"`);
+                            console.log(`  Details:`, {
+                              teamId: team.id,
+                              isAnswering,
+                              hasWrongAnswer,
+                              isActive,
+                              isClashing,
+                              hasPlacedBet,
+                              hasSubmittedAnswer
+                            });
+                          }
+
                           return (
                             <div
-                              key={team.id}
+                              key={`${team.id}-${cardState}`} // Include state in key to force re-render
                               className={`px-6 py-2 rounded-lg border-2 transition-all relative ${
                                 hasWrongAnswer
                                   ? 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
