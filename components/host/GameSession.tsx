@@ -56,6 +56,7 @@ interface GameSessionProps {
   activeTeamIds?: Set<string>;  // Players who can BUZZ to become answering (active = blue, inactive = white)
   answeringTeamLockedIn?: boolean;  // Answering team is locked (answered incorrectly/correctly)
   onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
+  showQRCode?: boolean;  // QR code visibility state
 }
 
 export const GameSession = memo(({
@@ -84,7 +85,8 @@ export const GameSession = memo(({
   clashingTeamIds,
   activeTeamIds,
   answeringTeamLockedIn,
-  onUpdateActiveTeamIds
+  onUpdateActiveTeamIds,
+  showQRCode
 }: GameSessionProps) => {
   const isNoTeamsMode = noTeamsMode || sessionSettings?.noTeamsMode || false;
 
@@ -175,6 +177,7 @@ export const GameSession = memo(({
         activeTeamIds={activeTeamIds}
         answeringTeamLockedIn={answeringTeamLockedIn}
         onUpdateActiveTeamIds={onUpdateActiveTeamIds}
+        showQRCode={showQRCode}
       />
     </Suspense>
   );

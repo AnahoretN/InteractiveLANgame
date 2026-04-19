@@ -40,6 +40,13 @@ export interface BuzzerState {
   responseTimerRemaining: number;
   handicapActive: boolean;
   handicapTeamId?: string; // Team that has handicap (leader)
+  isPaused?: boolean; // Whether the timer is paused by host
+  readingTimeTotal?: number; // Total reading time for progress bar calculation
+  responseTimeTotal?: number; // Total response time for progress bar calculation
+  // Color information from host (authoritative)
+  timerColor?: 'yellow' | 'green' | 'gray';
+  timerBarColor?: string;
+  timerTextColor?: string;
 }
 
 export interface GamePlayProps {

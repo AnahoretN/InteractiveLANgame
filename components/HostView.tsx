@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from './Button';
-import { Smartphone, ArrowRight, Settings, Users, Activity, Copy, RefreshCw, Plus, Check } from 'lucide-react';
+import { Smartphone, ArrowRight, Settings, Users, Activity, Copy, RefreshCw, Plus, Check, Crown, Monitor } from 'lucide-react';
 import { Team, P2PSMessage, BuzzEventMessage, MessageCategory, BroadcastMessage, TeamsSyncMessage, CommandsListMessage, GetCommandsMessage } from '../types';
 import { useSessionSettings } from '../hooks/useSessionSettings';
 import { useP2PHost } from '../hooks/useP2PHost';
@@ -52,6 +52,10 @@ export const HostView: React.FC = () => {
   });
 
   const [isSessionActive, setIsSessionActive] = useState<boolean>(false);
+  // Ref to always have current value in callbacks without dependency issues
+  const isSessionActiveRef = useRef<boolean>(false);
+  isSessionActiveRef.current = isSessionActive;
+
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isLanMode, setIsLanMode] = useState<boolean>(true);
   const [ipInput, setIpInput] = useState<string>(() => {
@@ -144,6 +148,7 @@ export const HostView: React.FC = () => {
 
   // Link copy animation state
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
+  const [screenLinkCopied, setScreenLinkCopied] = useState<boolean>(false);
 
   // Track which teams have buzzed (for visual flash effect) - only tracks recent buzzes
   const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
@@ -169,12 +174,14 @@ export const HostView: React.FC = () => {
     responseTimerRemaining: number;
     handicapActive: boolean;
     handicapTeamId?: string;
+    isPaused?: boolean;
   }>({
     active: false,
     timerPhase: 'inactive',
     readingTimerRemaining: 0,
     responseTimerRemaining: 0,
-    handicapActive: false
+    handicapActive: false,
+    isPaused: false
   });
 
   // Confirm dialog state
@@ -231,6 +238,7 @@ export const HostView: React.FC = () => {
 
   // QR Code display
   const [showQRCode, setShowQRCode] = useState<boolean>(false);
+  const [qrCodePosition, setQrCodePosition] = useState<{ x: number; y: number } | undefined>(undefined);
 
   // Handle save from game selector modal
   const handleSaveGameSelection = useCallback((gameType: GameType, packIds: string[], packs: GamePack[]) => {
@@ -635,16 +643,85 @@ export const HostView: React.FC = () => {
           break;
         }
         case 'STATE_SYNC_REQUEST': {
+          console.log('[HostView] STATE_SYNC_REQUEST received from:', peerId);
           // Client requested full state sync - trigger GamePlay to broadcast current state
           // Increment trigger to cause GamePlay to rebroadcast current state
           setStateSyncTrigger(prev => prev + 1);
+
+          // Send immediate state sync for screen view with full current state
+          console.log('[HostView] Sending state to client:', peerId, 'Session active:', isSessionActiveRef.current);
+          const stateSync = {
+            category: MessageCategory.SYNC,
+            type: 'STATE_SYNC',
+            payload: {
+              isSessionActive: isSessionActiveRef.current,
+              buzzerState: buzzerState,
+              teams: teams || [], // Ensure teams is always an array, never undefined
+              clients: Array.from(clients.values())
+                .filter((client: ConnectedClient) => !client.id.startsWith('screen_')) // Exclude ScreenView
+                .map((client: ConnectedClient) => ({
+                id: client.id,
+                name: client.name,
+                teamId: client.teamId,
+                connectionQuality: client.connectionQuality
+              })),
+              currentQuestion: null,
+              answeringTeamId: answeringTeamId,
+              activeTeamIds: Array.from(activeTeamIds), // Convert Set to Array
+              answeringTeamLockedIn: answeringTeamLockedIn
+            }
+          };
+          console.log('[HostView] Sending state sync payload:', stateSync);
+          p2pHost.sendToClient(peerId, stateSync);
+          console.log('[HostView] State sync sent successfully');
+          break;
+        }
+        case 'MODERATOR_ACTION': {
+          // Handle moderator control actions
+          console.log('[HostView] Moderator action received:', message.payload);
+          const { action, data } = message.payload;
+
+          // Handle different moderator actions
+          switch (action) {
+            case 'correct_answer':
+              // Award points to answering team
+              if (answeringTeamId) {
+                console.log('[HostView] Moderator: Correct answer for team', answeringTeamId);
+                // Trigger correct answer logic in GameSession via state change
+                // This will be handled by GameSession component
+              }
+              break;
+            case 'incorrect_answer':
+              // Deduct points from answering team
+              if (answeringTeamId) {
+                console.log('[HostView] Moderator: Incorrect answer for team', answeringTeamId);
+              }
+              break;
+            case 'show_answer':
+              // Show the correct answer
+              console.log('[HostView] Moderator: Show answer requested');
+              break;
+            case 'start_question':
+            case 'skip_question':
+            case 'award_points':
+            case 'deduct_points':
+            case 'timer_control':
+              console.log('[HostView] Moderator action:', action, data);
+              break;
+          }
           break;
         }
         default:
                       }
-                  }, [updateClients, superGameBets, superGameAnswers]),
+                  }, [updateClients, superGameBets, superGameAnswers, isSessionActive, buzzerState, teams, clients, answeringTeamId, activeTeamIds, answeringTeamLockedIn, sessionSettings, clashOccurredForQuestion]),
     onClientConnected: useCallback((clientId: string, data: { name: string; teamId?: string; persistentClientId?: string }) => {
       console.log('[HostView] Client connected via handshake:', clientId, 'name:', data.name, 'persistentId:', data.persistentClientId, 'teamId:', data.teamId);
+
+      // Check if this is a ScreenView - don't add to client list
+      if (data.name === 'ScreenView' || (data.persistentClientId && data.persistentClientId.startsWith('screen_'))) {
+        console.log('[HostView] ScreenView detected, not adding to client list');
+        return;
+      }
 
       // Note: Sending commands to new client is handled by useEffect below
       // to avoid circular dependency with p2pHost initialization
@@ -752,6 +829,83 @@ export const HostView: React.FC = () => {
     commands,
     p2pHost,
   });
+
+  // Broadcast clients state to ScreenView when clients change
+  useEffect(() => {
+    if (p2pHost.isReady && clients.size > 0) {
+      const clientsArray = Array.from(clients.values())
+        .filter((client: ConnectedClient) => !client.id.startsWith('screen_')) // Exclude ScreenView
+        .map((client: ConnectedClient) => ({
+          id: client.id,
+          name: client.name,
+          teamId: client.teamId,
+          connectionQuality: client.connectionQuality
+        }));
+
+      p2pHost.broadcast({
+        category: 'sync' as MessageCategory,
+        type: 'STATE_SYNC',
+        payload: {
+          isSessionActive: isSessionActiveRef.current,
+          clients: clientsArray,
+          teams: teams,
+          buzzerState: buzzerState // Include buzzerState to prevent timer jumping on demo screen
+        }
+      });
+    }
+  }, [clients, teams, p2pHost.isReady, p2pHost.broadcast]);
+
+  // Broadcast session state change separately when isSessionActive changes
+  useEffect(() => {
+    if (p2pHost.isReady) {
+      const clientsArray = Array.from(clients.values())
+        .filter((client: ConnectedClient) => !client.id.startsWith('screen_'))
+        .map((client: ConnectedClient) => ({
+        id: client.id,
+        name: client.name,
+        teamId: client.teamId,
+        connectionQuality: client.connectionQuality
+      }));
+
+      p2pHost.broadcast({
+        category: 'sync' as MessageCategory,
+        type: 'STATE_SYNC',
+        payload: {
+          isSessionActive: isSessionActiveRef.current,
+          clients: clientsArray,
+          teams: teams,
+          buzzerState: buzzerState // Include buzzerState to prevent timer jumping on demo screen
+        }
+      });
+      console.log('[HostView] Broadcasted session state change:', isSessionActiveRef.current, 'to', clientsArray.length, 'clients');
+    }
+  }, [isSessionActive, p2pHost.isReady, p2pHost.broadcast, teams, clients]);
+
+  // Broadcast COMMANDS_LIST when commands change (for immediate ScreenView update)
+  useEffect(() => {
+    if (p2pHost.isReady) {
+      console.log('[HostView] Broadcasting commands list:', commands.length, 'commands');
+
+      // Convert commands to teams format for ScreenView
+      const teamsFromCommands = commands.map(cmd => {
+        const existingTeam = teams.find(t => t.id === cmd.id);
+        return existingTeam || {
+          id: cmd.id,
+          name: cmd.name,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now()
+        };
+      });
+
+      p2pHost.broadcast({
+        category: 'sync' as MessageCategory,
+        type: 'COMMANDS_LIST',
+        payload: {
+          commands: commands
+        }
+      });
+    }
+  }, [commands, p2pHost.isReady, p2pHost.broadcast]);
 
   // Broadcast buzzer state to all clients
   useEffect(() => {
@@ -916,6 +1070,17 @@ export const HostView: React.FC = () => {
     // Reload page to start fresh
     window.location.reload();
   }, []);
+
+  // Handle copy screen link
+  const handleCopyScreenLink = useCallback(() => {
+    if (!finalQrUrl) return;
+
+    // Replace #/mobile with #/screen
+    const screenUrl = finalQrUrl.replace('#/mobile', '#/screen');
+    navigator.clipboard.writeText(screenUrl);
+    setScreenLinkCopied(true);
+    setTimeout(() => setScreenLinkCopied(false), 2000);
+  }, [finalQrUrl]);
 
   // Helper to merge selected packs into a single session pack
   const mergedSessionPack = useMemo((): GamePack | undefined => {
@@ -1181,16 +1346,39 @@ export const HostView: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showQRCode]);
 
-  // Calculate stats
+  // Broadcast QR code state and position to ScreenView
+  useEffect(() => {
+    if (p2pHost.isReady) {
+      p2pHost.broadcast({
+        category: 'state' as MessageCategory,
+        type: 'QR_CODE_STATE',
+        payload: {
+          showQRCode: showQRCode,
+          position: qrCodePosition
+        }
+      });
+    }
+  }, [showQRCode, qrCodePosition, p2pHost.isReady, p2pHost.broadcast]);
+
+  // Calculate stats (excluding ScreenView)
   const clientStats = useMemo(() => {
-    const clientsArray = Array.from(clients.values()) as ConnectedClient[];
+    const clientsArray = Array.from(clients.values()).filter(client => !client.id.startsWith('screen_')) as ConnectedClient[];
     const active = clientsArray.length;
     const avgQuality = 100; // Default quality when no network
     return { active, total: clientsArray.length, avgQuality: Math.round(avgQuality) };
   }, [clients]);
 
   // Helper function to broadcast buzzer state (kept for interface compatibility)
-  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string }) => {
+  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused?: boolean; readingTimeTotal?: number; responseTimeTotal?: number }) => {
+    console.log('[HostView] BUZZER_STATE received:', {
+      timerPhase: state.timerPhase,
+      readingTimerRemaining: state.readingTimerRemaining,
+      responseTimerRemaining: state.responseTimerRemaining,
+      readingTimeTotal: state.readingTimeTotal,
+      responseTimeTotal: state.responseTimeTotal,
+      isPaused: state.isPaused
+    });
+
     // Store buzzer state locally for GameSession
     setBuzzerState({
       active: state.active,
@@ -1198,7 +1386,8 @@ export const HostView: React.FC = () => {
       readingTimerRemaining: state.readingTimerRemaining,
       responseTimerRemaining: state.responseTimerRemaining,
       handicapActive: state.handicapActive,
-      handicapTeamId: state.handicapTeamId
+      handicapTeamId: state.handicapTeamId,
+      isPaused: state.isPaused
     });
 
     // IMMEDIATE broadcast to clients - don't wait for useEffect
@@ -1231,6 +1420,8 @@ export const HostView: React.FC = () => {
 
   // Helper function to broadcast arbitrary message (kept for interface compatibility)
   const broadcastMessage = useCallback((message: unknown) => {
+    console.log('[HostView] broadcastMessage called with:', message);
+
     // Broadcast via P2P to all connected clients
     if (p2pHost.isReady) {
       // Convert to P2P message format
@@ -1239,7 +1430,11 @@ export const HostView: React.FC = () => {
         type: 'BROADCAST',
         payload: message
       };
+
+      console.log('[HostView] Broadcasting BROADCAST message:', broadcastMsg);
       p2pHost.broadcast(broadcastMsg);
+    } else {
+      console.log('[HostView] P2P host not ready, broadcast skipped');
     }
   }, [p2pHost.isReady, p2pHost.broadcast]);
 
@@ -1253,19 +1448,18 @@ export const HostView: React.FC = () => {
 
   // Delete a team
   const deleteTeam = useCallback((teamId: string) => {
-    setTeams(prev => {
-      const updated = prev.filter(t => t.id !== teamId);
-      // Remove team from all clients
-      setClients(clientsPrev => {
-        clientsPrev.forEach((client, clientId) => {
-          if (client.teamId === teamId) {
-            client.teamId = undefined;
-          }
-        });
-        return clientsPrev;
+    // Remove team from all clients FIRST (before updating teams)
+    setClients(clientsPrev => {
+      const updated = new Map(clientsPrev);
+      updated.forEach((client) => {
+        if (client.teamId === teamId) {
+          client.teamId = undefined;
+        }
       });
       return updated;
     });
+    // Remove from teams array
+    setTeams(prev => prev.filter(t => t.id !== teamId));
   }, []);
 
   // Rename a team
@@ -1450,7 +1644,22 @@ export const HostView: React.FC = () => {
                   </>
                 )}
               </div>
-              <div className="mt-6 text-center z-10 flex items-center gap-2">
+              <div className="mt-6 text-center z-10 flex items-center justify-center gap-2">
+                {/* Screen link button - square, icon only */}
+                <button
+                  onClick={handleCopyScreenLink}
+                  disabled={!finalQrUrl}
+                  title="Скопировать ссылку для экрана демонстрации"
+                  className={`relative flex items-center justify-center w-14 h-14 rounded-lg transition-all duration-200 ${
+                    screenLinkCopied
+                      ? 'bg-white text-blue-600'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
+                  }`}
+                >
+                  <Monitor className="w-7 h-7" />
+                </button>
+
+                {/* Main invitation link button */}
                 <button
                   onClick={() => {
                     if (finalQrUrl) {
@@ -1483,20 +1692,17 @@ export const HostView: React.FC = () => {
                    </h2>
                    <div className="flex items-center gap-2">
                      <div className="bg-gray-800 px-6 py-3 rounded-full text-base font-mono text-blue-400 border border-blue-500/20">
-                       {clients.size} Ready
+                       {Array.from(clients.values()).filter(client => !client.id.startsWith('screen_')).length} Ready
                      </div>
-                     {clients.size > 0 && (
-                       <div className={`px-6 py-3 rounded-full text-base font-mono border ${getHealthBgColor(clientStats.avgQuality)}`}>
-                         <Activity className="w-5 h-5 inline mr-1" /> {clientStats.avgQuality}%
-                       </div>
-                     )}
                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1.5 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
                    {sessionSettings.noTeamsMode ? (
-                     // No Teams Mode - show all players individually
-                     Array.from(clients.values()).map((client: ConnectedClient) => (
+                     // No Teams Mode - show all players individually (excluding ScreenView)
+                     Array.from(clients.values())
+                       .filter((client: ConnectedClient) => !client.id.startsWith('screen_')) // Exclude ScreenView
+                       .map((client: ConnectedClient) => (
                        <SimpleClientItem
                          key={client.id}
                          client={client}
@@ -1563,6 +1769,7 @@ export const HostView: React.FC = () => {
                          onDragOver={handleDragOver}
                          onDrop={() => handleDropOnTeam(undefined)}
                          buzzedClients={buzzedClients}
+                         buzzingClientIds={buzzingClientIds}
                          isStale={() => false}
                          draggedClientId={draggedClientId}
                          onDragStart={handleDragStart}
@@ -1694,6 +1901,16 @@ export const HostView: React.FC = () => {
           initialSelectedPackIds={selectedPackIds}
           initialPacks={selectedPacks}
         />
+
+        {/* Confirm Dialog */}
+        <ConfirmDialog
+          isOpen={confirmDialog.isOpen}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          type={confirmDialog.type}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+        />
       </div>
     );
   }
@@ -1710,7 +1927,10 @@ export const HostView: React.FC = () => {
           lateBuzzTeamIds={lateBuzzTeamIds}
           status={status}
           isOnline={isOnline}
-          onBackToLobby={() => setIsSessionActive(false)}
+          showQRCode={showQRCode}
+          onBackToLobby={() => {
+            setIsSessionActive(false);
+          }}
           onClearBuzz={() => setBuzzedClients(new Map())}
           onBuzzerStateChange={handleBuzzerStateChange}
           buzzerState={buzzerState}
@@ -1753,6 +1973,7 @@ export const HostView: React.FC = () => {
         hostId={hostId}
         isVisible={showQRCode}
         onClose={() => setShowQRCode(false)}
+        onPositionChange={setQrCodePosition}
       />
     </>
   );

@@ -29,6 +29,8 @@ export const STORAGE_KEYS = {
   CURRENT_TEAM_NAME: 'ilan_current_team_name',
   CURRENT_TEAM_SCORE: 'ilan_current_team_score',
   CLIENT_ID: 'ilan_client_id',
+  MODERATOR_ID: 'ilan_moderator_id',
+  SCREEN_ID: 'ilan_screen_id',
   CURRENT_SCREEN: 'ilan_current_screen',
   // Super Game state for reconnection
   SUPER_GAME_PHASE: 'ilan_super_game_phase',

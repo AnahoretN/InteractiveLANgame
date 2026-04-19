@@ -29,6 +29,7 @@ interface P2PClientConfig {
   signallingUrl?: string;
   persistentClientId?: string;  // Stored client ID for reconnection
   currentTeamId?: string;        // Current team ID (if any)
+  isModerator?: boolean;         // Special flag for moderator connection
   onMessage?: (message: P2PSMessage) => void;
   onConnectionChange?: (state: ClientConnectionState, quality: ConnectionQuality) => void;
   onError?: (error: Error) => void;
@@ -225,7 +226,8 @@ export const useP2PClient = (config: P2PClientConfig) => {
             clientName: configRefs.current.clientName,
             protocolVersion: PROTOCOL_VERSION,
             persistentClientId: configRefs.current.persistentClientId,
-            currentTeamId: configRefs.current.currentTeamId
+            currentTeamId: configRefs.current.currentTeamId,
+            isModerator: configRefs.current.isModerator || false
           }
         };
 
@@ -377,9 +379,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
   // Return connection state and quality for external checking
   const isConnected = connectionState === ClientConnectionState.CONNECTED;
   const isConnecting = connectionState === ClientConnectionState.CONNECTING || connectionState === ClientConnectionState.RECONNECTING;
-
-  // Log connection state for debugging
-  console.log('[P2P Client] State check - connectionState:', connectionState, 'isConnected:', isConnected, 'conn.open:', connectionRef.current?.open);
 
   return {
     connectionState,

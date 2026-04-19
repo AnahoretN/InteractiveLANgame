@@ -9,7 +9,7 @@ import { X } from 'lucide-react';
 export interface BaseModalProps {
   isOpen: boolean;
   onClose: () => void;
-  title: string;
+  title?: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
   maxWidth?: string;
@@ -32,21 +32,34 @@ export const BaseModal = memo(({
   return (
     <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 cursor-default ${className}`}>
       <div className={`bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-6 w-full ${maxWidth} animate-in zoom-in-95 duration-200 cursor-default`}>
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            {icon && <span className="text-blue-400">{icon}</span>}
-            {title}
-          </h2>
-          {showCloseButton && (
+        {title && (
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              {icon && <span className="text-blue-400">{icon}</span>}
+              {title}
+            </h2>
+            {showCloseButton && (
+              <button
+                onClick={onClose}
+                className="p-1 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors"
+                aria-label={`Close ${title}`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+        )}
+        {!title && showCloseButton && (
+          <div className="flex justify-end mb-4">
             <button
               onClick={onClose}
               className="p-1 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors"
-              aria-label={`Close ${title}`}
+              aria-label="Close"
             >
               <X className="w-5 h-5" />
             </button>
-          )}
-        </div>
+          </div>
+        )}
         {children}
       </div>
     </div>

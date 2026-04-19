@@ -11,13 +11,15 @@ interface TimerDisplayProps {
   readingTimeRemaining: number;
   responseTimeRemaining: number;
   totalTime?: number;
+  isPaused?: boolean;
 }
 
 export const TimerDisplay = memo(({
   phase,
   readingTimeRemaining,
   responseTimeRemaining,
-  totalTime
+  totalTime,
+  isPaused = false
 }: TimerDisplayProps) => {
   const formatTime = (ms: number): string => {
     const seconds = Math.ceil(ms / 1000);

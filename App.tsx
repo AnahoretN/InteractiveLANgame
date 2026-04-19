@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { HostView } from './components/HostView';
 import { MobileView } from './components/MobileView';
+import { ScreenView } from './components/ScreenView';
 
 const App: React.FC = () => {
   const [route, setRoute] = useState<string>('host');
@@ -10,6 +11,8 @@ const App: React.FC = () => {
       const hash = window.location.hash;
       if (hash.startsWith('#/mobile')) {
         setRoute('mobile');
+      } else if (hash.startsWith('#/screen')) {
+        setRoute('screen');
       } else {
         setRoute('host');
       }
@@ -25,7 +28,9 @@ const App: React.FC = () => {
 
   return (
     <div className="bg-gray-950 min-h-screen text-gray-100">
-      {route === 'host' ? <HostView /> : <MobileView />}
+      {route === 'host' ? <HostView /> :
+       route === 'screen' ? <ScreenView /> :
+       <MobileView />}
     </div>
   );
 };

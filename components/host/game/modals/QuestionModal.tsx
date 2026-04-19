@@ -5,7 +5,7 @@
  */
 
 import React, { memo, useState, useEffect, useRef } from 'react';
-import { Music } from 'lucide-react';
+import { Music, Play, Pause, Check, X, SkipForward } from 'lucide-react';
 import type { Question, Theme } from '../../PackEditor';
 import type { TeamScore } from '../../../../types';
 import {
@@ -42,6 +42,7 @@ export interface QuestionModalProps {
   onClose: () => void;
   onScoreChange: (change: 'wrong' | 'correct') => void;
   onShowAnswer?: () => void;
+  onNext?: () => void;  // Show answer and move to next question
   scoreChangeType: 'wrong' | 'correct' | null;
   // Timer settings
   readingTimePerLetter: number;
@@ -50,6 +51,8 @@ export interface QuestionModalProps {
   handicapDelay: number;
   answeringTeamId?: string | null;  // Team that gets to answer question
   roundName?: string;
+  onBuzzerStateChange?: (state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused: boolean }) => void;
+  onTimerPauseChange?: (isPaused: boolean) => void;  // Notify parent about timer pause state changes
 }
 
 export const QuestionModal = memo(({
@@ -62,6 +65,7 @@ export const QuestionModal = memo(({
   onClose: _onClose,
   onScoreChange,
   onShowAnswer,
+  onNext,
   scoreChangeType,
   readingTimePerLetter,
   responseWindow,
@@ -69,6 +73,8 @@ export const QuestionModal = memo(({
   handicapDelay,
   answeringTeamId,
   roundName,
+  onBuzzerStateChange,
+  onTimerPauseChange,
 }: QuestionModalProps) => {
   const mediaUrl = question.media?.url;
   const mediaType = question.media?.type;
@@ -122,6 +128,28 @@ export const QuestionModal = memo(({
   const audioRef = useRef<HTMLAudioElement>(null);
   const youtubeRef = useRef<HTMLIFrameElement>(null);
 
+  // Refs for current timer values to avoid stale closures in periodic updates
+  const timerValuesRef = useRef({
+    readingTimerRemaining,
+    responseTimerRemaining,
+    timerPhase,
+    isManuallyPaused,
+    readingTime,
+    responseWindow
+  });
+
+  // Update refs when values change
+  useEffect(() => {
+    timerValuesRef.current = {
+      readingTimerRemaining,
+      responseTimerRemaining,
+      timerPhase,
+      isManuallyPaused,
+      readingTime,
+      responseWindow
+    };
+  }, [readingTimerRemaining, responseTimerRemaining, timerPhase, isManuallyPaused, readingTime, responseWindow]);
+
   // Reset timers when question changes
   useEffect(() => {
     // Calculate reading time considering media files
@@ -138,14 +166,38 @@ export const QuestionModal = memo(({
     setHandicapTimerRemaining(0);
     setTimerPhase(newReadingTime > 0 ? 'reading' : 'response');
 
-    // If question has media, wait for first play before starting timer
-    setWaitingForFirstMediaPlay(hasQuestionMedia);
-    setIsManuallyPaused(false);
+    // If question has media, start with timer paused
+    const shouldStartPaused = hasQuestionMedia;
+    setWaitingForFirstMediaPlay(false);  // Don't wait for media play anymore
+    setIsManuallyPaused(shouldStartPaused);
     setIsMediaPlaying(false);
     setIsMediaPaused(false);
 
-    console.log('🔄 Question reset - waiting for first media play:', hasQuestionMedia);
-  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia]);
+    console.log('🔄 Question reset - starting with pause:', shouldStartPaused);
+
+    // Immediately send initial timer state to demo screen for ALL questions
+    const initialState = {
+      active: true,
+      timerPhase: newReadingTime > 0 ? 'reading' : 'response',
+      readingTimerRemaining: newReadingTime,
+      responseTimerRemaining: responseWindow,
+      handicapActive: false,
+      handicapTeamId: undefined,
+      isPaused: shouldStartPaused,
+      readingTimeTotal: newReadingTime,
+      responseTimeTotal: responseWindow
+    };
+
+    console.log('🎬 Sending initial timer state to demo screen:', {
+      readingTime: newReadingTime,
+      responseTime: responseWindow,
+      isPaused: shouldStartPaused,
+      timerPhase: newReadingTime > 0 ? 'reading' : 'response',
+      fullState: initialState
+    });
+
+    onBuzzerStateChange?.(initialState);
+  }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia, onBuzzerStateChange]);
 
   // Auto-show answer when correct answer is given
   useEffect(() => {
@@ -169,19 +221,9 @@ export const QuestionModal = memo(({
     // Don't run if complete
     if (timerPhase === 'complete') return;
 
-    // Pause timer when manually paused
+    // Pause timer when manually paused - button is the only authority
     if (isManuallyPaused) {
       return; // Don't run timer when manually paused
-    }
-
-    // Pause timer when waiting for first media play
-    if (waitingForFirstMediaPlay) {
-      return; // Don't run timer while waiting for first media play
-    }
-
-    // Pause timer when media is playing (for audio/video/youtube)
-    if (isMediaPlaying && !isMediaPaused) {
-      return; // Don't run timer while media is playing
     }
 
     // Reading phase timer
@@ -218,7 +260,28 @@ export const QuestionModal = memo(({
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay, isMediaPlaying, isMediaPaused, waitingForFirstMediaPlay, isManuallyPaused]);
+  }, [timerPhase, readingTime, responseWindow, showAnswer, handicapEnabled, handicapDelay, isManuallyPaused]);
+
+  // NO periodic updates - demo screen handles countdown locally
+  // Only send updates on important state changes
+
+  // Immediately send state update when timer phase changes
+  useEffect(() => {
+    if (showAnswer || timerPhase === 'complete') return;
+
+    console.log('🔄 Timer phase changed:', timerPhase, '- sending immediate update');
+    onBuzzerStateChange?.({
+      active: true,
+      timerPhase: timerPhase,
+      readingTimerRemaining: Math.max(0, readingTimerRemaining),
+      responseTimerRemaining: Math.max(0, responseTimerRemaining),
+      handicapActive: false,
+      handicapTeamId: undefined,
+      isPaused: isManuallyPaused,
+      readingTimeTotal: readingTime,
+      responseTimeTotal: responseWindow
+    });
+  }, [timerPhase]); // Only depends on timerPhase - sends update on phase change
 
   // Calculate progress for timer visualization - each timer fills bar independently
   const timerProgress = (() => {
@@ -326,10 +389,9 @@ export const QuestionModal = memo(({
     if (!video) return;
 
     const handlePlay = () => {
-      console.log('🎬 Video started playing - pausing timer');
+      console.log('🎬 Video started playing');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
-      setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
       // Unmute video after it starts playing (autoplay requires muted)
       if (video.muted) {
         video.muted = false;
@@ -337,7 +399,7 @@ export const QuestionModal = memo(({
     };
 
     const handlePause = () => {
-      console.log('⏸️ Video paused - resuming timer');
+      console.log('⏸️ Video paused');
       setIsMediaPaused(true);
     };
 
@@ -356,7 +418,7 @@ export const QuestionModal = memo(({
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('ended', handleEnded);
     };
-  }, []);
+  }, [timerPhase, readingTimerRemaining, responseTimerRemaining]);
 
   // Media event handlers for audio
   useEffect(() => {
@@ -364,19 +426,18 @@ export const QuestionModal = memo(({
     if (!audio) return;
 
     const handlePlay = () => {
-      console.log('🎵 Audio started playing - pausing timer');
+      console.log('🎵 Audio started playing');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
-      setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
     };
 
     const handlePause = () => {
-      console.log('⏸️ Audio paused - resuming timer');
+      console.log('⏸️ Audio paused');
       setIsMediaPaused(true);
     };
 
     const handleEnded = () => {
-      console.log('✅ Audio ended - resuming timer');
+      console.log('✅ Audio ended');
       setIsMediaPlaying(false);
       setIsMediaPaused(false);
     };
@@ -390,7 +451,7 @@ export const QuestionModal = memo(({
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('ended', handleEnded);
     };
-  }, []);
+  }, [timerPhase, readingTimerRemaining, responseTimerRemaining]);
 
   // Reset media state when question changes
   useEffect(() => {
@@ -457,16 +518,15 @@ export const QuestionModal = memo(({
             if (state === window.YT.PlayerState.PLAYING) {
               setIsMediaPlaying(true);
               setIsMediaPaused(false);
-              setWaitingForFirstMediaPlay(false); // First play started, timer can run after pause/end
-              console.log('▶️ YouTube video started playing - timers paused');
+              console.log('▶️ YouTube video started playing');
             } else if (state === window.YT.PlayerState.PAUSED) {
               setIsMediaPlaying(false);
               setIsMediaPaused(true);
-              console.log('⏸️ YouTube video paused - timers resumed');
+              console.log('⏸️ YouTube video paused');
             } else if (state === window.YT.PlayerState.ENDED) {
               setIsMediaPlaying(false);
               setIsMediaPaused(false);
-              console.log('🏁 YouTube video ended - timers resumed');
+              console.log('🏁 YouTube video ended');
             } else if (state === window.YT.PlayerState.BUFFERING) {
               // Buffering - keep playing state
               console.log('⏳ YouTube video buffering');
@@ -564,12 +624,12 @@ export const QuestionModal = memo(({
               )}
               <div className="text-lg font-bold text-white">{theme.name}</div>
               {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) && (
-                <div className="text-xl font-bold text-white">
+                <div className="text-xl font-bold text-white flex items-center gap-2">
                   {timerPhase === 'reading' && (
-                    <span className="text-yellow-300">{readingTimerRemaining.toFixed(1)}s</span>
+                    <span className="text-yellow-300">{readingTimerRemaining.toFixed(1)}s{isManuallyPaused && <span className="text-red-400 text-sm font-bold ml-2">[PAUSED]</span>}</span>
                   )}
                   {timerPhase === 'response' && (
-                    <span className="text-green-300">{responseTimerRemaining.toFixed(1)}s</span>
+                    <span className="text-green-300">{responseTimerRemaining.toFixed(1)}s{isManuallyPaused && <span className="text-red-400 text-sm font-bold ml-2">[PAUSED]</span>}</span>
                   )}
                 </div>
               )}
@@ -792,19 +852,110 @@ export const QuestionModal = memo(({
           </div>
         </div>
 
-        {/* Status bar - compact */}
-        <div className="h-16 bg-gray-800/50 flex items-center justify-center px-6">
-          {showAnswer && buzzedTeam && (scoreChangeType === 'correct' || scoreChangeType === 'wrong') ? (
-            // Result message
-            <div className="text-2xl font-bold">
-              {scoreChangeType === 'correct' && (
-                <span className="text-green-400">{buzzedTeam.teamName} gets {points} points!</span>
+        {/* Control Panel */}
+        <div className="h-20 bg-gray-800 border-t border-gray-700 flex items-center justify-between px-6">
+          {/* Left: Timer pause/play button */}
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => {
+                setIsManuallyPaused(prev => {
+                  const newState = !prev;
+                  // Notify parent about pause state change
+                  if (onTimerPauseChange) {
+                    onTimerPauseChange(newState);
+                  }
+                  // Immediately send buzzer state update to sync with demo screen
+                  onBuzzerStateChange?.({
+                    active: !newState, // Active when not paused
+                    timerPhase: timerPhase,
+                    readingTimerRemaining: Math.max(0, readingTimerRemaining),
+                    responseTimerRemaining: Math.max(0, responseTimerRemaining),
+                    handicapActive: false,
+                    handicapTeamId: undefined,
+                    isPaused: newState,
+                    readingTimeTotal: readingTime,
+                    responseTimeTotal: responseWindow
+                  });
+                  return newState;
+                });
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-semibold"
+              title={isManuallyPaused ? "Продолжить таймер" : "Пауза таймера"}
+            >
+              {isManuallyPaused ? (
+                <>
+                  <Play className="w-5 h-5" />
+                  <span>Старт</span>
+                </>
+              ) : (
+                <>
+                  <Pause className="w-5 h-5" />
+                  <span>Пауза</span>
+                </>
               )}
-              {scoreChangeType === 'wrong' && (
-                <span className="text-red-400">{buzzedTeam.teamName} loses {points} points!</span>
-              )}
+            </button>
+          </div>
+
+          {/* Center: Answer display */}
+          <div className="flex-1 flex items-center justify-center px-6">
+            <div className="text-xl font-bold text-white">
+              Ответ: <span className="text-yellow-300">
+                {question.answers && question.correctAnswer !== undefined
+                  ? question.answers[question.correctAnswer]
+                  : question.answerText || question.text}
+              </span>
             </div>
-          ) : null}
+          </div>
+
+          {/* Right: Control buttons */}
+          <div className="flex items-center gap-3">
+            {/* Show Answer / Close button */}
+            <button
+              onClick={() => {
+                if (showAnswer) {
+                  _onClose();
+                } else {
+                  onShowAnswer?.();
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors font-semibold"
+              title={showAnswer ? "Закрыть (Escape)" : "Показать ответ (Space)"}
+            >
+              {showAnswer ? (
+                <>
+                  <X className="w-5 h-5" />
+                  <span>Закрыть</span>
+                </>
+              ) : (
+                <>
+                  <SkipForward className="w-5 h-5" />
+                  <span>Показать ответ</span>
+                </>
+              )}
+            </button>
+
+            {/* Correct answer button (=) */}
+            <button
+              onClick={() => onScoreChange('correct')}
+              disabled={!buzzedTeamId && !answeringTeamId}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold"
+              title="Верно (=)"
+            >
+              <Check className="w-5 h-5" />
+              <span>Верно</span>
+            </button>
+
+            {/* Wrong answer button (-) */}
+            <button
+              onClick={() => onScoreChange('wrong')}
+              disabled={!buzzedTeamId && !answeringTeamId}
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold"
+              title="Не верно (-)"
+            >
+              <X className="w-5 h-5" />
+              <span>Не верно</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

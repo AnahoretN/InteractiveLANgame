@@ -141,6 +141,29 @@ export interface BuzzerStateMessage extends P2PMessage {
     handicapActive: boolean;
     handicapTeamId?: string;
     buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
+    isPaused?: boolean; // Whether the timer is paused by host
+  };
+}
+
+// STATE: QR code state changes
+export interface QRCodeStateMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'QR_CODE_STATE';
+  payload: {
+    showQRCode: boolean;
+    position?: { x: number; y: number };
+  };
+}
+
+// STATE: Timer control for explicit timer management
+export interface TimerControlMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'TIMER_CONTROL';
+  payload: {
+    action: 'start' | 'pause' | 'resume' | 'stop' | 'switch';
+    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
+    readingTimerRemaining?: number;
+    responseTimerRemaining?: number;
   };
 }
 
@@ -190,6 +213,7 @@ export interface StateSyncMessage extends P2PMessage {
       responseTimerRemaining: number;
       handicapActive: boolean;
       handicapTeamId?: string;
+      isPaused?: boolean; // Whether the timer is paused by host
     };
     sessionVersion: string;
     teams: Array<{ id: string; name: string; score?: number }>;
@@ -207,6 +231,7 @@ export interface HandshakeMessage extends P2PMessage {
     protocolVersion: string;
     persistentClientId?: string;  // Stored client ID for reconnection
     currentTeamId?: string;         // Current team ID (if any)
+    isModerator?: boolean;          // Special flag for moderator connection
   };
 }
 
@@ -289,12 +314,50 @@ export interface StateSyncRequestMessage extends P2PMessage {
   payload: {};
 }
 
+// CONTROL: Moderator control actions
+export interface ModeratorActionMessage extends P2PMessage {
+  category: MessageCategory.CONTROL;
+  type: 'MODERATOR_ACTION';
+  payload: {
+    action: 'correct_answer' | 'incorrect_answer' | 'show_answer' |
+            'start_question' | 'skip_question' | 'award_points' |
+            'deduct_points' | 'timer_control';
+    data?: any;
+  };
+}
+
+// STATE: Media file transfer from host to screen
+export interface MediaTransferMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'MEDIA_TRANSFER';
+  payload: {
+    mediaId: string;           // Unique media ID
+    mediaType: 'image' | 'video' | 'audio' | 'youtube';
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+    fileData?: string;         // Base64 encoded file data (for local files)
+    url?: string;              // Direct URL (for YouTube or external links)
+    isYouTube: boolean;        // True if this is a YouTube link
+  };
+}
+
+// SYNC: Request media file from host
+export interface MediaRequestMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'MEDIA_REQUEST';
+  payload: {
+    mediaId: string;
+  };
+}
+
 // Union type for all P2P messages
 export type P2PSMessage =
   | TeamStateMessage
   | TeamConfirmedMessage
   | ScoreStateMessage
   | BuzzerStateMessage
+  | TimerControlMessage
   | BuzzEventMessage
   | SuperGameBetMessage
   | SuperGameAnswerMessage
@@ -308,7 +371,10 @@ export type P2PSMessage =
   | TeamsSyncMessage
   | CommandsListMessage
   | GetCommandsMessage
-  | StateSyncRequestMessage;
+  | StateSyncRequestMessage
+  | ModeratorActionMessage
+  | MediaTransferMessage
+  | MediaRequestMessage;
 
 // Message handler type
 export type MessageHandler = (message: P2PSMessage, peerId: string) => void;
