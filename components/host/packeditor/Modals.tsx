@@ -11,15 +11,16 @@ export interface BaseModalProps {
   onClose: () => void;
   title: string;
   children: ReactNode;
-  maxWidth?: 'max-w-sm' | 'max-w-md' | 'max-w-lg' | 'max-w-xl' | 'max-w-2xl';
+  maxWidth?: 'max-w-sm' | 'max-w-md' | 'max-w-lg' | 'max-w-xl' | 'max-w-2xl' | 'max-w-4xl';
+  customSize?: boolean; // If true, uses 2x width and reduced height
 }
 
-export const BaseModal = memo(({ isOpen, onClose, title, children, maxWidth = 'max-w-md' }: BaseModalProps) => {
+export const BaseModal = memo(({ isOpen, onClose, title, children, maxWidth = 'max-w-md', customSize = false }: BaseModalProps) => {
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className={`bg-gray-900 rounded-xl shadow-2xl border border-gray-700 w-full ${maxWidth} max-h-[90vh] overflow-hidden flex flex-col`}>
+      <div className={`bg-gray-900 rounded-lg shadow-2xl border border-gray-700 w-full ${maxWidth} ${customSize ? 'max-h-[60vh]' : 'max-h-[90vh]'} overflow-hidden flex flex-col`}>
         {/* Header */}
         <div className="flex justify-between items-center p-6 border-b border-gray-700">
           <h2 className="text-xl font-bold text-white">{title}</h2>

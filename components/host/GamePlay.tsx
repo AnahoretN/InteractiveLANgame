@@ -17,7 +17,7 @@
 import React, { memo, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { Volume2 } from 'lucide-react';
-import type { GamePack } from './GameSelectorModal';
+import type { GamePack } from './OptimizedGameSelectorModal';
 import type { Round, Theme, Question } from './PackEditor';
 import { Team } from '../../types';
 import { restorePackBlobUrlsFromStorage, restoreBlobFromStorage } from '../../utils/mediaManager';
@@ -37,7 +37,17 @@ import {
 } from './game';
 import { QuestionModal as ModalQuestionModal } from './game/modals';
 import { SuperGameQuestionModal, SuperGameAnswersModal } from './game/SuperGameModals';
-import { MediaStreamer } from './game/MediaStreamer';
+// DebugMediaStreamer removed - using syncMediaStreamer instead
+import { streamMediaFilesSynchronously, clearTransferredMediaCache } from '../../utils/syncMediaStreamer';
+import { useHostMessageSequencer } from '../../utils/hostMessageSequencer';
+// New team status management system
+import {
+  useTeamStatusManager,
+  useTeamContextMenu,
+  TeamStatus,
+  type TeamState,
+} from '../../hooks/useTeamStatusManager';
+import { TeamCardContextMenu, useTeamCardClicks } from '../shared/TeamCardContextMenu';
 
 interface TeamScore {
   teamId: string;
@@ -68,13 +78,18 @@ interface GamePlayProps {
   onSuperGameMaxBetChange?: (maxBet: number) => void;  // Track max bet for super game
   onRequestStateSync?: () => void;  // Trigger to resend current state to clients
   stateSyncTrigger?: number;  // Trigger value that changes when state sync is requested
-  // Clash mode props
-  clashingTeamIds?: Set<string>;  // Teams that are in clash mode
   // Active/inactive players props
   activeTeamIds?: Set<string>;  // Players who can BUZZ to become answering (active = blue, inactive = white)
   answeringTeamLockedIn?: boolean;  // Answering team is locked (answered incorrectly/correctly)
   onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
   showQRCode?: boolean;  // QR code visibility state
+  sessionSettings?: {  // Session settings for simultaneous buzz
+    simultaneousBuzzEnabled?: boolean;
+    simultaneousBuzzThreshold?: number;
+  };
+  demoScreenConnected?: boolean;  // If true, demo screen controls timer phase transitions
+  switchToResponsePhaseSignal?: number | null;  // Trigger value to switch from reading to response phase (from demo screen)
+  onPhaseSwitchComplete?: () => void;  // Callback to reset the signal after processing
 }
 
 export const GamePlay = memo(({
@@ -96,20 +111,50 @@ export const GamePlay = memo(({
   onSuperGameMaxBetChange,
   onRequestStateSync,
   stateSyncTrigger,
-  clashingTeamIds = new Set(),
   activeTeamIds = new Set(),
   answeringTeamLockedIn = false,
   onUpdateActiveTeamIds,
   showQRCode = false,
+  sessionSettings,
+  demoScreenConnected = false,
+  switchToResponsePhaseSignal,
+  onPhaseSwitchComplete,
 }: GamePlayProps) => {
   // Game state
   const [currentScreen, setCurrentScreen] = useState<GameScreen>('cover');
   const previousScreenRef = useRef<GameScreen>('cover');
   const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
   const [answeredQuestions, setAnsweredQuestions] = useState<Set<string>>(new Set());
+
+  // Stabilize teams prop to prevent unnecessary useEffect recreations
+  const prevTeamsIdsRef = useRef<string>('');
+  const stabilizedTeams = useMemo(() => {
+    const currentIds = teams.map(t => t.id).sort().join(',');
+    if (currentIds !== prevTeamsIdsRef.current) {
+      prevTeamsIdsRef.current = currentIds;
+      return teams;
+    }
+    return (GamePlay as any)._stabilizedTeams || teams;
+  }, [teams]);
+  (GamePlay as any)._stabilizedTeams = stabilizedTeams;
+
   const [teamScores, setTeamScores] = useState<TeamScore[]>(
-    teams.map(t => ({ teamId: t.id, teamName: t.name, score: 0 }))
+    stabilizedTeams.map(t => ({ teamId: t.id, teamName: t.name, score: 0 }))
   );
+
+  // Ref to store teamScores for immediate access in broadcastGameState
+  // This prevents stale closure issues when score changes
+  const teamScoresRef = useRef<TeamScore[]>([]);
+  // Initialize ref with initial state
+  teamScoresRef.current = teamScores;
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    teamScoresRef.current = teamScores;
+  }, [teamScores]);
+
+  // Stabilize teamIds to prevent unnecessary useEffect recreations
+  const teamIds = useMemo(() => stabilizedTeams.map(t => t.id), [stabilizedTeams]);
 
   // Super Game state
   const [selectedSuperThemeId, setSelectedSuperThemeId] = useState<string | null>(null);
@@ -126,20 +171,28 @@ export const GamePlay = memo(({
     roundName?: string;
   } | null>(null);
   const [showAnswer, setShowAnswer] = useState(false);
+  const [showHint, setShowHint] = useState(false);
   const [, setBuzzerActive] = useState(false);
+  const buzzerActiveRef = useRef(false); // Track buzzer active state for sendBuzzerState
   const [highlightedQuestion, setHighlightedQuestion] = useState<string | null>(null);
 
+
+  // Sequence counter for ordered messaging
+  const sequenceCounterRef = useRef(0);
 
   // Refs for timer and cleanup
   const buzzerDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const responseWindowRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stateUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Ref for broadcast throttling (avoid excessive updates)
   const lastBroadcastRef = useRef<number>(0);
   const lastScreenChangeRef = useRef<number>(0);
+  const lastScrollBroadcastRef = useRef<number>(0);
   const broadcastThrottleMs = 100; // Minimum time between broadcasts
   const screenChangeBroadcastMs = 50; // Shorter throttle for screen changes
+  const scrollBroadcastThrottleMs = 35; // Fast throttle for smooth scrolling on demo screen
 
   // Refs for double-press tracking (R/E for round navigation)
   const doublePressRef = useRef<{ lastKey: string; lastTime: number }>({ lastKey: '', lastTime: 0 });
@@ -149,19 +202,34 @@ export const GamePlay = memo(({
   const scrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [themesScrollPosition, setThemesScrollPosition] = useState<number>(0);
 
-  // Ref to track if we're processing a wrong answer (for queue logic)
-  const processingWrongAnswerRef = useRef<boolean>(false);
-
   // Ref to store current response timer remaining value (for checking if buzzer should be reactivated)
   const responseTimerRemainingRef = useRef<number>(0);
-
-  // Ref to store stable callback for updating active team IDs
-  const onUpdateActiveTeamIdsRef = useRef(onUpdateActiveTeamIds);
-  onUpdateActiveTeamIdsRef.current = onUpdateActiveTeamIds;
 
   // Ref to store stable callback for buzzer state changes
   const onBuzzerStateChangeRef = useRef(onBuzzerStateChange);
   onBuzzerStateChangeRef.current = onBuzzerStateChange;
+
+  // ============================================================================
+  // NEW: Team Status Manager
+  // ============================================================================
+  const teamStatusManager = useTeamStatusManager({
+    teamIds: teamIds,
+    onTeamStatesChange: (states) => {
+      // Broadcast team state changes to demo screen
+      // This will be called automatically when team states change
+    },
+    onAnsweringTeamChange: onAnsweringTeamChange,
+    simultaneousBuzzEnabled: sessionSettings?.simultaneousBuzzEnabled ?? true,
+    simultaneousBuzzThreshold: sessionSettings?.simultaneousBuzzThreshold ?? 0.5,
+  });
+
+  // Ref to store teamStatusManager for handleScoreChange to avoid stale closures
+  // MUST be after teamStatusManager declaration
+  const teamStatusManagerRef = useRef(teamStatusManager);
+  teamStatusManagerRef.current = teamStatusManager;
+
+  const teamContextMenu = useTeamContextMenu(teamStatusManager);
+  const teamCardClicks = useTeamCardClicks(teamStatusManager, teamContextMenu, teamStatusManager.isResponseTimerActive);
 
   // Ref to store current buzzer state for broadcastGameState
   const buzzerStateRef = useRef<{
@@ -191,6 +259,27 @@ export const GamePlay = memo(({
     timerTextColor: 'text-gray-300'
   });
 
+  // Ref to store function for switching to response phase (called from demo screen signal)
+  const switchToResponsePhaseRef = useRef<(() => void) | null>(null);
+
+  // Ref to track last processed phase switch signal to prevent duplicate processing
+  const lastProcessedSignalRef = useRef<number | null>(null);
+
+  // Ref to track last broadcast buzzer state (to avoid unnecessary updates)
+  const lastBroadcastBuzzerStateRef = useRef<{
+    active: boolean;
+    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
+    isPaused: boolean;
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+  }>({
+    active: false,
+    timerPhase: 'inactive',
+    isPaused: false,
+    readingTimerRemaining: 0,
+    responseTimerRemaining: 0
+  });
+
   // State for timer pause control
   const [timerPaused, setTimerPaused] = useState(false);
 
@@ -198,19 +287,32 @@ export const GamePlay = memo(({
   const timerPausedRef = useRef(false);
   timerPausedRef.current = timerPaused;
 
+  // Stable session ID for message sequencer (created once to prevent infinite re-renders)
+  const stableSessionId = useMemo(() => `game-session-${Date.now()}`, []);
+
+  // Initialize host message sequencer for ordered messaging
+  const hostSequencer = useHostMessageSequencer({
+    sessionId: stableSessionId,
+    historySize: 1000,
+    debug: false // Set to true for debugging message sequencing
+  });
+
+  // Wrapper for onBroadcastMessage that adds sequence numbers
+  const broadcastMessage = useCallback((message: any) => {
+    if (!onBroadcastMessage) return;
+
+    // Add sequence number to the message
+    // IMPORTANT: Spread message FIRST to preserve type and other fields
+    // Don't add id/timestamp/senderId here - useP2PHost will add them
+    const sequencedMessage = hostSequencer.prepareMessage({
+      ...message  // Just spread the message, let useP2PHost add service fields
+    });
+
+    onBroadcastMessage(sequencedMessage);
+  }, [onBroadcastMessage, hostSequencer]);
+
   // Ref to track when QuestionModal is managing the timer (don't send updates from GamePlay)
   const questionModalActiveRef = useRef(false);
-
-  // Track teams that answered wrong in current question (for red card display)
-  const [wrongAnswerTeams, setWrongAnswerTeams] = useState<Set<string>>(new Set());
-
-  // Track teams that have attempted to answer in current question (for activation/deactivation logic)
-  const [attemptedTeamIds, setAttemptedTeamIds] = useState<Set<string>>(new Set());
-
-  // Refs to track previous Set values for change detection
-  const prevWrongAnswerTeamsRef = useRef<Set<string>>(new Set());
-  const prevActiveTeamIdsRef = useRef<Set<string>>(new Set());
-  const prevClashingTeamIdsRef = useRef<Set<string>>(new Set());
 
   // Track score change type for displaying result message
   const [scoreChangeType, setScoreChangeType] = useState<'wrong' | 'correct' | null>(null);
@@ -234,18 +336,13 @@ export const GamePlay = memo(({
     return pack.rounds[currentRoundIndex];
   }, [pack.rounds, currentRoundIndex]);
 
-  // Auto-select first theme for super rounds (removed selectSuperThemes screen)
+  // Reset super game state when entering selectSuperThemes screen
   useEffect(() => {
-    if (currentScreen === 'round' && currentRound?.type === 'super' && currentRound.themes && currentRound.themes.length > 0) {
-      // Auto-select the first theme for super game
-      if (!selectedSuperThemeId) {
-        setSelectedSuperThemeId(currentRound.themes[0].id);
-      }
+    if (currentScreen === 'selectSuperThemes') {
+      setDisabledSuperThemeIds(new Set());
+      setSelectedSuperThemeId(null);
     }
-  }, [currentScreen, currentRound, selectedSuperThemeId]);
-
-  // Auto-transition from round cover to selectSuperThemes for super rounds - REMOVED
-  // Now requires manual Space press to advance
+  }, [currentScreen]);
 
   // Auto-select the remaining theme when only one is left - NO auto-transition
   // Theme is selected automatically, but screen transition requires manual Space press
@@ -276,10 +373,25 @@ export const GamePlay = memo(({
   } | null>(null);
 
   // Function to broadcast current game state to ScreenView
-  const broadcastGameState = useCallback((force: boolean = false) => {
-    if (!onBroadcastMessage) {
+  const broadcastGameState = useCallback(async (force: boolean = false) => {
+    if (!broadcastMessage) {
       console.log('[GamePlay] broadcastGameState called but onBroadcastMessage is null');
       return;
+    }
+
+    // Use ref value for activeQuestion to avoid stale closures
+    const currentActiveQuestion = lastActiveQuestionRef.current;
+
+    // CRITICAL: Stream media files BEFORE broadcasting game state
+    // This ensures media transfer messages arrive BEFORE game state updates
+    if (currentActiveQuestion) {
+      console.log('[GamePlay] 🎬 Streaming media files before broadcast');
+      await streamMediaFilesSynchronously(
+        { question: currentActiveQuestion.question }, // Pass the actual question object
+        broadcastMessage,
+        '24724687-f15a-4c40-8dd3-dc3be3ae4737' // Use actual host ID
+      );
+      console.log('[GamePlay] ✅ Media streaming completed');
     }
 
     // Throttle broadcasts to avoid excessive updates (max 1 per 100ms)
@@ -305,10 +417,6 @@ export const GamePlay = memo(({
 
     lastBroadcastRef.current = now;
     console.log('[GamePlay] Broadcasting game state' + (force ? ' (FORCED)' : ''));
-
-    // Use ref value for activeQuestion instead of state to avoid stale closures
-    // This ensures we always use the latest activeQuestion value
-    const currentActiveQuestion = lastActiveQuestionRef.current;
 
     // Debug logging for activeQuestion
     if (!currentActiveQuestion && activeQuestion) {
@@ -355,13 +463,29 @@ export const GamePlay = memo(({
     const broadcastScreen = currentActiveQuestion ? 'board' : currentScreen;
     console.log('[GamePlay] Broadcasting screen:', broadcastScreen, '(original:', currentScreen, ')');
     console.log('[GamePlay] Broadcasting with activeQuestion:', !!currentActiveQuestion);
+    if (currentActiveQuestion) {
+      console.log('[GamePlay] Broadcasting activeQuestion details:', {
+        questionId: currentActiveQuestion.question.id,
+        text: currentActiveQuestion.question.text?.slice(0, 30),
+        hasMedia: !!currentActiveQuestion.question.media,
+        hasAnswerMedia: !!currentActiveQuestion.question.answerMedia,
+        points: currentActiveQuestion.points,
+        themeName: currentActiveQuestion.theme.name
+      });
+    }
     console.log('[GamePlay] Broadcasting with showAnswer:', showAnswer);
-    if (!currentActiveQuestion) {
-      console.warn('[GamePlay] ⚠️ Broadcasting without activeQuestion, ref is null');
+    // Only log warning when this is unexpected (not during normal screen changes)
+    if (!currentActiveQuestion && force && currentScreen !== 'cover' && currentScreen !== 'themes') {
+      console.warn('[GamePlay] ⚠️ Forced broadcast without activeQuestion');
     }
 
-    onBroadcastMessage({
+    // Increment sequence counter for this message
+    sequenceCounterRef.current++;
+    const currentSequence = sequenceCounterRef.current;
+
+    const broadcastPayload = {
       type: 'GAME_STATE_UPDATE',
+      sequence: currentSequence, // Add sequence number for ordering
       state: {
         currentScreen: broadcastScreen,
         currentRoundIndex,
@@ -373,40 +497,106 @@ export const GamePlay = memo(({
           points: currentActiveQuestion.points,
           themeName: currentActiveQuestion.theme.name,
           roundName: currentActiveQuestion.roundName,
-          questionId: currentActiveQuestion.question.id // Add question ID for proper comparison
+          questionId: currentActiveQuestion.question.id, // Add question ID for proper comparison
+          // Hint data for demo screen
+          hint: currentActiveQuestion.question.hint ? {
+            text: currentActiveQuestion.question.hint.text,
+            media: currentActiveQuestion.question.hint.media,
+            answers: currentActiveQuestion.question.hint.answers,
+            correctAnswer: currentActiveQuestion.question.hint.correctAnswer
+          } : undefined
         } : null,
         showAnswer,
-        teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
-        buzzerState: {
-          active: buzzerStateRef.current?.active || (buzzerStateRef.current?.timerPhase === 'reading' || buzzerStateRef.current?.timerPhase === 'response'),
-          timerPhase: buzzerStateRef.current?.timerPhase || 'inactive',
-          readingTimerRemaining: buzzerStateRef.current?.readingTimerRemaining || 0,
-          responseTimerRemaining: buzzerStateRef.current?.responseTimerRemaining || 0,
-          handicapActive: buzzerStateRef.current?.handicapActive || false,
-          handicapTeamId: buzzerStateRef.current?.handicapTeamId,
-          isPaused: buzzerStateRef.current?.isPaused || false,
-          // Add total times from current round settings (authoritative source)
-          readingTimeTotal: buzzerStateRef.current?.readingTimeTotal ?? 5,
-          responseTimeTotal: currentRound?.responseWindow ?? 30, // Always use current round value
-          // Add color information from host (authoritative source)
-          timerColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'yellow' : buzzerStateRef.current?.timerPhase === 'response' ? 'green' : 'gray',
-          timerBarColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'bg-yellow-500' : buzzerStateRef.current?.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
-          timerTextColor: buzzerStateRef.current?.timerPhase === 'reading' ? 'text-yellow-300' : buzzerStateRef.current?.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300'
-        },
+        showHint,
+        // Debug logging
+        _debug: {
+          showAnswer,
+          showHint,
+          questionId: currentActiveQuestion?.question.id,
+          timestamp: Date.now()
+        }
+      },
+      currentQuestion: currentActiveQuestion ? {
+        id: currentActiveQuestion.question.id,
+        text: currentActiveQuestion.question.text,
+        media: currentActiveQuestion.question.media,
+        answerText: currentActiveQuestion.question.answerText,
+        answerMedia: currentActiveQuestion.question.answerMedia,
+        points: currentActiveQuestion.points
+      } : null,
+      teamScores: teamScoresRef.current.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
+        buzzerState: (() => {
+          const current = buzzerStateRef.current;
+          const last = lastBroadcastBuzzerStateRef.current;
+
+          // Check if buzzer state has significantly changed
+          const activeChanged = current?.active !== last?.active;
+          const phaseChanged = current?.timerPhase !== last?.timerPhase;
+          const pausedChanged = current?.isPaused !== last?.isPaused;
+          const readingChanged = Math.abs((current?.readingTimerRemaining || 0) - (last?.readingTimerRemaining || 0)) > 0.5;
+          const responseChanged = Math.abs((current?.responseTimerRemaining || 0) - (last?.responseTimerRemaining || 0)) > 0.5;
+
+          const hasSignificantChange = activeChanged || phaseChanged || pausedChanged || readingChanged || responseChanged;
+
+          // Always include on force broadcast or if significantly changed
+          if (force || hasSignificantChange) {
+            // Update last broadcast state
+            lastBroadcastBuzzerStateRef.current = {
+              active: current?.active ?? false,
+              timerPhase: current?.timerPhase || 'inactive',
+              isPaused: current?.isPaused || false,
+              readingTimerRemaining: current?.readingTimerRemaining || 0,
+              responseTimerRemaining: current?.responseTimerRemaining || 0
+            };
+
+            return {
+              active: current?.active ?? false,
+              timerPhase: current?.timerPhase || 'inactive',
+              readingTimerRemaining: current?.readingTimerRemaining || 0,
+              responseTimerRemaining: current?.responseTimerRemaining || 0,
+              handicapActive: current?.handicapActive || false,
+              handicapTeamId: current?.handicapTeamId,
+              isPaused: current?.isPaused || false,
+              readingTimeTotal: current?.readingTimeTotal ?? 5,
+              responseTimeTotal: currentRound?.responseWindow ?? 30,
+              timerColor: current?.timerPhase === 'reading' ? 'yellow' : current?.timerPhase === 'response' ? 'green' : 'gray',
+              timerBarColor: current?.timerPhase === 'reading' ? 'bg-yellow-500' : current?.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
+              timerTextColor: current?.timerPhase === 'reading' ? 'text-yellow-300' : current?.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300'
+            };
+          }
+
+          // Return undefined to skip buzzerState in this broadcast
+          return undefined;
+        })(),
         answeringTeamId,
+        // Add teams for lobby display on demo screen
+        teams: teams.map(t => ({ id: t.id, name: t.name, color: t.color })),
         currentRound: currentRound ? {
           id: currentRound.id,
           name: currentRound.name,
           number: currentRound.number,
           type: currentRound.type,
-          cover: currentRound.cover
+          cover: currentRound.cover,
+          // Timer settings - demo screen needs these to calculate timer independently
+          readingTimePerLetter: currentRound.readingTimePerLetter,
+          responseWindow: currentRound.responseWindow,
+          handicapEnabled: currentRound.handicapEnabled,
+          handicapDelay: currentRound.handicapDelay
         } : null,
         // Add all themes data for themes screen
         allThemes: allThemes,
         // Add board data for board screen
         boardData: boardData,
         // Add pack cover for cover screen
-        packCover: pack.cover,
+        packCover: (() => {
+          console.log('[GamePlay] Broadcasting pack cover:', {
+            hasCover: !!pack.cover,
+            coverType: pack.cover?.type,
+            coverValue: pack.cover?.value?.slice(0, 60) || 'none',
+            packName: pack.name
+          });
+          return pack.cover;
+        })(),
         packName: pack.name,
         // Add super game data
         selectedSuperThemeId,
@@ -422,33 +612,319 @@ export const GamePlay = memo(({
           revealed: a.revealed
         })),
         selectedSuperAnswerTeam,
-        // Add team states for player panel colors
-        teamStates: {
-          wrongAnswerTeams: Array.from(wrongAnswerTeams),
-          activeTeamIds: Array.from(activeTeamIds),
-          clashingTeamIds: Array.from(clashingTeamIds)
-        },
+        // Add team states for player panel colors - NEW FORMAT with clash support
+        teamStates: (() => {
+          const states: Record<string, string[]> = {
+            inactive: [],
+            active: [],
+            answering: [],
+            penalty: [],
+            clash: [],
+          };
+          // Also include clash sub-statuses for detailed collision info
+          const clashSubStatuses: Record<string, string[]> = {
+            first_clash: [],
+            simple_clash: [],
+          };
+          for (const [teamId, state] of teamStatusManager.teamStates.entries()) {
+            if (state.status === 'clash') {
+              states.clash.push(teamId);
+              // Add to sub-status for collision type
+              if (state.clashSubStatus) {
+                clashSubStatuses[state.clashSubStatus].push(teamId);
+              }
+            } else {
+              states[state.status].push(teamId);
+            }
+          }
+          // Merge clash sub-statuses into main states object
+          return { ...states, ...clashSubStatuses };
+        })(),
         // Add QR code state
         showQRCode: showQRCode,
         // Add highlighted question for visual feedback
         highlightedQuestion: highlightedQuestion,
         // Add themes scroll position for sync
         themesScrollPosition: themesScrollPosition
-      }
+      };
+
+    // Log broadcast with showAnswer info
+    console.log('[GamePlay] 📡 Broadcasting GAME_STATE_UPDATE:', {
+      showAnswer: broadcastPayload.state.showAnswer,
+      showHint: broadcastPayload.state.showHint,
+      hasActiveQuestion: !!currentActiveQuestion,
+      questionId: currentActiveQuestion?.question.id,
+      screen: broadcastScreen,
+      teamStates: broadcastPayload.teamStates,
+      teamScoresCount: broadcastPayload.teamScores?.length || 0,
+      teamScores: broadcastPayload.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score }))
     });
 
+    broadcastMessage(broadcastPayload);
+
+    console.log('[GamePlay] Broadcast sent successfully - teamStates:', {
+      teamStates: broadcastPayload.teamStates,
+      hasTeamStates: !!broadcastPayload.teamStates,
+      teamStatesKeys: broadcastPayload.teamStates ? Object.keys(broadcastPayload.teamStates) : []
+    });
     console.log('[GamePlay] Broadcast sent successfully', {
       buzzerPhase: buzzerStateRef.current?.timerPhase,
       isPaused: buzzerStateRef.current?.isPaused,
       activeQuestion: !!activeQuestion,
       timeSinceLastBroadcast: `${timeSinceLastBroadcast}ms`,
-      teamStates: {
-        wrongAnswerTeams: Array.from(wrongAnswerTeams),
-        activeTeamIds: Array.from(activeTeamIds),
-        clashingTeamIds: Array.from(clashingTeamIds)
-      }
+      teamStates: (() => {
+        const states: Record<string, string[]> = {
+          inactive: [],
+          active: [],
+          answering: [],
+          penalty: [],
+          clash: [],
+          first_clash: [],
+          simple_clash: [],
+        };
+        for (const [teamId, state] of teamStatusManager.teamStates.entries()) {
+          if (state.status === 'clash') {
+            states.clash.push(teamId);
+            if (state.clashSubStatus) {
+              states[state.clashSubStatus].push(teamId);
+            }
+          } else {
+            states[state.status].push(teamId);
+          }
+        }
+        return states;
+      })()
     });
-  }, [currentScreen, currentRoundIndex, showAnswer, teamScores, answeringTeamId, currentRound, onBroadcastMessage, pack, selectedSuperThemeId, disabledSuperThemeIds, superGameBets, superGameAnswers, selectedSuperAnswerTeam, wrongAnswerTeams, activeTeamIds, clashingTeamIds, showQRCode, themesScrollPosition, highlightedQuestion]); // Removed activeQuestion - now using ref to avoid stale closures
+  }, [currentScreen, currentRoundIndex, showAnswer, teamScores, answeringTeamId, currentRound, broadcastMessage, pack, selectedSuperThemeId, disabledSuperThemeIds, superGameBets, superGameAnswers, selectedSuperAnswerTeam, teamStatusManager, showQRCode, themesScrollPosition, highlightedQuestion]); // Removed activeQuestion - now using ref to avoid stale closures
+
+  // Function to switch from reading to response phase (called from demo screen TIMER_PHASE_SWITCH message)
+  // This is a stable callback that uses refs to access current values
+  const switchToResponsePhase = useCallback(() => {
+    const currentPhase = buzzerStateRef.current?.timerPhase;
+
+    // Only switch if we're in reading phase
+    if (currentPhase !== 'reading') {
+      console.log('[GamePlay] switchToResponsePhase: Not in reading phase, ignoring switch request. Current phase:', currentPhase);
+      return;
+    }
+
+    console.log('[GamePlay] ⚡ switchToResponsePhase: Switching to response phase (from demo screen signal)');
+
+    // Get round settings for handicap calculation
+    const handicapEnabled = currentRound?.handicapEnabled ?? false;
+    const handicapDelay = currentRound?.handicapDelay ?? 1;
+    const responseWindow = currentRound?.responseWindow ?? 30;
+
+    // Find leading team for handicap
+    const leadingTeamScore = teamScores.length > 0 ? Math.max(...teamScores.map(t => t.score)) : 0;
+    const leadingTeam = teamScores.find(t => t.score === leadingTeamScore);
+
+    // Clear existing timers
+    if (buzzerDelayRef.current) clearTimeout(buzzerDelayRef.current);
+    if (responseWindowRef.current) clearTimeout(responseWindowRef.current);
+    if (stateUpdateRef.current) clearInterval(stateUpdateRef.current);
+
+    // Clear early buzzes from reading phase
+    onClearBuzzes?.();
+    onBuzzTriggered(null);
+
+    // Start response phase with handicap if needed
+    const responseRemaining = responseWindow;
+    responseTimerRemainingRef.current = responseRemaining;
+
+    const needsHandicap = handicapEnabled && handicapDelay > 0 && leadingTeam;
+
+    // Update buzzer state to response phase
+    buzzerStateRef.current = {
+      active: true,
+      timerPhase: 'response',
+      readingTimerRemaining: 0,
+      responseTimerRemaining: responseRemaining,
+      handicapActive: needsHandicap,
+      handicapTeamId: needsHandicap ? leadingTeam?.teamId : undefined,
+      isPaused: timerPausedRef.current,
+      readingTimeTotal: buzzerStateRef.current?.readingTimeTotal || 0,
+      responseTimeTotal: responseWindow,
+      timerColor: 'green',
+      timerBarColor: 'bg-green-500',
+      timerTextColor: 'text-green-300'
+    };
+
+    // Send buzzer state update to demo screen and mobile clients
+    onBuzzerStateChangeRef.current(buzzerStateRef.current);
+
+    if (needsHandicap && handicapDelay > 0) {
+      // Start with handicap active - leader team is inactive
+      console.log('[GamePlay] 🟡 Handicap active - leader team must wait', handicapDelay, 'seconds');
+      buzzerActiveRef.current = false;
+
+      setTimeout(() => {
+        // Handicap ended - activate all teams
+        buzzerActiveRef.current = true;
+        setBuzzerActive(true); // Also update state
+        console.log('[GamePlay] 🟢 Activating all teams (after handicap ends)');
+        teamStatusManager.updateGameState({ isResponseTimerActive: true });
+        setTimeout(() => broadcastGameState(true), 0);
+
+        // Update buzzer state without handicap
+        buzzerStateRef.current = {
+          ...buzzerStateRef.current,
+          handicapActive: false,
+          handicapTeamId: undefined
+        };
+        onBuzzerStateChangeRef.current(buzzerStateRef.current);
+      }, handicapDelay * 1000);
+    } else {
+      // No handicap - activate all teams immediately
+      buzzerActiveRef.current = true;
+      setBuzzerActive(true); // Also update state
+      console.log('[GamePlay] 🟢 Activating all teams (green timer starts)');
+      teamStatusManager.updateGameState({ isResponseTimerActive: true });
+      setTimeout(() => broadcastGameState(true), 0);
+    }
+
+    // Start response timer countdown
+    stateUpdateRef.current = setInterval(() => {
+      if (!timerPausedRef.current) {
+        responseTimerRemainingRef.current = Math.max(0, responseTimerRemainingRef.current - 0.1);
+
+        if (responseTimerRemainingRef.current <= 0) {
+          responseTimerRemainingRef.current = 0;
+          if (stateUpdateRef.current) {
+            clearInterval(stateUpdateRef.current);
+            stateUpdateRef.current = null;
+          }
+          buzzerActiveRef.current = false;
+          teamStatusManager.updateGameState({ isResponseTimerActive: false });
+
+          buzzerStateRef.current = {
+            active: false,
+            timerPhase: 'complete',
+            readingTimerRemaining: 0,
+            responseTimerRemaining: 0,
+            handicapActive: false,
+            isPaused: false,
+            readingTimeTotal: buzzerStateRef.current?.readingTimeTotal || 0,
+            responseTimeTotal: responseWindow,
+            timerColor: 'gray',
+            timerBarColor: 'bg-gray-500',
+            timerTextColor: 'text-gray-300'
+          };
+          onBuzzerStateChangeRef.current(buzzerStateRef.current);
+        } else {
+          // Update with new remaining time
+          buzzerStateRef.current.responseTimerRemaining = responseTimerRemainingRef.current;
+        }
+      }
+    }, 100);
+
+    // Set timeout for response phase completion
+    const totalResponseTime = responseWindow * 1000;
+    buzzerDelayRef.current = setTimeout(() => {
+      if (stateUpdateRef.current) {
+        clearInterval(stateUpdateRef.current);
+        stateUpdateRef.current = null;
+      }
+      buzzerActiveRef.current = false;
+      teamStatusManager.updateGameState({ isResponseTimerActive: false });
+
+      buzzerStateRef.current = {
+        active: false,
+        timerPhase: 'complete',
+        readingTimerRemaining: 0,
+        responseTimerRemaining: 0,
+        handicapActive: false,
+        isPaused: false,
+        readingTimeTotal: buzzerStateRef.current?.readingTimeTotal || 0,
+        responseTimeTotal: responseWindow,
+        timerColor: 'gray',
+        timerBarColor: 'bg-gray-500',
+        timerTextColor: 'text-gray-300'
+      };
+      onBuzzerStateChangeRef.current(buzzerStateRef.current);
+    }, totalResponseTime);
+
+    console.log('[GamePlay] ✅ switchToResponsePhase completed');
+  }, [currentRound, teamScores, onClearBuzzes, onBuzzTriggered, teamStatusManager, broadcastGameState]);
+
+  // Store the function in ref for external access (backward compatibility)
+  switchToResponsePhaseRef.current = switchToResponsePhase;
+
+  // Debug: Log when showAnswer changes
+  useEffect(() => {
+    console.log('[GamePlay] 🔄 showAnswer changed:', {
+      showAnswer,
+      hasActiveQuestion: !!activeQuestion,
+      questionId: activeQuestion?.question.id,
+      timestamp: Date.now()
+    });
+  }, [showAnswer, activeQuestion]);
+
+  // Handle team score change from context menu - broadcast to all devices
+  const handleTeamScoreChange = useCallback((teamId: string, newScore: number) => {
+    setTeamScores(prev => prev.map(t => {
+      if (t.teamId === teamId) {
+        return { ...t, score: newScore };
+      }
+      return t;
+    }));
+    // Broadcast updated scores to all devices immediately
+    setTimeout(() => broadcastGameState(true), 0);
+  }, [broadcastGameState]);
+
+  // Broadcast team status changes to all devices when changed via context menu
+  const prevTeamStatesRef = useRef<string>('');
+  useEffect(() => {
+    // Create a string representation of current team states
+    const currentStatesStr = Array.from(teamStatusManager.teamStates.entries())
+      .map(([id, state]) => `${id}:${state.status}`)
+      .sort()
+      .join(',');
+
+    // Only broadcast if states actually changed
+    if (currentStatesStr !== prevTeamStatesRef.current) {
+      prevTeamStatesRef.current = currentStatesStr;
+      // Broadcast updated team states to all devices
+      setTimeout(() => broadcastGameState(true), 0);
+    }
+  }, [teamStatusManager.teamStates, broadcastGameState]);
+
+  // Sync activeTeamIds with teamStatusManager.activeTeamIds for HostView BUZZ handling
+  useEffect(() => {
+    if (onUpdateActiveTeamIds) {
+      onUpdateActiveTeamIds(teamStatusManager.activeTeamIds);
+    }
+  }, [teamStatusManager.activeTeamIds, onUpdateActiveTeamIds]);
+
+  // Handle BUZZ events from HostView through teamStatusManager
+  // Track previously buzzed teams to detect new buzzes
+  const prevBuzzedTeamIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!buzzedTeamIds) return;
+
+    const currentBuzzed = Array.from(buzzedTeamIds);
+    const prevBuzzed = prevBuzzedTeamIdsRef.current;
+
+    // Find newly buzzed teams (in current but not in previous)
+    const newBuzzes = currentBuzzed.filter(teamId => !prevBuzzed.has(teamId));
+
+    // Handle each new buzz through teamStatusManager
+    for (const teamId of newBuzzes) {
+      const teamStatus = teamStatusManager.getTeamStatus(teamId);
+      console.log('[GamePlay] 🎯 Handling BUZZ through teamStatusManager:', {
+        teamId: teamId.slice(0, 12),
+        teamStatus,
+        isResponseTimerActive: teamStatusManager.isResponseTimerActive(),
+        simultaneousBuzzEnabled: sessionSettings?.simultaneousBuzzEnabled,
+        simultaneousThreshold: sessionSettings?.simultaneousBuzzThreshold
+      });
+      const result = teamStatusManager.handleTeamBuzz(teamId);
+      console.log('[GamePlay] 🎯 BUZZ handle result:', result);
+    }
+
+    // Update ref for next comparison
+    prevBuzzedTeamIdsRef.current = new Set(currentBuzzed);
+  }, [buzzedTeamIds, teamStatusManager, sessionSettings]);
 
   // Handle buzzer state changes from QuestionModal (media playback auto-pause)
   const handleQuestionModalBuzzerStateChange = useCallback((state: {
@@ -459,6 +935,8 @@ export const GamePlay = memo(({
     handicapActive: boolean;
     handicapTeamId?: string;
     isPaused: boolean;
+    readingTimeTotal?: number;
+    responseTimeTotal?: number;
   }) => {
     console.log('[GamePlay] QuestionModal buzzer state change:', state);
 
@@ -472,9 +950,12 @@ export const GamePlay = memo(({
       buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
       buzzerStateRef.current.isPaused = state.isPaused;
 
-      // IMPORTANT: Preserve totals from QuestionModal unless they're missing
+      // IMPORTANT: Use totals from QuestionModal if provided, otherwise calculate locally
       // QuestionModal calculates these based on actual question text and settings
-      if (!buzzerStateRef.current.readingTimeTotal || !buzzerStateRef.current.responseTimeTotal) {
+      if (state.readingTimeTotal !== undefined) {
+        buzzerStateRef.current.readingTimeTotal = state.readingTimeTotal;
+      } else if (!buzzerStateRef.current.readingTimeTotal) {
+        // Fallback to calculation if QuestionModal didn't provide it
         if (activeQuestion && currentRound) {
           const questionTextLetters = (activeQuestion.question.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
           const hasMedia = activeQuestion.question.media?.type === 'audio' ||
@@ -484,6 +965,14 @@ export const GamePlay = memo(({
           buzzerStateRef.current.readingTimeTotal = hasMedia
             ? Math.max(1, questionTextLetters * currentRound.readingTimePerLetter * 0.5)
             : Math.max(1, questionTextLetters * currentRound.readingTimePerLetter);
+        }
+      }
+
+      if (state.responseTimeTotal !== undefined) {
+        buzzerStateRef.current.responseTimeTotal = state.responseTimeTotal;
+      } else if (!buzzerStateRef.current.responseTimeTotal) {
+        // Fallback to calculation if QuestionModal didn't provide it
+        if (activeQuestion && currentRound) {
           buzzerStateRef.current.responseTimeTotal = currentRound.responseWindow || 30;
         }
       }
@@ -507,10 +996,10 @@ export const GamePlay = memo(({
       buzzerStateRef.current.timerTextColor = state.timerPhase === 'reading' ? 'text-yellow-300' : state.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300';
     }
 
-    // Sync timer paused state
-    setTimerPaused(state.isPaused);
+    // Don't sync timerPaused here - let the useEffect handle it to avoid duplicate updates
+    // The useEffect below will handle syncing timerPaused state and broadcasting
 
-    // Notify parent component - this sends BUZZER_STATE messages
+    // Notify parent component - this sends TIMER_STATE messages
     // NO NEED to call broadcastGameState() here - it causes duplicate messages and UI flicker
     onBuzzerStateChange(buzzerStateRef.current);
   }, [onBuzzerStateChange]);
@@ -518,13 +1007,16 @@ export const GamePlay = memo(({
   // Handle timer pause state changes from QuestionModal (manual pause button)
   const handleTimerPauseChange = useCallback((isPaused: boolean) => {
     console.log('[GamePlay] Timer pause state changed:', isPaused);
-    setTimerPaused(isPaused);
+    // Use setTimeout to avoid setState during render of another component
+    setTimeout(() => {
+      setTimerPaused(isPaused);
+    }, 0);
     timerPausedRef.current = isPaused;
 
     // Update buzzer state to sync with demo screen
     const timerPhase = buzzerStateRef.current?.timerPhase || 'inactive';
     const newState = {
-      active: buzzerStateRef.current?.active || false,
+      active: !isPaused && (timerPhase === 'reading' || timerPhase === 'response'), // Active when not paused and in valid timer phase
       timerPhase: timerPhase,
       readingTimerRemaining: buzzerStateRef.current?.readingTimerRemaining || 0,
       responseTimerRemaining: buzzerStateRef.current?.responseTimerRemaining || 0,
@@ -541,24 +1033,28 @@ export const GamePlay = memo(({
     };
     buzzerStateRef.current = newState;
     onBuzzerStateChange(newState);
-    // NO broadcastGameState() call here - onBuzzerStateChange already sends BUZZER_STATE
+    // NO broadcastGameState() call here - onBuzzerStateChange already sends TIMER_STATE
   }, [onBuzzerStateChange, currentRound]); // Add currentRound dependency for responseWindow
 
   // Sync buzzerStateRef.isPaused with timerPaused state and broadcast
   useEffect(() => {
     if (buzzerStateRef.current && activeQuestion && !showAnswer) {
-      buzzerStateRef.current.isPaused = timerPaused;
+      // Only update and broadcast if the pause state actually changed
+      if (buzzerStateRef.current.isPaused !== timerPaused) {
+        buzzerStateRef.current.isPaused = timerPaused;
 
-      console.log('[GamePlay] Syncing pause state:', {
-        isPaused: timerPaused,
-        timerPhase: buzzerStateRef.current.timerPhase,
-        fullState: buzzerStateRef.current
-      });
+        console.log('[GamePlay] Syncing pause state:', {
+          isPaused: timerPaused,
+          timerPhase: buzzerStateRef.current.timerPhase,
+          fullState: buzzerStateRef.current
+        });
 
-      onBuzzerStateChange(buzzerStateRef.current);
-      // NO broadcastGameState() call here - onBuzzerStateChange already sends BUZZER_STATE
+        onBuzzerStateChange(buzzerStateRef.current);
+        // Also broadcast GAME_STATE_UPDATE to ensure demo screen gets pause state
+        broadcastGameState(true); // Force broadcast to ensure immediate delivery
+      }
     }
-  }, [timerPaused, activeQuestion, showAnswer, onBuzzerStateChange]); // Removed broadcastGameState dependency
+  }, [timerPaused, activeQuestion, showAnswer, onBuzzerStateChange, broadcastGameState]);
 
   // Broadcast current screen to demo screen when screen changes (without triggering full state update cycle)
   // REMOVED: Now handled by main broadcastGameState which includes currentScreen in dependencies
@@ -566,7 +1062,7 @@ export const GamePlay = memo(({
 
   // Function to broadcast current super game state
   const broadcastSuperGameState = useCallback(() => {
-    if (!onBroadcastMessage) return;
+    if (!broadcastMessage) return;
 
     if (currentScreen === 'placeBets' && currentRound) {
       // Update parent phase
@@ -577,18 +1073,19 @@ export const GamePlay = memo(({
         ? currentRound.themes?.find((t: Theme) => t.id === selectedSuperThemeId)
         : null;
 
-      // Calculate max bet (highest score among teams)
-      const maxScore = Math.max(...teamScores.map(t => t.score), 0);
+      // Calculate max bet (highest score among teams) - use ref for latest scores
+      const currentScores = teamScoresRef.current;
+      const maxScore = Math.max(...currentScores.map(t => t.score), 0);
       const maxBet = maxScore > 0 ? maxScore : 100;
 
       // Broadcast state sync to clients
-      onBroadcastMessage({
+      broadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'placeBets',
         themeId: selectedTheme?.id,
         themeName: selectedTheme?.name,
         maxBet: maxBet,
-        teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
+        teamScores: currentScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
       });
     } else if (currentScreen === 'superQuestion' && currentRound && selectedSuperThemeId) {
       // Update parent phase
@@ -599,43 +1096,39 @@ export const GamePlay = memo(({
       const question = selectedTheme?.questions?.[0];
 
       if (selectedTheme && question) {
-        onBroadcastMessage({
+        const currentScores = teamScoresRef.current;
+        broadcastMessage({
           type: 'SUPER_GAME_STATE_SYNC',
           phase: 'showQuestion',
           themeId: selectedTheme.id,
           themeName: selectedTheme.name,
           questionText: question.text || '',
           questionMedia: question.media,
-          teamScores: teamScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
+          teamScores: currentScores.map(t => ({ id: t.teamId, name: t.teamName, score: t.score })),
         });
       }
     } else if (currentScreen === 'superAnswers') {
       onSuperGamePhaseChange?.('showWinner');
       // Clients go to idle when host views answers
-      onBroadcastMessage({
+      broadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
       });
     } else if (currentScreen === 'showWinner') {
       onSuperGamePhaseChange?.('showWinner');
       // Clients go to idle when host views winner
-      onBroadcastMessage({
+      broadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
       });
     } else if (['board', 'cover', 'themes', 'round', 'placeBets'].includes(currentScreen)) {
       onSuperGamePhaseChange?.('idle');
-      onBroadcastMessage({
+      broadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'idle',
       });
     }
-  }, [currentScreen, onBroadcastMessage, onSuperGamePhaseChange, currentRound, selectedSuperThemeId, teamScores]);
-
-  // Update parent with super game phase AND broadcast state sync
-  useEffect(() => {
-    broadcastSuperGameState();
-  }, [currentScreen, broadcastSuperGameState]);
+  }, [currentScreen, broadcastMessage, onSuperGamePhaseChange, currentRound, selectedSuperThemeId, teamScores]);
 
   // Reset bets state when entering placeBets screen
   useEffect(() => {
@@ -654,6 +1147,8 @@ export const GamePlay = memo(({
   // Handle state sync request from client - rebroadcast current state when trigger changes
   useEffect(() => {
     if (stateSyncTrigger !== undefined && stateSyncTrigger > 0) {
+      console.log('[GamePlay] State sync requested, broadcasting current state');
+      broadcastGameState(true); // Force broadcast with teams
       broadcastSuperGameState();
     }
   }, [stateSyncTrigger, broadcastSuperGameState]);
@@ -694,18 +1189,40 @@ export const GamePlay = memo(({
     // Don't override timerPhase when question is active - let timer logic manage it
   }, [activeQuestion, showAnswer]);
 
-  // Broadcast game state when important values change (EXCEPT currentScreen - teamStates handled separately)
+  // Broadcast game state when CRITICAL values change
+  // UI-only values like themesScrollPosition and highlightedQuestion are handled separately
   useEffect(() => {
-    broadcastGameState(true); // Force broadcast for important state changes
-    console.log('[GamePlay] Broadcast triggered by value change');
+    console.log('[GamePlay] 🔄 Critical state changed, broadcasting:', {
+      currentRoundIndex,
+      hasActiveQuestion: !!activeQuestion,
+      questionId: activeQuestion?.question?.id,
+      showAnswer,
+      showHint,
+      answeringTeamId
+    });
+    broadcastGameState(true); // Force broadcast only for critical changes
+    console.log('[GamePlay] Broadcast triggered by critical state change');
   }, [
     currentRoundIndex,
     activeQuestion,
     showAnswer,
-    answeringTeamId,
-    themesScrollPosition,
-    highlightedQuestion
+    showHint,
+    answeringTeamId
   ]); // Team states (wrongAnswerTeams, activeTeamIds, clashingTeamIds) handled in separate useEffect
+
+  // Light broadcasts for UI state changes (highlights only - scroll has separate 35ms throttle)
+  useEffect(() => {
+    console.log('[GamePlay] 🔄 UI state changed (highlight), scheduling light broadcast');
+    broadcastGameState(false); // Normal broadcast for UI changes
+  }, [
+    highlightedQuestion
+  ]);
+
+  // NOTE: We DON'T sync answeringTeamId with teamStatusManager here anymore
+  // teamStatusManager is the single source of truth for team statuses
+  // answeringTeamId is only used by the buzzer system in HostView
+  // When a team buzzes, HostView sets answeringTeamId, and teamStatusManager
+  // should be updated separately via user clicking on team cards
 
   // Immediate broadcast on screen changes (bypass throttling)
   useEffect(() => {
@@ -716,6 +1233,32 @@ export const GamePlay = memo(({
     }
   }, [currentScreen]); // This ensures screen changes are broadcast immediately without throttling
 
+  // Separate throttling for themes scroll position (35ms for smooth scrolling on demo screen)
+  useEffect(() => {
+    // Only send scroll updates when on themes screen
+    if (currentScreen !== 'themes') return;
+
+    const now = Date.now();
+    const timeSinceLastScrollBroadcast = now - lastScrollBroadcastRef.current;
+
+    if (timeSinceLastScrollBroadcast >= scrollBroadcastThrottleMs) {
+      lastScrollBroadcastRef.current = now;
+
+      if (broadcastMessage) {
+        console.log('[GamePlay] 📜 Sending scroll position to demo screen:', themesScrollPosition);
+        broadcastMessage({
+          type: 'GAME_STATE_UPDATE',
+          sequence: sequenceCounterRef.current++,
+          state: {
+            currentScreen,
+          },
+          // Send only scroll position to avoid full broadcast overhead
+          themesScrollPosition,
+        });
+      }
+    }
+  }, [themesScrollPosition, currentScreen, broadcastMessage, scrollBroadcastThrottleMs]);
+
   // Initial broadcast when component mounts to ensure teamScores are sent immediately
   useEffect(() => {
     console.log('[GamePlay] Initial broadcast on mount');
@@ -724,7 +1267,7 @@ export const GamePlay = memo(({
   }, []); // Empty deps - run only on mount
 
   // REMOVED: Periodic buzzer state broadcast - this was causing timer flicker on demo screen
-  // Demo screen now handles countdown locally from initial BUZZER_STATE messages
+  // Demo screen now handles countdown locally from initial TIMER_STATE messages
   // Only state changes (pause, phase change, etc.) trigger updates
 
   // Clear super game state on clients when transitioning away from super game screens
@@ -751,8 +1294,8 @@ export const GamePlay = memo(({
 
       // If we're leaving super game entirely (not a valid internal transition)
       if (!isInSuperGame || !isValidTransition) {
-        if (onBroadcastMessage) {
-          onBroadcastMessage({ type: 'SUPER_GAME_CLEAR' });
+        if (broadcastMessage) {
+          broadcastMessage({ type: 'SUPER_GAME_CLEAR' });
         }
       }
     }
@@ -787,36 +1330,11 @@ export const GamePlay = memo(({
         }
       }
 
+      // Update ref immediately for broadcastGameState to use
+      teamScoresRef.current = combined;
       return combined;
     });
   }, [teams]);
-
-  // Track changes in team states (wrongAnswerTeams, activeTeamIds, clashingTeamIds)
-  // and trigger broadcast when they change (comparing by content, not by reference)
-  useEffect(() => {
-    const wrongChanged = !areSetsEqual(prevWrongAnswerTeamsRef.current, wrongAnswerTeams);
-    const activeChanged = !areSetsEqual(prevActiveTeamIdsRef.current, activeTeamIds);
-    const clashingChanged = !areSetsEqual(prevClashingTeamIdsRef.current, clashingTeamIds);
-
-    if (wrongChanged || activeChanged || clashingChanged) {
-      console.log('[GamePlay] 🔄 Team states changed, broadcasting update:', {
-        wrongChanged,
-        activeChanged,
-        clashingChanged,
-        wrongAnswerTeams: Array.from(wrongAnswerTeams),
-        activeTeamIds: Array.from(activeTeamIds),
-        clashingTeamIds: Array.from(clashingTeamIds)
-      });
-
-      // Update refs
-      prevWrongAnswerTeamsRef.current = new Set(wrongAnswerTeams);
-      prevActiveTeamIdsRef.current = new Set(activeTeamIds);
-      prevClashingTeamIdsRef.current = new Set(clashingTeamIds);
-
-      // Broadcast to demo screen
-      broadcastGameState(true);
-    }
-  }, [wrongAnswerTeams, activeTeamIds, clashingTeamIds]);
 
   // Helper function to compare Sets by content
   const areSetsEqual = useCallback((setA: Set<string>, setB: Set<string>): boolean => {
@@ -834,7 +1352,7 @@ export const GamePlay = memo(({
       const maxScore = Math.max(...teamScores.map(t => t.score), 0);
       const maxBet = maxScore > 0 ? maxScore : 100;
 
-      onBroadcastMessage({
+      broadcastMessage({
         type: 'SUPER_GAME_STATE_SYNC',
         phase: 'placeBets',
         maxBet: maxBet,
@@ -859,13 +1377,16 @@ export const GamePlay = memo(({
         setCurrentScreen(prev => {
           const nextScreen = (() => {
             switch (prev) {
-              case 'cover': return isSuperRound ? 'placeBets' : 'themes';
+              case 'cover': return isSuperRound ? 'selectSuperThemes' : 'themes';
               case 'themes':
                 // Always show round cover
                 return 'round';
               case 'round':
-                // For super rounds, go to placeBets directly; for normal rounds, go to board
-                return isSuperRound ? 'placeBets' : 'board';
+                // For super rounds, go to selectSuperThemes first; for normal rounds, go to board
+                return isSuperRound ? 'selectSuperThemes' : 'board';
+              case 'selectSuperThemes':
+                // After excluding themes, go to placeBets
+                return 'placeBets';
               case 'placeBets':
                 // Always proceed to superQuestion when Space is pressed
                 return 'superQuestion';
@@ -1046,6 +1567,7 @@ export const GamePlay = memo(({
         e.preventDefault();
         setShowAnswer(true);
         setBuzzerActive(false);
+buzzerActiveRef.current = false;
         processingWrongAnswerRef.current = false;
         const newState = {
           active: false,
@@ -1063,25 +1585,40 @@ export const GamePlay = memo(({
         buzzerStateRef.current = newState;
         onBuzzerStateChange(newState);
         setTimerPaused(false);
+
+        // CRITICAL: Immediately broadcast state to demo screen when showing answer
+        // This ensures instant sync between host and demo screen
+        console.log('[GamePlay] 📡 Showing answer - broadcasting immediately to demo screen');
+        broadcastGameState(true); // Force broadcast for instant sync
+
+        // Deactivate all teams when answer is shown
+        console.log('[GamePlay] ⚫ Deactivating all teams (answer shown)');
+        teamStatusManager.updateGameState({ isResponseTimerActive: false });
       }
 
       // P key pauses/resumes timer
       if ((e.key === 'p' || e.key === 'P' || e.code === 'KeyP') && activeQuestion && !showAnswer) {
         e.preventDefault();
         const newPausedState = !timerPaused;
-        setTimerPaused(newPausedState);
 
-        // Update buzzer state with pause status
-        const currentState = buzzerStateRef.current;
+        // Update ref immediately for interval to use
+        timerPausedRef.current = newPausedState;
+
+        // Use flushSync to update state synchronously
+        flushSync(() => {
+          setTimerPaused(newPausedState);
+        });
+
+        // Send TIMER_STATE immediately (for mobile clients and demo screen)
         const newState = {
-          ...currentState,
+          ...buzzerStateRef.current,
           isPaused: newPausedState
         };
         buzzerStateRef.current = newState;
         onBuzzerStateChange(newState);
 
-        // Immediately broadcast state to demo screen
-        broadcastGameState();
+        // Don't call broadcastGameState here - let useEffect handle it
+        // This prevents duplicate broadcasts and ensures consistency
       }
     };
 
@@ -1114,9 +1651,15 @@ export const GamePlay = memo(({
 
   // Activate buzzers when question opens - with periodic state updates
   useEffect(() => {
+    console.log('[GamePlay] 🚀 Timer useEffect running:', {
+      activeQuestion: !!activeQuestion,
+      showAnswer,
+      currentRound: currentRound?.name,
+      teamsCount: stabilizedTeams.length
+    });
     if (activeQuestion && !showAnswer) {
       // Get round timer settings
-      const readingTimePerLetter = currentRound?.readingTimePerLetter ?? 0;
+      const readingTimePerLetter = currentRound?.readingTimePerLetter ?? 0.05;
       const responseWindow = currentRound?.responseWindow ?? 30;
       const handicapEnabled = currentRound?.handicapEnabled ?? false;
       const handicapDelay = currentRound?.handicapDelay ?? 1;
@@ -1148,11 +1691,10 @@ export const GamePlay = memo(({
       responseTimerRemainingRef.current = responseWindow;
 
       // Helper to send buzzer state
-      const sendBuzzerState = () => {
+      const sendBuzzerState = (silent = false) => {
         const isHandicapActiveForTeam = handicapActive && leadingTeam?.teamId;
-        // Buzzer is active during response phase (regardless of handicap)
-        // Handicap only blocks the specific leading team, not all teams
-        const isActive = currentPhase === 'reading' || currentPhase === 'response';
+        // Timer is active only if buzzer is active AND in a running phase
+        const isActive = buzzerActiveRef.current && (currentPhase === 'reading' || currentPhase === 'response');
         const state = {
           active: isActive,
           timerPhase: currentPhase,
@@ -1170,19 +1712,70 @@ export const GamePlay = memo(({
           timerTextColor: currentPhase === 'reading' ? 'text-yellow-300' : currentPhase === 'response' ? 'text-green-300' : 'text-gray-300'
         };
 
-        console.log('[GamePlay] Sending buzzer state:', {
-          timerPhase: state.timerPhase,
-          readingTimerRemaining: state.readingTimerRemaining,
-          responseTimerRemaining: state.responseTimerRemaining,
-          isPaused: state.isPaused,
-          active: state.active,
-          handicapActive: state.handicapActive,
-          timerColor: state.timerColor
-        });
+        if (!silent) {
+          console.log('[GamePlay] Sending buzzer state:', {
+            timerPhase: state.timerPhase,
+            readingTimerRemaining: state.readingTimerRemaining,
+            responseTimerRemaining: state.responseTimerRemaining,
+            isPaused: state.isPaused,
+            active: state.active,
+            handicapActive: state.handicapActive,
+            timerColor: state.timerColor
+          });
+        }
 
         buzzerStateRef.current = state;
         onBuzzerStateChangeRef.current(state);
       };
+
+      // Function to switch from reading to response phase (called from demo screen signal)
+      const switchToResponsePhase = () => {
+        if (currentPhase !== 'reading') {
+          console.log('[GamePlay] Not in reading phase, ignoring switch request');
+          return;
+        }
+
+        console.log('[GamePlay] ⚡ Switching to response phase (from demo screen signal)');
+
+        // Clear reading timer
+        readingRemaining = 0;
+        currentPhase = 'response';
+
+        // Clear early buzzes from reading phase
+        onClearBuzzes?.();
+        onBuzzTriggered(null);
+
+        // Update ref with current response remaining when entering response phase
+        responseTimerRemainingRef.current = responseRemaining;
+
+        // Check if handicap needed when transitioning to response
+        if (handicapEnabled && handicapDelay > 0 && leadingTeam) {
+          handicapActive = true;
+          // Send state with handicap active
+          sendBuzzerState();
+
+          // Handicap timer runs in parallel
+          setTimeout(() => {
+            handicapActive = false;
+            setBuzzerActive(true);
+            buzzerActiveRef.current = true;
+            console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
+            teamStatusManager.updateGameState({ isResponseTimerActive: true });
+            setTimeout(() => broadcastGameState(true), 0);
+            sendBuzzerState();
+          }, handicapDelay * 1000);
+        } else {
+          setBuzzerActive(true);
+          buzzerActiveRef.current = true;
+          console.log('[GamePlay] 🟡 Activating all teams (green timer starts)');
+          teamStatusManager.updateGameState({ isResponseTimerActive: true });
+          setTimeout(() => broadcastGameState(true), 0);
+          sendBuzzerState();
+        }
+      };
+
+      // Store the function in ref for external access
+      switchToResponsePhaseRef.current = switchToResponsePhase;
 
       // Initial state
       const initiallyActive = currentPhase === 'response';
@@ -1193,6 +1786,7 @@ export const GamePlay = memo(({
       }
 
       setBuzzerActive(initiallyActive && !handicapActive);
+      buzzerActiveRef.current = initiallyActive && !handicapActive;
 
       console.log('[GamePlay] Timer initialized - Initial state:', {
         currentPhase,
@@ -1209,19 +1803,36 @@ export const GamePlay = memo(({
         setTimeout(() => {
           handicapActive = false;
           setBuzzerActive(true);
+          buzzerActiveRef.current = true;
+          // Activate all teams when green timer starts (after handicap ends)
+          console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
+          teamStatusManager.updateGameState({ isResponseTimerActive: true });
+          // CRITICAL: Broadcast team state changes to demo screen
+          setTimeout(() => broadcastGameState(true), 0);
           sendBuzzerState();
         }, handicapDelay * 1000);
+      } else if (initiallyActive && !needsHandicap) {
+        // Starting directly in response phase without handicap - activate teams immediately
+        console.log('[GamePlay] 🟡 Activating all teams (starting in response phase)');
+        teamStatusManager.updateGameState({ isResponseTimerActive: true });
+        // CRITICAL: Broadcast team state changes to demo screen
+        setTimeout(() => broadcastGameState(true), 0);
       }
 
       // Periodic state update (every 100ms)
       stateUpdateRef.current = setInterval(() => {
-        // Check if timer is paused - don't update time if paused
+        // Always send buzzer state updates to demo screen, even when paused
+        // This ensures demo screen stays synchronized with host state
         if (!timerPausedRef.current) {
           if (currentPhase === 'reading') {
             readingRemaining -= 0.1;
           if (readingRemaining <= 0) {
             readingRemaining = 0;
-            currentPhase = 'response';
+
+            // If demo screen is connected, wait for TIMER_PHASE_SWITCH message
+            // Otherwise, auto-transition to response phase
+            if (!demoScreenConnected) {
+              currentPhase = 'response';
 
             // Clear early buzzes from reading phase - they don't count
             onClearBuzzes?.();
@@ -1240,25 +1851,27 @@ export const GamePlay = memo(({
               setTimeout(() => {
                 handicapActive = false;
                 setBuzzerActive(true);
+                buzzerActiveRef.current = true;
                 // Activate all teams when green timer starts (after handicap ends)
-                const allTeamIds = new Set(teams.map(t => t.id));
-                if (onUpdateActiveTeamIdsRef.current) {
-                  console.log('[GamePlay] 🟡 Activating all teams (after handicap ends):', Array.from(allTeamIds));
-                  onUpdateActiveTeamIdsRef.current(allTeamIds);
-                }
+                console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
+                teamStatusManager.updateGameState({ isResponseTimerActive: true });
+                // CRITICAL: Broadcast team state changes to demo screen
+                setTimeout(() => broadcastGameState(true), 0);
                 sendBuzzerState();
               }, handicapDelay * 1000);
             } else {
               setBuzzerActive(true);
+              buzzerActiveRef.current = true;
               // Activate all teams when green timer starts
-              const allTeamIds = new Set(teams.map(t => t.id));
-              if (onUpdateActiveTeamIdsRef.current) {
-                console.log('[GamePlay] 🟡 Activating all teams (green timer starts):', Array.from(allTeamIds));
-                onUpdateActiveTeamIdsRef.current(allTeamIds);
-              }
+              console.log('[GamePlay] 🟡 Activating all teams (green timer starts)');
+              teamStatusManager.updateGameState({ isResponseTimerActive: true });
+              // CRITICAL: Broadcast team state changes to demo screen
+              setTimeout(() => broadcastGameState(true), 0);
               sendBuzzerState();
             }
-          }
+            } // End of if (!demoScreenConnected)
+          } // End of if (readingRemaining <= 0)
+        } // ← Закрытие if (currentPhase === 'reading')
         } else if (currentPhase === 'response') {
           responseRemaining -= 0.1;
           // Update ref with current value for immediate access in handleScoreChange
@@ -1267,15 +1880,26 @@ export const GamePlay = memo(({
             responseRemaining = 0;
             currentPhase = 'complete';
             setBuzzerActive(false);
+            buzzerActiveRef.current = false;
             // Deactivate all teams when time expires
-            if (onUpdateActiveTeamIdsRef.current) {
-              console.log('[GamePlay] ⚫ Deactivating all teams (timer expired)');
-              onUpdateActiveTeamIdsRef.current(new Set());
-            }
+            console.log('[GamePlay] ⚫ Deactivating all teams (timer expired)');
+            teamStatusManager.updateGameState({ isResponseTimerActive: false });
+            sendBuzzerState(); // Send final state when timer expires
           }
-        }
-        }
+        } // ← Закрытие if (!timerPausedRef.current)
+
+        // NO network updates every tick - clients handle countdown locally
+        // Only update ref for local use
+        buzzerStateRef.current.readingTimerRemaining = Math.max(0, readingRemaining);
+        buzzerStateRef.current.responseTimerRemaining = Math.max(0, responseRemaining);
       }, 100);
+
+      // Periodic sync every 5 seconds to correct any drift on clients (silent mode)
+      syncIntervalRef.current = setInterval(() => {
+        if (currentPhase !== 'complete') {
+          sendBuzzerState(true); // Silent mode - no console spam
+        }
+      }, 5000);
 
       // Set cleanup for when timers would naturally end
       const totalResponseTime = responseWindow > 0 ? (readingTime + responseWindow) * 1000 : 0;
@@ -1285,55 +1909,115 @@ export const GamePlay = memo(({
             clearInterval(stateUpdateRef.current);
             stateUpdateRef.current = null;
           }
-          setBuzzerActive(false);
-          // Deactivate all teams when time expires
-          if (onUpdateActiveTeamIdsRef.current) {
-            onUpdateActiveTeamIdsRef.current(new Set());
+          if (syncIntervalRef.current) {
+            clearInterval(syncIntervalRef.current);
+            syncIntervalRef.current = null;
           }
+          setBuzzerActive(false);
+          buzzerActiveRef.current = false;
+          // Deactivate all teams when time expires
+          console.log('[GamePlay] ⚫ Deactivating all teams (timer expired in cleanup)');
+          teamStatusManager.updateGameState({ isResponseTimerActive: false });
           sendBuzzerState();
         }, totalResponseTime);
       }
     }
 
     return () => {
+      console.log('[GamePlay] 🧹 Timer useEffect cleanup called');
       if (buzzerDelayRef.current) clearTimeout(buzzerDelayRef.current);
       if (responseWindowRef.current) clearTimeout(responseWindowRef.current);
       if (stateUpdateRef.current) clearInterval(stateUpdateRef.current);
-      setBuzzerActive(false);
-      // DON'T deactivate teams in cleanup - this causes issues when teamScores changes
-      // Teams should only be deactivated when timer expires or question explicitly closes
-      onBuzzerStateChangeRef.current({
-        active: false,
-        timerPhase: 'inactive',
-        readingTimerRemaining: 0,
-        responseTimerRemaining: 0,
-        handicapActive: false,
-        isPaused: false
-      });
+      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+      syncIntervalRef.current = null;
+
+      // Only deactivate buzzer if question is closed or showAnswer is true
+      // Don't deactivate if useEffect is just being recreated due to prop changes
+      const shouldDeactivateBuzzer = !activeQuestion || showAnswer;
+
+      if (shouldDeactivateBuzzer) {
+        setBuzzerActive(false);
+        buzzerActiveRef.current = false;
+        // DON'T deactivate teams in cleanup - this causes issues when teamScores changes
+        // Teams should only be deactivated when timer expires or question explicitly closes
+        onBuzzerStateChangeRef.current({
+          active: false,
+          timerPhase: 'inactive',
+          readingTimerRemaining: 0,
+          responseTimerRemaining: 0,
+          handicapActive: false,
+          isPaused: false,
+          timerColor: 'gray' as const,
+          timerBarColor: 'bg-gray-500',
+          timerTextColor: 'text-gray-300'
+        });
+      } else {
+        console.log('[GamePlay] 🔄 Skipping buzzer deactivation in cleanup - question still active');
+      }
     };
-  }, [activeQuestion, showAnswer, currentRound, teams]);
+  }, [activeQuestion, showAnswer, currentRound, stabilizedTeams, demoScreenConnected]);
+
+  // Handle external signal to switch to response phase (from demo screen)
+  useEffect(() => {
+    if (switchToResponsePhaseSignal !== null && switchToResponsePhaseSignal !== lastProcessedSignalRef.current) {
+      console.log('[GamePlay] 📨 Received switchToResponsePhaseSignal:', switchToResponsePhaseSignal);
+      lastProcessedSignalRef.current = switchToResponsePhaseSignal;
+      switchToResponsePhase();
+      // Reset the signal after processing to prevent multiple triggers
+      onPhaseSwitchComplete?.();
+    }
+  }, [switchToResponsePhaseSignal, switchToResponsePhase, onPhaseSwitchComplete]);
 
   // Close question modal
   const closeQuestion = useCallback(() => {
+    console.log('[GamePlay] 🔼 closeQuestion called', {
+      hasActiveQuestion: !!activeQuestion,
+      questionId: activeQuestion?.question.id,
+      showAnswer,
+      timestamp: Date.now()
+    });
+
     if (activeQuestion) {
       // Mark question as answered
       const key = `${currentRound?.id}-${activeQuestion.theme.id}-${activeQuestion.question.id}`;
       setAnsweredQuestions(prev => new Set(prev).add(key));
     }
     setActiveQuestion(null);
-    lastActiveQuestionRef.current = null; // Clear ref when question closes
+    // CRITICAL: Clear ref immediately to ensure broadcastGameState sends activeQuestion: null
+    lastActiveQuestionRef.current = null;
     questionModalActiveRef.current = false; // QuestionModal closed, GamePlay can manage timer
+    // Clear transferred media cache when question closes
+    clearTransferredMediaCache();
     setShowAnswer(false);
+    setShowHint(false); // Reset hint state when question closes
     setBuzzerActive(false);
-    // Reset wrong answer teams when question closes
-    setWrongAnswerTeams(new Set());
-    // Reset attempted teams when question closes
-    setAttemptedTeamIds(new Set());
-    // Deactivate all teams when question closes
-    if (onUpdateActiveTeamIdsRef.current) {
-      onUpdateActiveTeamIdsRef.current(new Set());
+    buzzerActiveRef.current = false;
+
+    console.log('[GamePlay] 🔼 closeQuestion: state updated, broadcasting should trigger');
+
+    // Send buzzer state update to inform demo screen that timer is now inactive
+    if (buzzerStateRef.current) {
+      buzzerStateRef.current = {
+        active: false,
+        timerPhase: 'inactive',
+        readingTimerRemaining: 0,
+        responseTimerRemaining: 0,
+        handicapActive: false,
+        handicapTeamId: undefined,
+        isPaused: false,
+        readingTimeTotal: 0,
+        responseTimeTotal: currentRound?.responseWindow ?? 30,
+        timerColor: 'gray',
+        timerBarColor: 'bg-gray-500',
+        timerTextColor: 'text-gray-300'
+      };
+      onBuzzerStateChangeRef.current(buzzerStateRef.current);
     }
-    processingWrongAnswerRef.current = false;
+
+    // Reset all team states when question closes
+    teamStatusManager.updateGameState({ isResponseTimerActive: false });
+    teamStatusManager.resetAllTeams();
+
     const closeState = {
       active: false,
       timerPhase: 'inactive' as const,
@@ -1352,12 +2036,12 @@ export const GamePlay = memo(({
     setTimerPaused(false);
     onBuzzTriggered(null);
     // Broadcast to demo screen that question is closed
-    broadcastGameState(true); // Force broadcast to ensure demo screen updates immediately
+    broadcastGameState(true);
     // Reset answering team when question closes
     if (onAnsweringTeamChange) {
       onAnsweringTeamChange(null);
     }
-  }, [activeQuestion, currentRound, onBuzzerStateChange, onBuzzTriggered, onAnsweringTeamChange, broadcastGameState]);
+  }, [activeQuestion, currentRound, onBuzzerStateChange, onBuzzTriggered, onAnsweringTeamChange, broadcastGameState, teamStatusManager]);
 
   // Check if question is answered
   const isQuestionAnswered = useCallback((questionId: string, themeId: string) => {
@@ -1369,123 +2053,95 @@ export const GamePlay = memo(({
   useEffect(() => {
     setScoreChangeType(null);
   }, [activeQuestion]);
+
+  // Stable callback for showing answer to prevent infinite re-renders
+  const handleShowAnswer = useCallback(() => {
+    console.log('[GamePlay] handleShowAnswer called, setting showAnswer to true');
+    setShowAnswer(true);
+    // Deactivate all teams when answer is shown
+    console.log('[GamePlay] ⚫ Deactivating all teams (answer shown via button)');
+    teamStatusManager.updateGameState({ isResponseTimerActive: false });
+    // CRITICAL: Immediately broadcast state to demo screen when showing answer
+    console.log('[GamePlay] 📡 Showing answer - broadcasting immediately to demo screen');
+    broadcastGameState(true); // Force broadcast for instant sync
+  }, [broadcastGameState]);
+
   const handleScoreChange = useCallback((change: 'wrong' | 'correct') => {
     if (!activeQuestion) return;
 
     const points = activeQuestion.points;
-    // Use answeringTeamId if set, otherwise fall back to buzzedTeamId
-    const targetTeamId = answeringTeamId || buzzedTeamId;
+    const currentTeamStatusManager = teamStatusManagerRef.current;
 
-    if (change === 'wrong') {
-      // Deduct points from answering team
-      if (targetTeamId) {
+    // SIMPLIFIED: Always use answeringTeamId if set, otherwise try to find from teamStatusManager
+    let targetTeamId: string | null = answeringTeamId || null;
 
-        setTeamScores(prev => prev.map((team: TeamScore) => {
-          if (team.teamId === targetTeamId) {
-            return { ...team, score: team.score - points };
-          }
-          return team;
-        }));
-        setScoreChangeType('wrong');
-        processingWrongAnswerRef.current = true;
+    // Only check teamStatusManager if answeringTeamId is not set
+    if (!targetTeamId) {
+      // Use the method from teamStatusManager which should have the latest state
+      targetTeamId = currentTeamStatusManager.getAnsweringTeam();
+    }
 
-        // Mark team as having answered wrong
-        console.log(`[GamePlay] ❌ Team ${targetTeamId} marked as WRONG ANSWER`);
-        setWrongAnswerTeams(prev => new Set(prev).add(targetTeamId));
+    // Debug logging
+    const allStates = Array.from(currentTeamStatusManager.teamStates.entries()).map(([id, state]) => ({
+      id: id.slice(0, 12),
+      status: state.status
+    }));
+    console.log('[GamePlay] handleScoreChange called:', {
+      change,
+      points,
+      answeringTeamId,
+      targetTeamId,
+      getAnsweringTeamResult: currentTeamStatusManager.getAnsweringTeam()?.slice(0, 12),
+      allTeamStates: allStates
+    });
 
-        // Mark as attempted IMMEDIATELY (synchronous update - create proper new Set)
-        const updatedAttemptedIds = new Set([...attemptedTeamIds, targetTeamId]);
-        setAttemptedTeamIds(updatedAttemptedIds);
-
-        // Immediately activate other teams that haven't attempted yet (use UPDATED value)
-        const newActiveTeamIds = new Set(teams.map(t => t.id).filter(id => id !== targetTeamId && !updatedAttemptedIds.has(id)));
-
-        if (onUpdateActiveTeamIdsRef.current) {
-          console.log('[GamePlay] 🔄 Updating active teams after wrong answer:', {
-            deactivatedTeam: targetTeamId,
-            newActiveTeams: Array.from(newActiveTeamIds),
-            attemptedTeams: Array.from(updatedAttemptedIds)
+    // Apply score change - NO CONDITIONS except having a target team
+    if (targetTeamId) {
+      if (change === 'wrong') {
+        setTeamScores(prev => {
+          const updated = prev.map((team: TeamScore) => {
+            if (team.teamId === targetTeamId) {
+              const newScore = team.score - points;
+              console.log(`[GamePlay] ❌ Deducting ${points} points from team ${team.teamName}: ${team.score} -> ${newScore}`);
+              return { ...team, score: newScore };
+            }
+            return team;
           });
-          onUpdateActiveTeamIdsRef.current(newActiveTeamIds);
-        }
-
-        // Send updated team states to demo screen
-        broadcastGameState(false); // Don't force - use throttle
-      } else {
-
-        // Keep buzzer active for other teams ONLY if timer is still running
-        const currentResponseRemaining = buzzerStateRef.current?.responseTimerRemaining || 0;
-        const isTimerStillRunning = currentResponseRemaining > 0 && buzzerStateRef.current?.active;
-
-        if (isTimerStillRunning) {
-          setBuzzerActive(true);
-          const responseState = {
-            active: true,
-            timerPhase: 'response' as const,
-            readingTimerRemaining: 0,
-            responseTimerRemaining: currentResponseRemaining,
-            handicapActive: false,
-            isPaused: timerPaused,
-            readingTimeTotal: 0,
-            responseTimeTotal: currentRound?.responseWindow || 30, // Always use current round value
-            timerColor: 'green' as const,
-            timerBarColor: 'bg-green-500',
-            timerTextColor: 'text-green-300'
-          };
-          buzzerStateRef.current = responseState;
-          onBuzzerStateChange(responseState);
-        } else {
-          // Timer has expired - don't reactivate buzzer
-          setBuzzerActive(false);
-          const inactiveState = {
-            active: false,
-            timerPhase: 'inactive' as const,
-            readingTimerRemaining: 0,
-            responseTimerRemaining: 0,
-            handicapActive: false,
-            isPaused: false,
-            readingTimeTotal: 0,
-            responseTimeTotal: currentRound?.responseWindow || 30,
-            timerColor: 'gray' as const,
-            timerBarColor: 'bg-gray-500',
-            timerTextColor: 'text-gray-300'
-          };
-          buzzerStateRef.current = inactiveState;
-          onBuzzerStateChange(inactiveState);
-        }
-
-        // Clear answering team
-        if (onAnsweringTeamChange) {
-          onAnsweringTeamChange(null);
-        }
-      }
-    } else if (change === 'correct') {
-      // Add points to answering team
-      if (targetTeamId) {
-
-        setTeamScores(prev => prev.map((team: TeamScore) => {
-          if (team.teamId === targetTeamId) {
-            return { ...team, score: team.score + points };
-          }
-          return team;
-        }));
+          // Update ref immediately for broadcastGameState to use
+          teamScoresRef.current = updated;
+          return updated;
+        });
+        setScoreChangeType('wrong');
+        currentTeamStatusManager.handleIncorrectAnswer();
+      } else {  // correct
+        setTeamScores(prev => {
+          const updated = prev.map((team: TeamScore) => {
+            if (team.teamId === targetTeamId) {
+              const newScore = team.score + points;
+              console.log(`[GamePlay] ✅ Adding ${points} points to team ${team.teamName}: ${team.score} -> ${newScore}`);
+              return { ...team, score: newScore };
+            }
+            return team;
+          });
+          // Update ref immediately for broadcastGameState to use
+          teamScoresRef.current = updated;
+          return updated;
+        });
         setScoreChangeType('correct');
+        currentTeamStatusManager.handleCorrectAnswer();
 
-        // Mark team as having attempted to answer
-        setAttemptedTeamIds(prev => new Set(prev).add(targetTeamId));
+        // Deactivate all teams on correct answer
+        console.log('[GamePlay] ⚫ Deactivating all teams (correct answer)');
+        currentTeamStatusManager.updateGameState({ isResponseTimerActive: false });
 
-        // Deactivate all teams - question is done, no more answers allowed
-        if (onUpdateActiveTeamIdsRef.current) {
-          onUpdateActiveTeamIdsRef.current(new Set());
-        }
+        // Auto-show answer when correct answer is given
+        console.log('[GamePlay] ✅ Correct answer - auto-showing answer');
+        setShowAnswer(true);
 
-        // Clear answering team
-        if (onAnsweringTeamChange) {
-          onAnsweringTeamChange(null);
-        }
-
-        // Turn off buzzer - answer will be shown manually with Space
+        // Turn off buzzer on correct answer
         setBuzzerActive(false);
+        buzzerActiveRef.current = false;
+
         const newState = {
           active: false,
           timerPhase: 'inactive' as const,
@@ -1494,7 +2150,7 @@ export const GamePlay = memo(({
           handicapActive: false,
           isPaused: false,
           readingTimeTotal: 0,
-          responseTimeTotal: 30, // Default response time
+          responseTimeTotal: 30,
           timerColor: 'gray' as const,
           timerBarColor: 'bg-gray-500',
           timerTextColor: 'text-gray-300'
@@ -1503,8 +2159,14 @@ export const GamePlay = memo(({
         onBuzzerStateChange(newState);
         setTimerPaused(false);
       }
+
+      // Send updated team states to demo screen
+      broadcastGameState(false);
+    } else {
+      console.warn('[GamePlay] ⚠️ No answering team found - cannot change score!');
+      console.warn('[GamePlay] Teams:', teamScores.map(t => ({ id: t.teamId.slice(0, 12), name: t.teamName, score: t.score })));
     }
-  }, [activeQuestion, buzzedTeamId, answeringTeamId, onBuzzerStateChange, onAnsweringTeamChange, onUpdateActiveTeamIds, currentRound, attemptedTeamIds, teams]);
+  }, [activeQuestion, answeringTeamId, onBuzzerStateChange, broadcastGameState, teamScores]);
 
   // Open question
   const openQuestion = useCallback(async (question: Question, theme: Theme, points: number) => {
@@ -1539,14 +2201,18 @@ export const GamePlay = memo(({
       timerPausedRef: timerPausedRef.current
     });
 
+    // Reset team states when opening a new question
+    // Use flushSync to ensure state is synchronously updated before continuing
+    console.log('[GamePlay] 🔒 Resetting team states for new question');
+    flushSync(() => {
+      teamStatusManager.resetForNewQuestion();
+    });
+
     // Reset answering team when opening a new question
     if (onAnsweringTeamChange) {
       onAnsweringTeamChange(null);
     }
-    // Reset wrong answer teams when opening a new question
-    setWrongAnswerTeams(new Set());
-    // Reset attempted teams when opening a new question
-    setAttemptedTeamIds(new Set());
+
     // Set initial pause state - pause if question has media
     const hasMedia = !!(question.media && question.media.url && question.media.url.trim() !== '');
     const initialPauseState = hasMedia;
@@ -1557,10 +2223,6 @@ export const GamePlay = memo(({
       questionId: question.id,
       mediaUrl: question.media?.url
     });
-    // Deactivate all teams when opening a new question (will be activated when green timer starts)
-    if (onUpdateActiveTeamIdsRef.current) {
-      onUpdateActiveTeamIdsRef.current(new Set());
-    }
     // Highlight the question for 1 second, then open modal
     setHighlightedQuestion(key);
     setTimeout(() => {
@@ -1576,11 +2238,25 @@ export const GamePlay = memo(({
         lastActiveQuestionRef.current = newActiveQuestion; // Update ref immediately
         console.log('[GamePlay] ✅ Updated lastActiveQuestionRef:', {
           question: newActiveQuestion.question?.text?.slice(0, 30),
-          theme: newActiveQuestion.theme.name
+          theme: newActiveQuestion.theme.name,
+          questionId: newActiveQuestion.question?.id,
+          hasMedia: !!newActiveQuestion.question?.media,
+          hasAnswerMedia: !!newActiveQuestion.question?.answerMedia,
+          mediaUrl: newActiveQuestion.question?.media?.url,
+          mediaType: newActiveQuestion.question?.media?.type,
+          hasLocalFile: !!newActiveQuestion.question?.media?.localFile,
+          localFileId: newActiveQuestion.question?.media?.localFile?.mediaId
         });
         questionModalActiveRef.current = true; // QuestionModal open, will manage timer values
         setShowAnswer(false);
+        setShowHint(false); // Reset hint state when opening new question
         setBuzzerActive(false);
+        buzzerActiveRef.current = false;
+        // CRITICAL: Reset phase switch signal when opening new question to prevent false triggers
+        onPhaseSwitchComplete?.();
+        // CRITICAL: Deactivate teams when opening question (yellow timer = reading phase)
+        // Teams will be activated only when green timer starts (demo screen sends TIMER_PHASE_SWITCH)
+        teamStatusManager.updateGameState({ isResponseTimerActive: false });
       });
 
       // Now broadcast immediately after state is guaranteed to be updated
@@ -1618,88 +2294,79 @@ export const GamePlay = memo(({
           responseTimeTotal: currentRound?.responseWindow || 30,
           hasMedia
         });
+
+        // CRITICAL: Send initial buzzer state to demo screen immediately
+        // This ensures demo screen starts with correct pause state
+        console.log('[GamePlay] 📡 Sending initial buzzer state to demo screen:', buzzerStateRef.current);
+        onBuzzerStateChange(buzzerStateRef.current);
+
+        // CRITICAL: Also broadcast game state to ensure demo screen has complete state
+        // This includes the correct buzzerState with isPaused
+        console.log('[GamePlay] 📡 Broadcasting game state with correct buzzer state');
+        broadcastGameState(true); // Force broadcast to ensure immediate delivery
       }
 
-      // NO broadcastGameState() call - BUZZER_STATE is sent by QuestionModal
-      // This prevents duplicate messages that reset local countdown on demo screen
+      // NOTE: Both TIMER_STATE and GAME_STATE_UPDATE are now sent
+      // TIMER_STATE: for immediate timer sync
+      // GAME_STATE_UPDATE: for complete state including pause state
     }, 1000);
-  }, [currentRound?.name, onAnsweringTeamChange, onUpdateActiveTeamIds]); // Removed broadcastGameState to prevent circular dependency
-
-  // Handle team card click - set as answering team or toggle wrong answer state
-  const handleTeamClick = useCallback((teamId: string) => {
-    // If clicking on answering team, just clear it (make it gray, not red)
-    if (answeringTeamId === teamId) {
-      // Clear answering team when clicking on it - don't mark as wrong
-      if (onAnsweringTeamChange) {
-        onAnsweringTeamChange(null);
-      }
-    }
-    // If clicking on a team that already has wrong answer, remove it from wrong set
-    else if (wrongAnswerTeams.has(teamId)) {
-      console.log(`[GamePlay] ✅ Team ${teamId} removed from WRONG ANSWER state`);
-      setWrongAnswerTeams(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(teamId);
-        return newSet;
-      });
-    }
-    // Otherwise, set as answering team
-    else if (onAnsweringTeamChange) {
-      onAnsweringTeamChange(teamId);
-    }
-  }, [answeringTeamId, wrongAnswerTeams, onAnsweringTeamChange]);
+  }, [currentRound?.name, onAnsweringTeamChange, onUpdateActiveTeamIds, broadcastGameState]); // Added broadcastGameState for proper state sync
 
   return (
     <>
-      {/* Media Streamer - Transfers media files to demo screen */}
-      {onBroadcastMessage && (
-        <MediaStreamer
-          activeQuestion={activeQuestion}
-          onBroadcastMessage={(message) => onBroadcastMessage(message)}
-          hostId={pack.id || 'host'}
-        />
-      )}
+      {/* DebugMediaStreamer removed - using syncMediaStreamer in broadcastGameState instead */}
 
       {/* Player Panel - Always visible on top layer */}
       <div className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
         {teamScores.map(team => {
-          // answeringTeamId takes priority (set by first buzz during response phase)
+          // Get team status from new status manager
+          const teamStatus = teamStatusManager.getTeamStatus(team.teamId);
           const isAnsweringTeam = answeringTeamId === team.teamId;
           const isBuzzed = buzzedTeamIds?.has(team.teamId) || false;
           const isLateBuzz = lateBuzzTeamIds?.has(team.teamId) || false;
-          const hasWrongAnswer = wrongAnswerTeams.has(team.teamId);
 
-          // Clash mode status
-          const isClashing = clashingTeamIds.has(team.teamId);
+          // Debug logging for buzz effect
+          if (isBuzzed) {
+            console.log('[GamePlay] 🟢 Team buzzed:', {
+              teamName: team.teamName,
+              teamId: team.teamId.slice(0, 12),
+              teamStatus,
+              isInactiveBuzz: isBuzzed && teamStatus === TeamStatus.INACTIVE
+            });
+          }
 
           // Check if team has placed bet in super game
           const hasPlacedBet = currentScreen === 'placeBets' && superGameBets.find(b => b.teamId === team.teamId)?.ready;
           // Check if team has submitted answer in super game (during question phase)
           const hasSubmittedAnswer = currentScreen === 'superQuestion' && superGameAnswers.find(a => a.teamId === team.teamId)?.answer;
 
+          // Determine final card state and classes
+          // Visual effect when inactive team presses BUZZ: scale-90 (10% smaller) and 50% lighter
+          const isInactiveBuzz = isBuzzed && teamStatus === TeamStatus.INACTIVE;
+
+          let cardClasses: string;
+          if (hasPlacedBet || hasSubmittedAnswer) {
+            cardClasses = 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105';
+          } else if (isInactiveBuzz && teamStatus === TeamStatus.INACTIVE) {
+            // Special styling for inactive team that pressed BUZZ
+            cardClasses = 'bg-gray-100/50 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)] scale-90';
+          } else {
+            // Use team status manager for all other cases (including CLASH with sub-statuses)
+            cardClasses = teamStatusManager.getTeamCardClasses(team.teamId);
+          }
+
           return (
             <div
               key={team.teamId}
-              onClick={() => handleTeamClick(team.teamId)}
-              className={`px-6 py-2 rounded-lg border-2 transition-all relative cursor-pointer hover:scale-105 ${
-                hasWrongAnswer
-                  ? 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                  : hasPlacedBet || hasSubmittedAnswer
-                    ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
-                    : isAnsweringTeam
-                      ? 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105'
-                      : isClashing
-                        ? 'bg-blue-500/40 border-blue-400 shadow-[0_0_20px_rgba(59,130,246,0.8)] scale-105'
-                        : activeTeamIds.has(team.teamId)
-                          ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]'
-                          : 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-              }`}
+              onClick={(e) => teamCardClicks.onCardClick(team.teamId, e)}
+              onContextMenu={(e) => teamCardClicks.onCardContextMenu(team.teamId, e)}
+              className={`px-6 py-2 rounded-lg border-2 transition-all relative cursor-pointer hover:scale-105 ${cardClasses}`}
             >
             <div className="text-center">
               <div className="text-2xl font-bold text-white">{team.teamName}</div>
               <div className="h-px bg-gray-600 my-1"></div>
               <div className={`text-2xl font-bold ${
-                team.score >= 0 ? 'text-white' : 'text-red-400'
+                teamStatus === TeamStatus.PENALTY ? 'text-red-400' : team.score >= 0 ? 'text-white' : 'text-red-400'
               }`}>
                 {team.score}
               </div>
@@ -1765,7 +2432,7 @@ export const GamePlay = memo(({
                   round.themes?.map(theme => (
                     <div
                       key={`${round.id}-${theme.id}`}
-                      className="rounded-xl p-6 shadow-lg flex flex-col items-center relative cursor-default"
+                      className="rounded-lg p-6 shadow-lg flex flex-col items-center relative cursor-default"
                       style={{
                         backgroundColor: theme.color || '#3b82f6',
                         minHeight: '120px'
@@ -1809,6 +2476,65 @@ export const GamePlay = memo(({
             </div>
           </div>
         )}
+        </div>
+      )}
+
+      {/* Screen 4: Select Super Themes - Exclude themes */}
+      {currentScreen === 'selectSuperThemes' && currentRound && (
+        <div className="w-full h-full flex flex-col items-center justify-center animate-in fade-in duration-500 px-8">
+          {/* Title */}
+          <h2 className="text-5xl font-bold text-center text-white mb-4 uppercase tracking-wide">
+            СУПЕР-ИГРА
+          </h2>
+          <p className="text-2xl text-gray-300 mb-8">Нажмите на темы, чтобы исключить их</p>
+
+          {/* Themes grid */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-6 max-w-5xl">
+            {currentRound.themes?.map((theme) => {
+              const isDisabled = disabledSuperThemeIds.has(theme.id);
+              const remainingCount = (currentRound.themes?.length || 0) - disabledSuperThemeIds.size;
+
+              return (
+                <button
+                  key={theme.id}
+                  onClick={() => {
+                    if (remainingCount <= 1) return; // Can't disable the last theme
+                    setDisabledSuperThemeIds(prev => {
+                      const newSet = new Set(prev);
+                      if (newSet.has(theme.id)) {
+                        newSet.delete(theme.id);
+                      } else {
+                        newSet.add(theme.id);
+                      }
+                      return newSet;
+                    });
+                  }}
+                  disabled={remainingCount <= 1 && !isDisabled}
+                  className={`relative rounded-lg p-8 border-2 transition-all ${
+                    isDisabled
+                      ? 'bg-gray-900/40 border-gray-700/50 opacity-40'
+                      : 'bg-gray-900/80 border-yellow-500/30 hover:border-yellow-500 hover:bg-gray-800'
+                  } ${remainingCount <= 1 && !isDisabled ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  <h3 className={`text-2xl font-bold text-center ${
+                    isDisabled ? 'text-gray-500' : 'text-yellow-400'
+                  }`}>
+                    {theme.name}
+                  </h3>
+                  {isDisabled && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-4xl text-gray-600">✕</span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Remaining count */}
+          <p className="text-xl text-gray-400 mt-8">
+            Осталось тем: {currentRound.themes?.length && (currentRound.themes.length - disabledSuperThemeIds.size)}
+          </p>
         </div>
       )}
 
@@ -1882,7 +2608,7 @@ export const GamePlay = memo(({
       {currentScreen === 'showWinner' && (
         <ModalShowWinnerScreen
           teamScores={teamScores}
-          onBroadcastMessage={onBroadcastMessage}
+          onBroadcastMessage={broadcastMessage}
         />
       )}
 
@@ -1893,11 +2619,12 @@ export const GamePlay = memo(({
           theme={activeQuestion.theme}
           points={activeQuestion.points}
           showAnswer={showAnswer}
+          onShowHint={setShowHint}
           buzzedTeamId={buzzedTeamId}
           teamScores={teamScores}
           onClose={closeQuestion}
           onScoreChange={handleScoreChange}
-          onShowAnswer={() => setShowAnswer(true)}
+          onShowAnswer={handleShowAnswer}
           scoreChangeType={scoreChangeType}
           readingTimePerLetter={currentRound?.readingTimePerLetter ?? 0.05}
           responseWindow={currentRound?.responseWindow ?? 30}
@@ -1910,6 +2637,9 @@ export const GamePlay = memo(({
         />
       )}
       </div>
+
+      {/* Team Card Context Menu - for manually setting team status */}
+      <TeamCardContextMenu contextMenu={teamContextMenu} teamScores={teamScores} onTeamScoreChange={handleTeamScoreChange} />
     </>
   );
 });

@@ -3,8 +3,9 @@
  * Displays team scores during gameplay
  */
 
-import React, { memo } from 'react';
+import React from 'react';
 import { Trophy } from 'lucide-react';
+import { memoComparisons } from '../../../utils/memoUtils.tsx';
 
 interface TeamScoreProps {
   teamId: string;
@@ -18,7 +19,7 @@ interface ScorePanelProps {
   currentTeamId?: string | null;
 }
 
-export const ScorePanel = memo(({ teams, currentTeamId }: ScorePanelProps) => {
+export const ScorePanel = memoComparisons.withData(({ teams, currentTeamId }: ScorePanelProps) => {
   // Sort teams by score (descending)
   const sortedTeams = [...teams].sort((a, b) => b.score - a.score);
 
@@ -49,5 +50,3 @@ export const ScorePanel = memo(({ teams, currentTeamId }: ScorePanelProps) => {
     </div>
   );
 });
-
-ScorePanel.displayName = 'ScorePanel';

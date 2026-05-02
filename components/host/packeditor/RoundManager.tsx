@@ -43,7 +43,7 @@ export const RoundManager = memo(({
   };
 
   return (
-    <div className="bg-gray-900 rounded-xl p-6 border border-gray-700">
+    <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-white">Раунды ({rounds.length})</h2>
         <button

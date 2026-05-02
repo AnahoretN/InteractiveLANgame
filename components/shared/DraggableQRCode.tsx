@@ -140,7 +140,7 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, 
             e.stopPropagation();
             onClose();
           }}
-          className="text-white hover:text-red-300 transition-colors p-1 hover:bg-white/10 rounded"
+          className="text-white hover:text-red-300 transition-colors p-1 hover:bg-white/10 rounded-lg"
         >
           <X size={20} />
         </button>
@@ -161,7 +161,7 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, 
 
           {/* Connection info */}
           <div className="text-center">
-            <div className="bg-gray-800 px-4 py-2 rounded border border-gray-700">
+            <div className="bg-gray-800 px-4 py-2 rounded-lg border border-gray-700">
               <p className="text-blue-400 font-mono text-sm break-all">
                 {hostId}
               </p>

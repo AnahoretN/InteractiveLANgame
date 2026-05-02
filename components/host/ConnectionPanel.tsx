@@ -45,7 +45,7 @@ export const ConnectionPanel = memo(({
   }, [onCopyLink]);
 
   return (
-    <div className="bg-gray-900 rounded-xl p-6 border border-gray-700">
+    <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
       <div className="flex items-center gap-3 mb-4">
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${
           isOnline
@@ -80,7 +80,7 @@ export const ConnectionPanel = memo(({
       </div>
 
       {/* QR Code */}
-      <div className="bg-white rounded-xl p-4 mb-4 flex justify-center">
+      <div className="bg-white rounded-lg p-4 mb-4 flex justify-center">
         <QRCodeSVG
           value={qrUrl}
           size={180}

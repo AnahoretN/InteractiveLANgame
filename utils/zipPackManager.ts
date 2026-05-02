@@ -180,6 +180,11 @@ export async function loadPackFromZip(file: File): Promise<GamePack> {
   }
 
   console.log('📦 JSON пакет загружен:', pack.name, 'ID:', pack.id);
+  console.log('🖼️ Pack cover в JSON:', {
+    hasCover: !!pack.cover,
+    coverType: pack.cover?.type,
+    coverValue: pack.cover?.value?.slice(0, 60) || 'не установлен'
+  });
 
   // Логируем все media URL в паке для отладки
   console.log('🔍 Сканирование media URL в загруженном паке:');
@@ -376,10 +381,29 @@ function updateAllMediaUrlsInPack(
   // Создаем маппинг для разных типов медиа
   const questionMediaMap = new Map<string, { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo }>();
   const answerMediaMap = new Map<string, { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo }>();
+  let packCoverData: { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo } | null = null;
+  const roundCoverMap = new Map<number, { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo }>();
 
   // Распределяем файлы по типам
   for (const [relativePath, { blobUrl, mediaId, localFileInfo }] of newBlobUrls) {
     const fileName = relativePath.split('/').pop() || '';
+
+    // Проверяем pack cover - формат: pack_cover_XXXXXXXX.bin или просто pack_cover.bin
+    const packCoverMatch = fileName.match(/^pack_cover(_\d+)?\.bin$/);
+    if (packCoverMatch) {
+      packCoverData = { blobUrl, mediaId, localFileInfo };
+      console.log(`📋 Файл ${fileName} -> pack cover`);
+      continue;
+    }
+
+    // Проверяем round cover - формат: round_X_cover_XXXXXXXX.bin или round_X_cover.bin
+    const roundCoverMatch = fileName.match(/^round_(\d+)_cover(_\d+)?\.bin$/);
+    if (roundCoverMatch) {
+      const roundNumber = parseInt(roundCoverMatch[1], 10);
+      roundCoverMap.set(roundNumber, { blobUrl, mediaId, localFileInfo });
+      console.log(`📋 Файл ${fileName} -> round ${roundNumber} cover`);
+      continue;
+    }
 
     // Извлекаем тип медиа (question или answer) и question ID из имени файла
     // Формат: question_XXXXXXXX_XXXXXXXX_XXXXXXXX_XXXXXXXX_XXXXXXXX.mp3
@@ -509,6 +533,55 @@ function updateAllMediaUrlsInPack(
             console.log(`✅ Обновлено answer media для ${question.id}`);
           }
         }
+      }
+    }
+  }
+
+  // Обновляем pack cover
+  if (packCoverData) {
+    const shouldUpdate = !pack.cover?.value ||
+                        pack.cover.value.startsWith('media://') ||
+                        (pack.cover.value.startsWith('blob:') && pack.cover.value !== packCoverData.blobUrl);
+
+    if (shouldUpdate) {
+      console.log('🔄 Обновление pack cover:');
+      console.log(`   Старый URL: ${pack.cover?.value?.slice(0, 50) || 'пусто'}...`);
+      console.log(`   Новый URL: ${packCoverData.blobUrl.slice(0, 50)}...`);
+
+      if (!pack.cover) {
+        pack.cover = { type: 'file', value: '' };
+      }
+      pack.cover.value = packCoverData.blobUrl;
+      pack.cover.localFile = packCoverData.localFileInfo;
+      updatedCount++;
+      console.log('✅ Обновлено pack cover');
+    }
+  } else {
+    console.log('⚠️ Pack cover не найден в ZIP архиве');
+    console.log(`   Pack cover в JSON: ${pack.cover?.value?.slice(0, 50) || 'не установлен'}...`);
+  }
+
+  // Обновляем round covers
+  for (const round of pack.rounds || []) {
+    if (roundCoverMap.has(round.number)) {
+      const coverData = roundCoverMap.get(round.number)!;
+
+      const shouldUpdate = !round.cover?.value ||
+                          round.cover.value.startsWith('media://') ||
+                          (round.cover.value.startsWith('blob:') && round.cover.value !== coverData.blobUrl);
+
+      if (shouldUpdate) {
+        console.log(`🔄 Обновление round ${round.number} cover:`);
+        console.log(`   Старый URL: ${round.cover?.value?.slice(0, 50) || 'пусто'}...`);
+        console.log(`   Новый URL: ${coverData.blobUrl.slice(0, 50)}...`);
+
+        if (!round.cover) {
+          round.cover = { type: 'file', value: '' };
+        }
+        round.cover.value = coverData.blobUrl;
+        round.cover.localFile = coverData.localFileInfo;
+        updatedCount++;
+        console.log(`✅ Обновлено round ${round.number} cover`);
       }
     }
   }

@@ -5,7 +5,7 @@
 
 import React, { memo } from 'react';
 import type { Round, Theme } from '../PackEditor';
-import type { GamePack } from '../GameSelectorModal';
+import type { GamePack } from '../OptimizedGameSelectorModal';
 import { calculateThemeCardFontSize } from './fontUtils';
 
 interface CoverScreenProps {
@@ -34,7 +34,7 @@ export const CoverScreen = memo(({ pack, onNext }: CoverScreenProps) => {
               <img
                 src={pack.cover.value}
                 alt={pack.name}
-                className="max-h-[50vh] mx-auto rounded-xl shadow-2xl"
+                className="max-h-[50vh] mx-auto rounded-lg shadow-2xl"
               />
             ) : null}
           </div>
@@ -75,7 +75,7 @@ export const ThemesScreen = memo(({ round, onNext }: ThemesScreenProps) => {
           {round.themes?.map((theme) => (
             <div
               key={theme.id}
-              className="bg-gray-900 border-2 border-blue-500/30 rounded-xl p-8 shadow-xl"
+              className="bg-gray-900 border-2 border-blue-500/30 rounded-lg p-8 shadow-xl"
             >
               <h3
                 className="text-white font-bold text-center"
@@ -128,7 +128,7 @@ export const RoundScreen = memo(({ round, roundIndex, totalRounds, onNext }: Rou
               <img
                 src={round.cover.value}
                 alt={round.name || `Round ${roundIndex + 1}`}
-                className="max-h-[40vh] mx-auto rounded-xl shadow-2xl"
+                className="max-h-[40vh] mx-auto rounded-lg shadow-2xl"
               />
             ) : null}
           </div>

@@ -5,7 +5,7 @@
 
 import React, { memo, useState, useCallback } from 'react';
 import { Check } from 'lucide-react';
-import type { GamePack } from './GameSelectorModal';
+import type { GamePack } from './OptimizedGameSelectorModal';
 
 interface GameSelectorCardProps {
   pack: GamePack;
@@ -36,7 +36,7 @@ export const GameSelectorCard = memo(({
     <div
       onClick={onClick}
       onKeyDown={handleKeyDown}
-      className={`relative bg-gray-900 rounded-xl p-6 border-2 transition-all cursor-pointer group hover:shadow-xl ${
+      className={`relative bg-gray-900 rounded-lg p-6 border-2 transition-all cursor-pointer group hover:shadow-xl ${
         isSelected
           ? 'border-blue-500 shadow-blue-500/20'
           : 'border-gray-700 hover:border-gray-600'

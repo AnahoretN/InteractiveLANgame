@@ -61,6 +61,17 @@ export interface LocalFileInfo {
   mediaId?: string;      // ID для восстановления из IndexedDB
 }
 
+export interface QuestionHint {
+  text?: string; // Hint text
+  media?: { // Media for the hint
+    type: 'image' | 'video' | 'audio' | 'youtube';
+    url?: string;
+    localFile?: LocalFileInfo;
+  };
+  answers?: string[]; // Multiple choice answers for hint
+  correctAnswer?: number; // Index of correct answer in hint answers
+}
+
 export interface Question {
   id: string;
   text: string;
@@ -72,6 +83,7 @@ export interface Question {
     url?: string;
     localFile?: LocalFileInfo; // Информация о локальном файле + base64 данные
   };
+  hint?: QuestionHint; // Hint with text, media and optional multiple choice
   media?: {
     type: 'image' | 'video' | 'audio' | 'youtube';
     url?: string;

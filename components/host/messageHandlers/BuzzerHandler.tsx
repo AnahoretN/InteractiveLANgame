@@ -105,7 +105,7 @@ export const BuzzerHandler: React.FC<BuzzerHandlerProps> = ({
                       return updated;
                     });
                   }}
-                  className="p-2 bg-red-600 hover:bg-red-500 text-white rounded"
+                  className="p-2 bg-red-600 hover:bg-red-500 text-white rounded-lg"
                   title="Clear this buzz"
                 >
                   Clear

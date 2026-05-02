@@ -1,14 +1,16 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ConnectionStatus, ConnectionQuality, MessageCategory, P2PSMessage, GetCommandsMessage } from '../types';
-import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp, RotateCw } from 'lucide-react';
+import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp, RotateCw, UserX } from 'lucide-react';
 import { Button } from './Button';
-import { useBuzzerDebounce } from '../hooks/useBuzzerDebounce';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
 import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
 
 export const MobileView: React.FC = () => {
   // Setup step - now just name input + team selection on one screen
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.CONNECTING);
+  // Track if client was kicked by host
+  const [wasKicked, setWasKicked] = useState<boolean>(false);
+  const [kickReason, setKickReason] = useState<string>('');
 
   // Host info
   const [hostId] = useState<string | null>(() => {
@@ -92,6 +94,63 @@ export const MobileView: React.FC = () => {
     healthScore: 100
   });
 
+  // Refs for local countdown timer (client-side interpolation)
+  const authoritativeBuzzerStateRef = useRef<{
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+    readingTimeTotal: number;
+    responseTimeTotal: number;
+    lastUpdateTime: number;
+  }>({
+    readingTimerRemaining: 0,
+    responseTimerRemaining: 0,
+    readingTimeTotal: 0,
+    responseTimeTotal: 30,
+    lastUpdateTime: Date.now()
+  });
+
+  // Local countdown - update display every 100ms using elapsed time since last host update
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const elapsed = (now - authoritativeBuzzerStateRef.current.lastUpdateTime) / 1000; // seconds
+
+      setBuzzerState(prev => {
+        // Only countdown if timer is active and not complete and not paused
+        if (!prev.active || prev.timerPhase === 'inactive' || prev.timerPhase === 'complete' || prev.isPaused) {
+          return prev;
+        }
+
+        let newReading = prev.readingTimerRemaining;
+        let newResponse = prev.responseTimerRemaining;
+        let newPhase = prev.timerPhase;
+
+        if (prev.timerPhase === 'reading') {
+          newReading = Math.max(0, authoritativeBuzzerStateRef.current.readingTimerRemaining - elapsed);
+          if (newReading <= 0) {
+            newReading = 0;
+            newPhase = 'response';
+          }
+        } else if (prev.timerPhase === 'response') {
+          newResponse = Math.max(0, authoritativeBuzzerStateRef.current.responseTimerRemaining - elapsed);
+          if (newResponse <= 0) {
+            newResponse = 0;
+            newPhase = 'complete';
+          }
+        }
+
+        return {
+          ...prev,
+          readingTimerRemaining: newReading,
+          responseTimerRemaining: newResponse,
+          timerPhase: newPhase
+        };
+      });
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, []);
+
 
   // Super Game state
   const [superGamePhase, setSuperGamePhase] = useState<'idle' | 'placeBets' | 'showQuestion' | 'showWinner'>('idle');
@@ -117,9 +176,6 @@ export const MobileView: React.FC = () => {
     storage.set(STORAGE_KEYS.CLIENT_ID, newId);
     return newId;
   });
-
-  // Debounce for buzzer
-  const { debouncedCallback: debounceBuzz } = useBuzzerDebounce(300);
 
   // Get host ID from URL params or storage
   const urlHostId = useMemo(() => {
@@ -169,14 +225,59 @@ export const MobileView: React.FC = () => {
     persistentClientId: clientId,  // Pass stored client ID for reconnection
     currentTeamId: currentTeamId,   // Pass current team ID for reconnection
     onMessage: (message) => {
+      // Reduce logging for frequent messages to avoid spam
+      if (message.type === 'TIMER_STATE') {
+        // Only log TIMER_STATE when timer phase actually changes
+        const currentPhase = message.payload.timerPhase;
+        const previousPhase = buzzerState.timerPhase;
+
+        // Only log on important transitions
+        if (currentPhase !== previousPhase) {
+          console.log('📊 [MOBILE] Timer phase changed:', previousPhase, '->', currentPhase);
+        }
+        // Skip logging for frequent timer updates
+      } else if (message.type === 'BROADCAST') {
+        // Only log BROADCAST for important game state updates
+        if (message.payload?.type === 'GAME_STATE_UPDATE') {
+          console.log('📨 [MOBILE] BROADCAST: Game state update');
+        }
+        // Skip logging for frequent timer updates
+      } else {
+        console.log('📨 [MOBILE] Message received from host:', message.type, 'Category:', message.category);
+      }
+
       switch (message.type) {
-        case 'BUZZER_STATE':
+        case 'TIMER_STATE':
           // Update buzzer state from host
+          console.log('📊 [MOBILE] TIMER_STATE received:', message.payload);
+          console.log('📊 [MOBILE] superGamePhase from host:', message.payload.superGamePhase);
           setBuzzerState(message.payload);
+          // Update authoritative ref for local countdown
+          authoritativeBuzzerStateRef.current = {
+            readingTimerRemaining: message.payload.readingTimerRemaining ?? 0,
+            responseTimerRemaining: message.payload.responseTimerRemaining ?? 0,
+            readingTimeTotal: message.payload.readingTimeTotal ?? 0,
+            responseTimeTotal: message.payload.responseTimeTotal ?? 30,
+            lastUpdateTime: Date.now()
+          };
+          if (message.payload.superGamePhase) {
+            setSuperGamePhase(message.payload.superGamePhase);
+            console.log('✅ [MOBILE] superGamePhase updated to:', message.payload.superGamePhase);
+          }
           break;
         case 'STATE_SYNC':
           // Full state sync
           setBuzzerState(message.payload.buzzerState);
+          // Update authoritative ref for local countdown
+          if (message.payload.buzzerState) {
+            authoritativeBuzzerStateRef.current = {
+              readingTimerRemaining: message.payload.buzzerState.readingTimerRemaining ?? 0,
+              responseTimerRemaining: message.payload.buzzerState.responseTimerRemaining ?? 0,
+              readingTimeTotal: message.payload.buzzerState.readingTimeTotal ?? 0,
+              responseTimeTotal: message.payload.buzzerState.responseTimeTotal ?? 30,
+              lastUpdateTime: Date.now()
+            };
+          }
           setSuperGamePhase(message.payload.superGamePhase);
           // Sync team scores from host (teams array includes scores)
           if (message.payload.teams) {
@@ -303,12 +404,43 @@ export const MobileView: React.FC = () => {
           break;
         case 'TEAM_CONFIRMED':
           // Host confirmed client is in lobby
-          // Directly set to false
+          // Update teamId if provided (for newly created teams)
+          // Only update if currentTeamId looks like a temp ID (doesn't start with 'team_')
+          if (message.payload.teamId && currentTeam && (!currentTeamId || !currentTeamId.startsWith('team_'))) {
+            console.log('[MobileView] TEAM_CONFIRMED received with teamId:', message.payload.teamId, 'updating from:', currentTeamId);
+            setCurrentTeamId(message.payload.teamId);
+            storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, message.payload.teamId);
+          }
           setWaitForHostConfirmation(false);
           break;
         case 'BROADCAST':
-          // Generic broadcast from host - check for SUPER_GAME_STATE_SYNC inside payload
-          const broadcastPayload = message.payload as { type?: string; phase?: string; themeId?: string; themeName?: string; maxBet?: number; questionText?: string; questionMedia?: { type: string; url?: string }; teamScores?: Array<{ id: string; name: string; score: number }> };
+          // Generic broadcast from host - check for message types inside payload
+          const broadcastPayload = message.payload as { type?: string; phase?: string; themeId?: string; themeName?: string; maxBet?: number; questionText?: string; questionMedia?: { type: string; url?: string }; teamScores?: Array<{ id: string; name: string; score: number }>; state?: { buzzerState?: { active: boolean; timerPhase: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused: boolean; readingTimeTotal?: number; responseTimeTotal?: number } }; message?: string; reason?: string };
+
+          // Handle KICK message - client was removed by host
+          if (broadcastPayload?.message === 'KICKED') {
+            console.log('[MobileView] 🚫 Client was kicked by host:', broadcastPayload.reason);
+            setWasKicked(true);
+            setKickReason(broadcastPayload.reason || 'removed_by_host');
+            setStatus(ConnectionStatus.ERROR);
+            // Disconnect P2P connection
+            p2pClient.disconnect();
+            return;
+          }
+
+          // Handle GAME_STATE_UPDATE sent via BROADCAST
+          if (broadcastPayload?.type === 'GAME_STATE_UPDATE' && broadcastPayload.state?.buzzerState) {
+            // Update buzzer state from game state
+            setBuzzerState(broadcastPayload.state.buzzerState);
+            // Update authoritative ref for local countdown
+            authoritativeBuzzerStateRef.current = {
+              readingTimerRemaining: broadcastPayload.state.buzzerState.readingTimerRemaining ?? 0,
+              responseTimerRemaining: broadcastPayload.state.buzzerState.responseTimerRemaining ?? 0,
+              readingTimeTotal: broadcastPayload.state.buzzerState.readingTimeTotal ?? 0,
+              responseTimeTotal: broadcastPayload.state.buzzerState.responseTimeTotal ?? 30,
+              lastUpdateTime: Date.now()
+            };
+          }
 
           // Handle SUPER_GAME_STATE_SYNC sent via BROADCAST
           if (broadcastPayload?.type === 'SUPER_GAME_STATE_SYNC') {
@@ -403,12 +535,40 @@ export const MobileView: React.FC = () => {
     },
   });
 
-  // Auto-connect when we have host ID
+  // Auto-connect when we have host ID (but not if kicked)
   useEffect(() => {
-    if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting) {
+    if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting && !wasKicked) {
       p2pClient.connect();
     }
-  }, [urlHostId, p2pClient.isConnected, p2pClient.isConnecting, p2pClient.connect]);
+  }, [urlHostId, p2pClient.isConnected, p2pClient.isConnecting, p2pClient.connect, wasKicked]);
+
+  // Check if this is a new session - if so, reset saved player state
+  useEffect(() => {
+    if (sessionId && sessionId.trim() !== '') {
+      const savedSessionVersion = storage.get(STORAGE_KEYS.HOST_SESSION_VERSION);
+
+      // If session ID changed, this is a new game session
+      if (savedSessionVersion !== sessionId) {
+        console.log('[MobileView] New session detected:', sessionId, 'previous:', savedSessionVersion);
+
+        // Reset player state for new session (including name)
+        setUserName('');
+        setCurrentTeam(null);
+        setCurrentTeamId(null);
+        setWaitForHostConfirmation(false);
+        setShowCommandList(false);
+
+        // Clear localStorage for session-specific data
+        storage.remove(STORAGE_KEYS.USER_NAME);
+        storage.remove(STORAGE_KEYS.CURRENT_TEAM);
+        storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
+        storage.remove(STORAGE_KEYS.TEAM_SELECTED);
+
+        // Save new session ID
+        storage.set(STORAGE_KEYS.HOST_SESSION_VERSION, sessionId);
+      }
+    }
+  }, [sessionId]);
 
   // Debug: Track p2pClient connection state changes
   useEffect(() => {
@@ -451,14 +611,16 @@ export const MobileView: React.FC = () => {
 
   // Send buzz via P2P
   const sendBuzz = useCallback(() => {
+    console.log('🔔 [BUZZ] Button pressed! User:', userName, 'Team:', currentTeam, 'TeamId:', currentTeamId);
+    console.log('🔔 [BUZZ] Connection state:', p2pClient.connectionState, 'Is connected:', p2pClient.isConnected);
 
     if (!p2pClient.isConnected) {
-      console.warn('[MobileView] Not connected, cannot buzz. State:', p2pClient.connectionState);
+      console.warn('⚠️ [BUZZ] Not connected, cannot buzz. State:', p2pClient.connectionState);
       return;
     }
 
     // Send buzz message to host
-    const sent = p2pClient.send({
+    const buzzMessage = {
       category: MessageCategory.EVENT,
       type: 'BUZZ',
       payload: {
@@ -468,24 +630,48 @@ export const MobileView: React.FC = () => {
         teamName: currentTeam,
         buzzTime: Date.now()
       }
-    });
+    };
+
+    console.log('📤 [BUZZ] Sending buzz message to host:', buzzMessage);
+
+    const sent = p2pClient.send(buzzMessage);
+
+    if (sent) {
+      console.log('✅ [BUZZ] Buzz message sent successfully to host!');
+    } else {
+      console.error('❌ [BUZZ] Failed to send buzz message to host!');
+    }
 
   }, [p2pClient.isConnected, p2pClient.connectionState, p2pClient.send, clientId, userName, currentTeamId, currentTeam]);
 
   // Handle buzz button press
   const handleBuzz = useCallback(() => {
-    if (superGamePhase === 'placeBets') {
+    console.log('🎯 [BUZZ] Button clicked!');
+    console.log('🎯 [BUZZ] Current superGamePhase:', superGamePhase);
+    console.log('🎯 [BUZZ] buzzerState.timerPhase:', buzzerState.timerPhase);
+    console.log('🎯 [BUZZ] buzzerState.active:', buzzerState.active);
+
+    // Use buzzerState.superGamePhase if superGamePhase is not set
+    const effectivePhase = buzzerState.superGamePhase || superGamePhase;
+    console.log('🎯 [BUZZ] Effective phase:', effectivePhase);
+
+    if (effectivePhase === 'placeBets') {
+      console.log('💰 [BUZZ] Bet placement phase - showing bet modal');
       // Show bet selection modal
       setShowBetModal(true);
-    } else if (superGamePhase === 'showQuestion') {
+    } else if (effectivePhase === 'showQuestion') {
+      console.log('❓ [BUZZ] Question phase - showing answer modal');
       // Show answer input modal
       setShowAnswerModal(true);
-    } else if (superGamePhase === 'idle') {
-      // Regular buzz
-      debounceBuzz(sendBuzz);
+    } else if (effectivePhase === 'idle' || effectivePhase === undefined) {
+      console.log('🔔 [BUZZ] Idle/undefined phase - sending buzz to host');
+      // Regular buzz - no debounce, send immediately
+      sendBuzz();
+    } else {
+      console.log('⏸️ [BUZZ] Phase:', effectivePhase, '- buzz ignored');
     }
     // For 'showWinner' phase, do nothing
-  }, [debounceBuzz, sendBuzz, superGamePhase]);
+  }, [sendBuzz, superGamePhase, buzzerState]);
 
   // Handle leave
   const handleLeave = useCallback(() => {
@@ -516,6 +702,10 @@ export const MobileView: React.FC = () => {
 
   // Handle force reconnect
   const handleForceReconnect = useCallback(() => {
+    // Don't allow reconnect if kicked
+    if (wasKicked) {
+      return;
+    }
     setRetryCount(0);
     if (p2pClient.isConnected) {
       p2pClient.disconnect();
@@ -523,7 +713,7 @@ export const MobileView: React.FC = () => {
     setTimeout(() => {
       p2pClient.connect();
     }, 500);
-  }, [p2pClient]);
+  }, [p2pClient, wasKicked]);
 
   // Reset
   const handleReset = useCallback(() => {
@@ -576,7 +766,7 @@ export const MobileView: React.FC = () => {
                     value={userName}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUserName(e.target.value)}
                     placeholder="Enter your name"
-                    className="w-full bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all pr-10"
+                    className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all pr-10"
                     maxLength={20}
                     autoFocus
                   />
@@ -619,7 +809,7 @@ export const MobileView: React.FC = () => {
                     }
                   }}
                   disabled={!p2pClient.isConnected || loadingCommands || isRefreshingList}
-                  className="w-full px-4 py-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-500/50 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="w-full px-4 py-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-500/50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isRefreshingList ? (
                     <>
@@ -648,7 +838,7 @@ export const MobileView: React.FC = () => {
                 {showCommandList && hasReceivedCommands && (
                   <div className="space-y-2 animate-in slide-in-from-top-2 duration-200">
                     {commands.length === 0 ? (
-                      <div className="text-center py-6 text-gray-500 border border-gray-700 rounded-xl bg-gray-800/50">
+                      <div className="text-center py-6 text-gray-500 border border-gray-700 rounded-lg bg-gray-800/50">
                         <Users className="w-8 h-8 mx-auto mb-2 opacity-50" />
                         <p className="text-sm">No teams available</p>
                       </div>
@@ -676,7 +866,7 @@ export const MobileView: React.FC = () => {
                                 setWaitForHostConfirmation(true);
                               }
                             }}
-                            className="w-full border rounded-xl px-4 py-3 text-left transition-all flex items-center justify-between bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
+                            className="w-full border rounded-lg px-4 py-3 text-left transition-all flex items-center justify-between bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300"
                           >
                             <span className="font-medium truncate">{command.name}</span>
                             <Users className="w-4 h-4 shrink-0 text-blue-400" />
@@ -695,7 +885,7 @@ export const MobileView: React.FC = () => {
                   value={newTeamName}
                   onChange={(e) => setNewTeamName(e.target.value)}
                   placeholder="New team name"
-                  className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-sm"
+                  className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all text-sm"
                 />
                 <button
                   onClick={() => {
@@ -719,7 +909,7 @@ export const MobileView: React.FC = () => {
                     }
                   }}
                   disabled={!newTeamName.trim() || !p2pClient.isConnected}
-                  className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-xl transition-colors"
+                  className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M5 12h14"/>
@@ -798,7 +988,7 @@ export const MobileView: React.FC = () => {
                     {superGameTheme && (
                       <p className="text-lg text-yellow-400 mb-6">{superGameTheme.name}</p>
                     )}
-                    <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm">
+                    <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 w-full max-w-sm">
                       <div className="flex items-center justify-between mb-4">
                         <span className="text-gray-400 text-sm">Your bet:</span>
                         <span className="text-white font-bold">{superGameBet}</span>
@@ -832,7 +1022,7 @@ export const MobileView: React.FC = () => {
                         }}
                         // Always allow clicking to proceed
                         disabled={!p2pClient.isConnected}
-                      className="w-full mt-4 p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors"
+                      className="w-full mt-4 p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-colors"
                     >
                       {betPlaced ? 'Done' : 'Place Bet'}
                     </button>
@@ -842,7 +1032,7 @@ export const MobileView: React.FC = () => {
               ) : (superGamePhase === 'showQuestion' || showAnswerModal) ? (
                 // showQuestion modal - shown when BUZZ is pressed during showQuestion phase
                 <div className="flex-1 flex items-start justify-center pt-[20vh] px-4 w-full animate-in fade-in duration-300">
-                  <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full">
+                  <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 w-full">
                     <div className="text-center text-gray-400 text-sm mb-4">
                       Your bet: <span className="text-white font-bold text-base">{superGameBet}</span>&nbsp;|&nbsp;Your score: <span className="text-white font-bold text-base">{teamScores.find(t => t.id === currentTeamId)?.score || 0}</span>
                     </div>
@@ -850,7 +1040,7 @@ export const MobileView: React.FC = () => {
                       value={superGameAnswer}
                       onChange={(e) => setSuperGameAnswer(e.target.value)}
                       placeholder="Type your answer..."
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl p-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none text-base"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg p-4 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none text-base"
                       rows={4}
                     />
                     <button
@@ -872,13 +1062,13 @@ export const MobileView: React.FC = () => {
                         }
                       }}
                       disabled={!superGameAnswer.trim() || !p2pClient.isConnected}
-                      className="w-full mt-4 p-4 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-xl font-semibold transition-colors text-lg touch-manipulation active:scale-95"
+                      className="w-full mt-4 p-4 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-colors text-lg touch-manipulation active:scale-95"
                     >
                       Submit Answer
                     </button>
                     <button
                       onClick={() => setShowAnswerModal(false)}
-                      className="w-full mt-2 p-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-xl text-sm transition-colors"
+                      className="w-full mt-2 p-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors"
                     >
                       Close
                     </button>
@@ -888,7 +1078,7 @@ export const MobileView: React.FC = () => {
                 <div className="flex flex-col items-center justify-center w-full animate-in fade-in duration-300 px-4">
                   <h2 className="text-3xl font-bold text-yellow-400 mb-4">Winner!</h2>
                   <p className="text-2xl text-white mb-6">{superGameWinner.winnerTeamName}</p>
-                  <div className="bg-gray-900 border border-yellow-600 rounded-xl p-4 w-full max-w-sm">
+                  <div className="bg-gray-900 border border-yellow-600 rounded-lg p-4 w-full max-w-sm">
                     {superGameWinner.finalScores.map((score, idx) => (
                       <div key={idx} className="flex justify-between items-center py-2 border-b border-gray-700 last:border-0">
                         <span className="text-white">{score.teamName}</span>
@@ -901,12 +1091,21 @@ export const MobileView: React.FC = () => {
                 // Regular BUZZ button
                 <div className="flex items-start justify-center pt-[20vh] w-full animate-in zoom-in duration-300">
                   <button
-                    onClick={handleBuzz}
+                    onClick={(e) => {
+                      console.log('🖱️ [BUTTON] BUZZ! onClick event fired');
+                      console.log('🖱️ [BUTTON] Event type:', e.type, 'Pointer type:', e.pointerType);
+                    }}
+                    onMouseDown={() => {
+                      console.log('🖱️ [BUTTON] BUZZ! onMouseDown event fired');
+                      handleBuzz();
+                    }}
                     onTouchStart={(e) => {
-                      e.preventDefault();
+                      console.log('📱 [BUTTON] BUZZ! onTouchStart event fired');
+                      console.log('📱 [BUTTON] Touches:', e.touches.length, 'Changed touches:', e.changedTouches.length);
                       handleBuzz();
                     }}
                     onContextMenu={(e) => {
+                      console.log('🖱️ [BUTTON] BUZZ! onContextMenu event fired (right-click)');
                       e.preventDefault();
                       handleBuzz();
                     }}
@@ -930,34 +1129,58 @@ export const MobileView: React.FC = () => {
               )
             ) : (
               <div className="flex flex-col items-center space-y-6 text-center">
-                <div className="relative">
-                  <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
-                  {retryCount > 0 && (
-                    <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-gray-800 text-xs px-2 py-1 rounded-full text-gray-400">
-                      Attempt {retryCount + 1}
-                    </div>
-                  )}
-                </div>
-                <p className="text-xl font-medium text-gray-400">
-                  {status === ConnectionStatus.RECONNECTING ? 'Reconnecting...' : 'Connection lost'}
-                </p>
-                <div className="flex gap-3">
-                  {retryCount > 2 && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={handleForceReconnect}
+                {wasKicked ? (
+                  <>
+                    <UserX className="w-16 h-16 text-red-500" />
+                    <p className="text-xl font-medium text-red-400">
+                      You were removed by the host
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      Please refresh to join again
+                    </p>
+                    <button
+                      onClick={() => {
+                        setWasKicked(false);
+                        setKickReason('');
+                        handleReset();
+                      }}
+                      className="px-4 py-2 text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-2"
                     >
-                      <RefreshCw className="w-4 h-4 mr-2" /> Force Reconnect
-                    </Button>
-                  )}
-                  <button
-                    onClick={handleReset}
-                    className="px-4 py-2 text-sm text-gray-600 hover:text-red-400 transition-colors flex items-center gap-2"
-                  >
-                    <X className="w-4 h-4" /> Reset
-                  </button>
-                </div>
+                      <RefreshCw className="w-4 h-4" /> Start Over
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="relative">
+                      <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+                      {retryCount > 0 && (
+                        <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-gray-800 text-xs px-2 py-1 rounded-full text-gray-400">
+                          Attempt {retryCount + 1}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xl font-medium text-gray-400">
+                      {status === ConnectionStatus.RECONNECTING ? 'Reconnecting...' : 'Connection lost'}
+                    </p>
+                    <div className="flex gap-3">
+                      {retryCount > 2 && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={handleForceReconnect}
+                        >
+                          <RefreshCw className="w-4 h-4 mr-2" /> Force Reconnect
+                        </Button>
+                      )}
+                      <button
+                        onClick={handleReset}
+                        className="px-4 py-2 text-sm text-gray-600 hover:text-red-400 transition-colors flex items-center gap-2"
+                      >
+                        <X className="w-4 h-4" /> Reset
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

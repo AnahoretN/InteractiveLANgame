@@ -84,7 +84,7 @@ export const ThemeCard = memo(({ theme, onUpdate, onDelete }: ThemeCardProps) =>
             type="text"
             value={editedName}
             onChange={(e) => setEditedName(e.target.value)}
-            className="flex-1 bg-gray-700 text-white px-3 py-2 rounded focus:outline-none"
+            className="flex-1 bg-gray-700 text-white px-3 py-2 rounded-lg focus:outline-none"
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 handleToggleEdit();

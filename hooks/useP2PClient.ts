@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Peer, DataConnection } from 'peerjs';
 import {
   P2PConfig,
@@ -12,6 +12,7 @@ import {
   MessageCategory
 } from '../types';
 import { generateUUID, getSignallingServer } from '../utils';
+import { getGlobalQualityMonitor, QualityReport, AdaptiveRecommendation } from '../utils/connectionQualityMonitor';
 
 // Connection state enum (exported for use in callbacks)
 export enum ClientConnectionState {
@@ -20,6 +21,105 @@ export enum ClientConnectionState {
   CONNECTED = 'connected',
   RECONNECTING = 'reconnecting',
   ERROR = 'error'
+}
+
+/**
+ * Extended result interface for useP2PClient with quality monitoring
+ */
+export interface P2PClientResult {
+  connectionState: ClientConnectionState;
+  connectionQuality: ConnectionQuality;
+  isConnected: boolean;
+  isConnecting: boolean;
+  connect: () => void;
+  disconnect: () => void;
+  send: (message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => boolean;
+  connectionRef: React.MutableRefObject<DataConnection | null>;
+  qualityReport: QualityReport | null;
+  getQualityReport: () => QualityReport;
+  getAdaptiveRecommendations: () => AdaptiveRecommendation[];
+}
+
+/**
+ * Exponential Backoff with Jitter
+ * Prevents thundering herd problem during reconnection attempts
+ */
+class ExponentialBackoff {
+  private maxRetries: number;
+  private initialDelay: number;
+  private maxDelay: number;
+  private currentRetry: number = 0;
+  private jitterFactor: number;
+
+  constructor(
+    maxRetries: number = 10,
+    initialDelay: number = 1000,
+    maxDelay: number = 30000,
+    jitterFactor: number = 0.1
+  ) {
+    this.maxRetries = maxRetries;
+    this.initialDelay = initialDelay;
+    this.maxDelay = maxDelay;
+    this.jitterFactor = jitterFactor;
+  }
+
+  /**
+   * Get the next delay with exponential backoff and jitter
+   */
+  getNextDelay(): number {
+    if (this.currentRetry >= this.maxRetries) {
+      return -1; // Signal to stop retrying
+    }
+
+    // Calculate exponential backoff: initialDelay * 2^retry
+    const exponentialDelay = Math.min(
+      this.initialDelay * Math.pow(2, this.currentRetry),
+      this.maxDelay
+    );
+
+    // Add jitter: random value between -jitterFactor and +jitterFactor
+    const jitter = exponentialDelay * this.jitterFactor * (Math.random() * 2 - 1);
+
+    const delay = Math.max(0, exponentialDelay + jitter);
+    this.currentRetry++;
+
+    return Math.round(delay);
+  }
+
+  /**
+   * Reset the retry counter
+   */
+  reset(): void {
+    this.currentRetry = 0;
+  }
+
+  /**
+   * Get current retry count
+   */
+  getCurrentRetry(): number {
+    return this.currentRetry;
+  }
+
+  /**
+   * Check if we should continue retrying
+   */
+  shouldRetry(): boolean {
+    return this.currentRetry < this.maxRetries;
+  }
+
+  /**
+   * Get connection quality based retry adjustment
+   */
+  adjustForConnectionQuality(quality: ConnectionQuality): void {
+    // If connection quality is poor, back off more aggressively
+    if (quality.healthScore < 50) {
+      this.currentRetry = Math.min(this.currentRetry + 1, this.maxRetries);
+    }
+    // If connection quality is good, reset to try normal reconnection
+    else if (quality.healthScore > 80) {
+      this.currentRetry = Math.max(0, this.currentRetry - 1);
+    }
+  }
 }
 
 interface P2PClientConfig {
@@ -51,10 +151,17 @@ export const useP2PClient = (config: P2PClientConfig) => {
     healthScore: 100
   });
 
+  // Connection quality monitoring
+  const qualityMonitorRef = useRef(getGlobalQualityMonitor());
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+
   // Ping tracking
   const pingTimesRef = useRef<number[]>([]);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Exponential backoff for reconnection
+  const backoffRef = useRef<ExponentialBackoff>(new ExponentialBackoff(10, 1000, 30000, 0.1));
 
   // Track last notified state to avoid unnecessary updates
   const lastNotifiedStateRef = useRef<ClientConnectionState | null>(null);
@@ -109,11 +216,29 @@ export const useP2PClient = (config: P2PClientConfig) => {
       healthScore: Math.round(healthScore)
     };
 
+    // Update quality monitor
+    qualityMonitorRef.current.updateQuality(newQuality);
+
     // Update state if quality changed significantly
     const oldQuality = connectionQuality;
     if (Math.abs(newQuality.healthScore - oldQuality.healthScore) > 5 ||
         Math.abs(newQuality.rtt - oldQuality.rtt) > 10) {
       setConnectionQuality(newQuality);
+    }
+
+    // Check for alerts and update quality report
+    const alerts = qualityMonitorRef.current.checkAlerts();
+    if (alerts.length > 0) {
+      console.warn('[P2P Client] ⚠️ Connection Quality Alerts:', alerts);
+      alerts.forEach(alert => {
+        console.warn(`[P2P Client] ${alert.type.toUpperCase()}: ${alert.message}`);
+      });
+    }
+
+    // Update quality report periodically
+    const report = qualityMonitorRef.current.getQualityReport();
+    if (report.alerts.length > 0 || report.recommendations.length > 0) {
+      setQualityReport(report);
     }
 
     return newQuality;
@@ -159,21 +284,38 @@ export const useP2PClient = (config: P2PClientConfig) => {
     }
   }, []);
 
-  // Start ping interval
+  // Start ping interval (adaptive based on connection quality)
   const startPingInterval = useCallback(() => {
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
     }
 
-    pingIntervalRef.current = setInterval(() => {
-      sendPing();
-    }, 5000); // Ping every 5 seconds
-  }, [sendPing]);
+    // Adaptive ping interval based on connection quality
+    const getAdaptiveInterval = () => {
+      const quality = connectionQuality;
+      // Poor connection: more frequent pings (3s)
+      if (quality.healthScore < 50) return 3000;
+      // Good connection: normal pings (5s)
+      if (quality.healthScore < 80) return 5000;
+      // Excellent connection: less frequent pings (10s)
+      return 10000;
+    };
+
+    const scheduleNextPing = () => {
+      const interval = getAdaptiveInterval();
+      pingIntervalRef.current = setTimeout(() => {
+        sendPing();
+        scheduleNextPing(); // Reschedule with potentially new interval
+      }, interval);
+    };
+
+    scheduleNextPing();
+  }, [sendPing, connectionQuality]);
 
   // Stop ping interval
   const stopPingInterval = useCallback(() => {
     if (pingIntervalRef.current) {
-      clearInterval(pingIntervalRef.current);
+      clearTimeout(pingIntervalRef.current);
       pingIntervalRef.current = null;
     }
   }, []);
@@ -189,15 +331,54 @@ export const useP2PClient = (config: P2PClientConfig) => {
       reconnectTimeoutRef.current = null;
     }
 
+    // Reset backoff counter on new connection attempt
+    backoffRef.current.reset();
     setConnectionState(ClientConnectionState.CONNECTING);
     const signallingServer = getSignallingServerUrl();
 
     console.log('[P2P Client] Connecting to host:', configRefs.current.hostId, 'via signalling:', signallingServer);
 
+    // Parse signalling server URL to extract host and port
+    let peerConfig: any = { debug: 1 };
+
+    if (signallingServer && signallingServer.startsWith('ws://')) {
+      try {
+        const url = new URL(signallingServer);
+        peerConfig.host = url.hostname;
+        peerConfig.port = parseInt(url.port);
+        peerConfig.secure = false; // WebSocket, not WebSocket Secure
+        peerConfig.path = '/peerjs'; // Default PeerServer path
+        console.log('[P2P Client] Using custom signalling server:', {
+          host: peerConfig.host,
+          port: peerConfig.port,
+          secure: peerConfig.secure,
+          path: peerConfig.path
+        });
+      } catch (e) {
+        console.warn('[P2P Client] Failed to parse signalling server URL, using defaults:', signallingServer, e);
+      }
+    } else if (signallingServer && signallingServer.startsWith('wss://')) {
+      try {
+        const url = new URL(signallingServer);
+        peerConfig.host = url.hostname;
+        peerConfig.port = parseInt(url.port) || 443;
+        peerConfig.secure = true; // WebSocket Secure
+        peerConfig.path = '/peerjs'; // Default PeerServer path
+        console.log('[P2P Client] Using secure signalling server:', {
+          host: peerConfig.host,
+          port: peerConfig.port,
+          secure: peerConfig.secure,
+          path: peerConfig.path
+        });
+      } catch (e) {
+        console.warn('[P2P Client] Failed to parse signalling server URL, using defaults:', signallingServer, e);
+      }
+    } else {
+      console.log('[P2P Client] Using default public PeerJS server');
+    }
+
     // Create peer for this client
-    const peer = new Peer({
-      debug: 1,
-    });
+    const peer = new Peer(peerConfig);
 
     peerRef.current = peer;
 
@@ -236,11 +417,16 @@ export const useP2PClient = (config: P2PClientConfig) => {
 
       conn.on('data', (data) => {
         try {
-          const message = data as P2PSMessage;
+          // Parse JSON if data is string (PeerJS can send both string and object)
+          const message = typeof data === 'string' ? JSON.parse(data) : data as P2PSMessage;
 
           // Handle handshake response
           if (message.type === 'HANDSHAKE_RESPONSE') {
             console.log('[P2P Client] Handshake confirmed, setting state to CONNECTED');
+
+            // Reset backoff on successful connection
+            backoffRef.current.reset();
+
             setConnectionState(ClientConnectionState.CONNECTED);
             startPingInterval();
             // Notify connection state change with current quality
@@ -257,8 +443,11 @@ export const useP2PClient = (config: P2PClientConfig) => {
             }
             // Update quality and notify connection is still alive
             const quality = updateConnectionQuality();
-            // Notify with current state to show connection is still working
+
+            // Adjust backoff strategy based on connection quality
             if (quality) {
+              backoffRef.current.adjustForConnectionQuality(quality);
+              // Notify with current state to show connection is still working
               notifyConnectionChange(ClientConnectionState.CONNECTED, quality);
             }
           } else {
@@ -290,20 +479,61 @@ export const useP2PClient = (config: P2PClientConfig) => {
       });
     });
 
-    peer.on('error', (err) => {
+    peer.on('error', async (err) => {
       console.error('[P2P Client] Peer error:', err);
+
+      // Provide specific diagnostics for common signalling server issues
+      const errType = (err as any).type;
+      if (errType === 'peer-unavailable') {
+        console.error('[P2P Client] ❌ Host peer not found. Make sure the host is running and accessible.');
+      } else if (errType === 'network' || (err as any).message?.includes('Failed to fetch')) {
+        console.error('[P2P Client] ❌ Network error accessing signalling server.');
+        console.error('[P2P Client] 🔧 Possible fixes:');
+        console.error('[P2P Client]    1. Check if signalling server is running at:', signallingServer);
+        console.error('[P2P Client]    2. Verify the server supports HTTP API (not just WebSocket)');
+        console.error('[P2P Client]    3. Check CORS settings on the server');
+        console.error('[P2P Client]    4. Try using the default public PeerJS server');
+
+        // Run automatic diagnostics
+        console.error('[P2P Client] 🔍 Running automatic diagnostics...');
+        const { diagnoseSignallingServer } = await import('../utils/signallingServerTest');
+        await diagnoseSignallingServer(signallingServer);
+      } else if (errType === 'server-error') {
+        console.error('[P2P Client] ❌ Signalling server error. The server might be misconfigured.');
+      } else if (errType === 'ssl-unavailable') {
+        console.error('[P2P Client] ❌ SSL not available. Try using ws:// instead of wss://');
+      }
+
       setConnectionState(ClientConnectionState.ERROR);
       configRefs.current.onError?.(err as Error);
     });
 
     peer.on('disconnected', () => {
       console.warn('[P2P Client] Peer disconnected from signalling server');
-      // Try to reconnect
-      setTimeout(() => {
-        if (peer && !peer.destroyed) {
-          peer.reconnect();
+
+      // Use exponential backoff for reconnection
+      if (backoffRef.current.shouldRetry()) {
+        const delay = backoffRef.current.getNextDelay();
+
+        if (delay > 0) {
+          console.log('[P2P Client] 🔄 Reconnecting in', delay, 'ms (attempt', backoffRef.current.getCurrentRetry(), ')');
+          setConnectionState(ClientConnectionState.RECONNECTING);
+
+          setTimeout(() => {
+            if (peer && !peer.destroyed) {
+              peer.reconnect();
+            }
+          }, delay);
+        } else {
+          console.error('[P2P Client] ❌ Max reconnection retries reached');
+          setConnectionState(ClientConnectionState.ERROR);
+          configRefs.current.onError?.(new Error('Max reconnection retries reached'));
         }
-      }, 1000);
+      } else {
+        console.error('[P2P Client] ❌ Reconnection abandoned');
+        setConnectionState(ClientConnectionState.ERROR);
+        configRefs.current.onError?.(new Error('Reconnection abandoned'));
+      }
     });
   }, [configRefs.current.hostId, getSignallingServerUrl, startPingInterval, stopPingInterval, updateConnectionQuality]);
 
@@ -332,8 +562,16 @@ export const useP2PClient = (config: P2PClientConfig) => {
   // Send message to host
   const send = useCallback((message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
     const conn = connectionRef.current;
+    console.log('📡 [P2P SEND] Attempting to send message:', message.type);
+    console.log('📡 [P2P SEND] Connection exists:', !!conn, 'Connection open:', conn?.open, 'Peer exists:', !!peerRef.current);
+
     if (!conn || !conn.open || !peerRef.current) {
-      console.warn('[P2P Client] Not connected, cannot send message');
+      console.warn('❌ [P2P SEND] Not connected, cannot send message. Connection state:', {
+        hasConnection: !!conn,
+        connectionOpen: conn?.open,
+        hasPeer: !!peerRef.current,
+        peerId: peerRef.current?.id
+      });
       return false;
     }
 
@@ -344,11 +582,21 @@ export const useP2PClient = (config: P2PClientConfig) => {
       senderId: peerRef.current?.id || ''
     } as P2PSMessage;
 
+    console.log('📤 [P2P SEND] Sending full message:', {
+      id: fullMessage.id,
+      type: fullMessage.type,
+      category: fullMessage.category,
+      timestamp: fullMessage.timestamp,
+      senderId: fullMessage.senderId,
+      payload: fullMessage.payload
+    });
+
     try {
       conn.send(fullMessage);
+      console.log('✅ [P2P SEND] Message sent successfully via WebRTC!');
       return true;
     } catch (err) {
-      console.error('[P2P Client] Error sending message:', err);
+      console.error('❌ [P2P SEND] Error sending message:', err);
       return false;
     }
   }, []);
@@ -380,6 +628,16 @@ export const useP2PClient = (config: P2PClientConfig) => {
   const isConnected = connectionState === ClientConnectionState.CONNECTED;
   const isConnecting = connectionState === ClientConnectionState.CONNECTING || connectionState === ClientConnectionState.RECONNECTING;
 
+  // Get comprehensive quality report
+  const getQualityReport = useCallback(() => {
+    return qualityMonitorRef.current.getQualityReport();
+  }, []);
+
+  // Get adaptive recommendations
+  const getAdaptiveRecommendations = useCallback(() => {
+    return qualityMonitorRef.current.getAdaptiveRecommendations();
+  }, []);
+
   return {
     connectionState,
     connectionQuality,
@@ -389,5 +647,8 @@ export const useP2PClient = (config: P2PClientConfig) => {
     disconnect,
     send,
     connectionRef, // Export connection ref for debugging
+    qualityReport, // Export quality report for UI
+    getQualityReport, // Export method to get detailed quality report
+    getAdaptiveRecommendations, // Export method to get adaptive recommendations
   };
-};
+}

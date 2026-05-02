@@ -8,14 +8,13 @@
  * Also handles the buzzer tracking and displays waiting screen when no active game
  */
 
-import React, { memo, useState, useCallback, lazy, Suspense } from 'react';
+import React, { memo, useState, useCallback } from 'react';
 import { Wifi, Gamepad2 } from 'lucide-react';
 import { Team } from '../../types';
-import type { GamePack } from './GameSelectorModal';
+import type { GamePack } from './OptimizedGameSelectorModal';
 import type { Round, Theme } from './PackEditor';
 import type { BuzzerState } from './game';
-// Lazy load GamePlay to reduce initial bundle size
-const GamePlay = lazy(() => import('./GamePlay').then(m => ({ default: m.GamePlay })));
+import { GamePlay } from './GamePlay';
 
 // TeamPlayer interface - used internally for client data structure
 interface TeamPlayer {
@@ -50,13 +49,13 @@ interface GameSessionProps {
   onSuperGameMaxBetChange?: (maxBet: number) => void;  // Track max bet for super game
   onRequestStateSync?: () => void;  // Trigger to resend current state to clients
   stateSyncTrigger?: number;  // Trigger value that changes when state sync is requested
-  // Clash mode props
-  clashingTeamIds?: Set<string>;  // Teams that are in clash mode
   // Active/inactive players props
   activeTeamIds?: Set<string>;  // Players who can BUZZ to become answering (active = blue, inactive = white)
   answeringTeamLockedIn?: boolean;  // Answering team is locked (answered incorrectly/correctly)
   onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
   showQRCode?: boolean;  // QR code visibility state
+  demoScreenConnected?: boolean;  // If true, demo screen controls timer phase transitions
+  switchToResponsePhaseSignal?: number | null;  // Trigger to switch from reading to response phase (from demo screen)
 }
 
 export const GameSession = memo(({
@@ -82,11 +81,12 @@ export const GameSession = memo(({
   onSuperGameMaxBetChange,
   onRequestStateSync,
   stateSyncTrigger,
-  clashingTeamIds,
   activeTeamIds,
   answeringTeamLockedIn,
   onUpdateActiveTeamIds,
-  showQRCode
+  showQRCode,
+  demoScreenConnected = false,
+  switchToResponsePhaseSignal
 }: GameSessionProps) => {
   const isNoTeamsMode = noTeamsMode || sessionSettings?.noTeamsMode || false;
 
@@ -107,9 +107,10 @@ export const GameSession = memo(({
     }
 
     // Clear triggered team when entering inactive phase
+    // Use setTimeout to avoid setState during render
     const newPhase = state.timerPhase || 'inactive';
     if (newPhase === 'inactive' && triggeredTeamId) {
-      setTriggeredTeamId(null);
+      setTimeout(() => setTriggeredTeamId(null), 0);
     }
   }, [onBuzzerStateChange, triggeredTeamId]);
 
@@ -146,40 +147,34 @@ export const GameSession = memo(({
 
   // Render the appropriate game based on type
   return (
-    <Suspense fallback={
-      <div className="flex items-center justify-center h-full">
-        <Gamepad2 className="w-8 h-8 text-blue-500 animate-pulse" />
-      </div>
-    }>
-      <GamePlay
-        pack={mergedPack}
-        teams={teams}
-        onBackToLobby={handleBackToLobby}
-        onBuzzerStateChange={handleBuzzerStateChange}
-        onBuzzTriggered={setTriggeredTeamId}
-        onClearBuzzes={onClearBuzz}
-        buzzedTeamId={triggeredTeamId}
-        buzzedTeamIds={buzzedTeamIds}
-        lateBuzzTeamIds={lateBuzzTeamIds}
-        answeringTeamId={answeringTeamId}
-        onAnsweringTeamChange={onAnsweringTeamChange}
-        onBroadcastMessage={onBroadcastMessage}
-        // Super Game props
-        superGameBets={superGameBets || []}
-        superGameAnswers={superGameAnswers || []}
-        onSuperGamePhaseChange={onSuperGamePhaseChange}
-        onSuperGameMaxBetChange={onSuperGameMaxBetChange}
-        onRequestStateSync={onRequestStateSync}
-        stateSyncTrigger={stateSyncTrigger}
-        // Clash mode props
-        clashingTeamIds={clashingTeamIds}
-        // Active/inactive players props
-        activeTeamIds={activeTeamIds}
-        answeringTeamLockedIn={answeringTeamLockedIn}
-        onUpdateActiveTeamIds={onUpdateActiveTeamIds}
-        showQRCode={showQRCode}
-      />
-    </Suspense>
+    <GamePlay
+      pack={mergedPack}
+      teams={teams}
+      onBackToLobby={handleBackToLobby}
+      onBuzzerStateChange={handleBuzzerStateChange}
+      onBuzzTriggered={setTriggeredTeamId}
+      onClearBuzzes={onClearBuzz}
+      buzzedTeamId={triggeredTeamId}
+      buzzedTeamIds={buzzedTeamIds}
+      lateBuzzTeamIds={lateBuzzTeamIds}
+      answeringTeamId={answeringTeamId}
+      onAnsweringTeamChange={onAnsweringTeamChange}
+      onBroadcastMessage={onBroadcastMessage}
+      // Super Game props
+      superGameBets={superGameBets || []}
+      superGameAnswers={superGameAnswers || []}
+      onSuperGamePhaseChange={onSuperGamePhaseChange}
+      onSuperGameMaxBetChange={onSuperGameMaxBetChange}
+      onRequestStateSync={onRequestStateSync}
+      stateSyncTrigger={stateSyncTrigger}
+      // Active/inactive players props
+      activeTeamIds={activeTeamIds}
+      answeringTeamLockedIn={answeringTeamLockedIn}
+      onUpdateActiveTeamIds={onUpdateActiveTeamIds}
+      showQRCode={showQRCode}
+      demoScreenConnected={demoScreenConnected}
+      switchToResponsePhaseSignal={switchToResponsePhaseSignal}
+    />
   );
 });
 

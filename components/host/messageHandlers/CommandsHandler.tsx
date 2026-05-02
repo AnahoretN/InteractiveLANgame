@@ -75,7 +75,7 @@ export const CommandsHandler: React.FC<CommandsHandlerProps> = memo(({
           />
           <button
             onClick={handleCancelEdit}
-            className="p-1.5 hover:bg-gray-700 rounded text-gray-400"
+            className="p-1.5 hover:bg-gray-700 rounded-lg text-gray-400"
           >
             ✕
           </button>

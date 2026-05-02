@@ -1,16 +1,17 @@
 {
   "name": "interactive-lan-game",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:analyze": "vite build && npm run check:budget",
     "preview": "vite preview",
-    "server": "node --watch server/signalling-server.js",
+    "server": "node server/signalling-server.cjs",
+    "server:watch": "node --watch server/signalling-server.cjs",
     "start": "npm run server",
-    "start:all": "concurrently --kill-others --kill-signal SIGTERM \"npm run server\" \"npm run dev\"",
+    "start:all": "concurrently --kill-others --names \"SIGNAL,VITE\" --prefix-colors \"blue,green\" \"npm run server\" \"npm run dev\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
@@ -27,13 +28,16 @@
   },
   "dependencies": {
     "date-fns": "^4.1.0",
+    "express": "^5.2.1",
     "file-saver": "^2.0.5",
     "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
+    "peer": "^1.0.2",
     "peerjs": "^1.5.5",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "react-virtuoso": "^4.18.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {

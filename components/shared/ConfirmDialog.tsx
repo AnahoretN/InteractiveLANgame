@@ -86,13 +86,6 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             </button>
           </div>
         </div>
-
-        <button
-          onClick={onCancel}
-          className="flex-shrink-0 text-gray-400 hover:text-white transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
       </div>
     </BaseModal>
   );

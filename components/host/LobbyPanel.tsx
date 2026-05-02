@@ -46,7 +46,7 @@ export const LobbyPanel = memo(({
         {/* Left column - Connection info */}
         <div className="space-y-6">
           {/* Connection stats */}
-          <div className="bg-gray-900 rounded-xl p-6 border border-gray-700">
+          <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-3 bg-blue-500/20 rounded-lg">
                 <Smartphone className="w-6 h-6 text-blue-400" />
@@ -59,7 +59,7 @@ export const LobbyPanel = memo(({
           </div>
 
           {/* Teams */}
-          <div className="bg-gray-900 rounded-xl p-6 border border-gray-700">
+          <div className="bg-gray-900 rounded-lg p-6 border border-gray-700">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-3 bg-violet-500/20 rounded-lg">
                 <Users className="w-6 h-6 text-violet-400" />
@@ -77,7 +77,7 @@ export const LobbyPanel = memo(({
           {/* Create game button */}
           <button
             onClick={onCreateGame}
-            className="w-full bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white rounded-xl p-8 flex items-center justify-center gap-4 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            className="w-full bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white rounded-lg p-8 flex items-center justify-center gap-4 transition-all hover:scale-[1.02] active:scale-[0.98]"
           >
             <div className="p-4 bg-white/20 rounded-lg">
               <Plus className="w-8 h-8" />
@@ -91,7 +91,7 @@ export const LobbyPanel = memo(({
           {/* Select game button */}
           <button
             onClick={onSelectGame}
-            className="w-full bg-gray-800 hover:bg-gray-700 text-white rounded-xl p-6 flex items-center gap-4 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            className="w-full bg-gray-800 hover:bg-gray-700 text-white rounded-lg p-6 flex items-center gap-4 transition-all hover:scale-[1.02] active:scale-[0.98]"
           >
             <div className="p-3 bg-blue-500/20 rounded-lg">
               <Gamepad2 className="w-6 h-6 text-blue-400" />

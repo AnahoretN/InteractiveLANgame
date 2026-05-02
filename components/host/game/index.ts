@@ -15,7 +15,6 @@ export { SuperGameQuestionModal, SuperGameAnswersModal } from './SuperGameModals
 
 // Additional game components
 export { ScorePanel } from './ScorePanel';
-export { TimerDisplay } from './TimerDisplay';
 export { GameNavigation } from './GameNavigation';
 export { BettingPanel } from './BettingPanel';
 export { AnswersGrid } from './AnswersGrid';

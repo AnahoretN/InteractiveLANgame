@@ -62,7 +62,7 @@ export const QuestionsList = memo(({
                   e.stopPropagation();
                   onEditQuestion(question);
                 }}
-                className="p-1 hover:bg-gray-700 rounded"
+                className="p-1 hover:bg-gray-700 rounded-lg"
                 title="Edit question"
               >
                 <Edit2 className="w-3.5 h-3.5 text-gray-400" />
@@ -72,7 +72,7 @@ export const QuestionsList = memo(({
                   e.stopPropagation();
                   onDeleteQuestion(question.id);
                 }}
-                className="p-1 hover:bg-red-900/50 rounded"
+                className="p-1 hover:bg-red-900/50 rounded-lg"
                 title="Delete question"
               >
                 <Trash2 className="w-3.5 h-3.5 text-red-400" />

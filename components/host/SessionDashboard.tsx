@@ -149,7 +149,7 @@ interface StatCardProps {
 
 const StatCard = memo(({ icon, bgColor, iconColor, label, value, valueColor }: StatCardProps) => (
   <div className="bg-gray-900 border border-gray-800 p-4 rounded-2xl flex items-center space-x-4">
-    <div className={`p-3 ${bgColor} rounded-xl ${iconColor}`}>{icon}</div>
+    <div className={`p-3 ${bgColor} rounded-lg ${iconColor}`}>{icon}</div>
     <div>
       <div className="text-xs text-gray-500 uppercase font-bold">{label}</div>
       <div className={`font-semibold text-white ${valueColor || ''}`}>{value}</div>
@@ -209,7 +209,7 @@ interface LogEntryProps {
 
 const LogEntry = memo(({ log, isLatest, latencyColor, latencyBg }: LogEntryProps) => {
   return (
-    <div className={`flex justify-between items-center p-4 rounded-xl border transition-all duration-300 ${
+    <div className={`flex justify-between items-center p-4 rounded-lg border transition-all duration-300 ${
       isLatest ? latencyBg + ' shadow-[0_0_15px_-5px_rgba(59,130,246,0.3)] scale-[1.01]' : 'bg-gray-800/20 border-gray-800'
     }`}>
       <div className="flex items-center space-x-3">

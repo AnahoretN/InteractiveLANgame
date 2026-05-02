@@ -1,12 +1,33 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Users, X, Loader2, Smartphone, Monitor } from 'lucide-react';
-import { Team, P2PSMessage, MessageCategory } from '../types';
+import { Team, P2PSMessage, MessageCategory, P2PMessage } from '../types';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
 import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
-import { restoreBlobFromStorage } from '../utils/mediaManager';
-import { processMediaTransfer } from '../utils/mediaStream';
+import { useDemoScreenMedia } from '../hooks/useDemoScreenMedia';
+import { MediaSystemDebugger } from '../utils/mediaSystemDebugger';
+import { demoScreenMediaHandler } from '../utils/demoScreenMediaHandler';
 import { DraggableQRCode } from './shared/DraggableQRCode';
+import { TimerDisplay, TimerBar } from './shared/TimerDisplay';
+import { calculateQuestionFontSize, calculateAnswerFontSizeMobile, calculateAnswerFontSizeDesktop } from './host/game/fontUtils';
+// New team status types - extend to include clash status locally
+import { TeamStatus as BaseTeamStatus, TeamState as BaseTeamState } from '../hooks/useTeamStatusManager';
+
+// Extended TeamStatus for demo screen (includes clash)
+type ExtendedTeamStatus = 'inactive' | 'active' | 'answering' | 'penalty' | 'clash';
+
+// Extended TeamState for demo screen
+interface ExtendedTeamState {
+  status: ExtendedTeamStatus;
+  previousStatus: ExtendedTeamStatus;
+  hasAttempted: boolean;
+  statusSince: number;
+  clashSubStatus?: 'first_clash' | 'simple_clash';
+  hasBeenFirstClash?: boolean;
+}
+
+type TeamStatus = ExtendedTeamStatus;
+type TeamState = ExtendedTeamState;
 
 // Global declaration for media cache
 declare global {
@@ -21,74 +42,216 @@ declare global {
   }
 }
 
-// ============= FONT SIZE CALCULATION UTILITIES =============
-
-/**
- * Calculate dynamic font size for question text
- * @param text - The question text
- * @param baseSize - Base font size in rem (current size: 4 for mobile, 7 for desktop)
- * @returns Font size in rem (can go down to 25% of base for very long text)
- */
-function calculateQuestionFontSize(text: string, baseSize: number): number {
-  const minSize = baseSize * 0.25; // Can go down to 25% for very long text
-  const maxLength = 400; // At 400+ chars, use minimum size
-  const shortThreshold = 30; // Text length considered "short"
-
-  const length = text.length;
-  if (length <= shortThreshold) return baseSize;
-  if (length >= maxLength) return minSize;
-
-  // Linear interpolation between baseSize and minSize
-  const ratio = (length - shortThreshold) / (maxLength - shortThreshold);
-  return baseSize - (baseSize - minSize) * ratio;
-}
-
-/**
- * Calculate font size for answer options - mobile version
- * @param text - Answer text
- * @returns Font size in rem (max 1.5rem, min 0.75rem)
- */
-function calculateAnswerFontSizeMobile(text: string): number {
-  const baseSize = 1.5; // 1.5rem max for mobile
-  const minSize = 0.75; // 0.75rem min for mobile
-  const maxLength = 50; // At 50+ chars, use minimum size
-  const shortThreshold = 5; // Text length considered "short"
-
-  const length = text.length;
-  if (length <= shortThreshold) return baseSize;
-  if (length >= maxLength) return minSize;
-
-  // Linear interpolation
-  const ratio = (length - shortThreshold) / (maxLength - shortThreshold);
-  return baseSize - (baseSize - minSize) * ratio;
-}
-
-/**
- * Calculate font size for answer options - desktop version
- * @param text - Answer text
- * @returns Font size in rem (max 3rem, min 1.5rem)
- */
-function calculateAnswerFontSizeDesktop(text: string): number {
-  const baseSize = 3; // 3rem max for desktop
-  const minSize = 1.5; // 1.5rem min for desktop
-  const maxLength = 50; // At 50+ chars, use minimum size
-  const shortThreshold = 5; // Text length considered "short"
-
-  const length = text.length;
-  if (length <= shortThreshold) return baseSize;
-  if (length >= maxLength) return minSize;
-
-  // Linear interpolation
-  const ratio = (length - shortThreshold) / (maxLength - shortThreshold);
-  return baseSize - (baseSize - minSize) * ratio;
-}
-
 export const ScreenView: React.FC = () => {
   // Session ID from URL
   const sessionId = useMemo(() => {
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     return params.get('session') || null;
   }, []);
+
+  // Demo screen media hook - handles media cache and processing
+  const demoScreenMedia = useDemoScreenMedia();
+
+  // Function to process a single message
+  const processMessage = useCallback((message: P2PSMessage) => {
+    switch (message.type) {
+      case 'STATE_SYNC':
+        // Always process STATE_SYNC to update lobby state
+        if (message.payload) {
+          console.log('[ScreenView] STATE_SYNC received:', {
+            isSessionActive: message.payload.isSessionActive,
+            hasPayload: !!message.payload
+          });
+          setGameState(prevState => {
+            const payload = message.payload;
+            const currentTeams = prevState?.teams || [];
+            const payloadTeams = payload.teams || [];
+            const currentSessionActive = prevState?.isSessionActive || false;
+            const payloadSessionActive = payload.isSessionActive !== undefined ? payload.isSessionActive : currentSessionActive;
+
+            // Update teams if:
+            // 1. Session state changed (lobby <-> game), OR
+            // 2. Payload has teams AND either:
+            //    a. We have no teams yet, OR
+            //    b. Payload has MORE teams than current (sync from host after team creation)
+            const sessionStateChanged = currentSessionActive !== payloadSessionActive;
+            const shouldUpdateTeams = sessionStateChanged || (payloadTeams.length > 0 && payloadTeams.length >= currentTeams.length);
+
+            console.log('[ScreenView] Updating gameState:', {
+              currentSessionActive,
+              payloadSessionActive,
+              sessionStateChanged,
+              willUpdateTo: payloadSessionActive
+            });
+
+            return {
+              ...prevState,
+              clients: payload.clients !== undefined ? payload.clients : (prevState?.clients || []),
+              teams: shouldUpdateTeams ? payloadTeams : currentTeams,
+              isSessionActive: payloadSessionActive
+            };
+          });
+        }
+        break;
+      case 'TEAMS_SYNC':
+        const syncedTeams = message.payload.teams || [];
+        if (syncedTeams.length > 0) {
+          setGameState(prevState => ({
+            ...prevState,
+            teams: syncedTeams
+          }));
+          setDetailedGameState(prevState => ({
+            ...prevState,
+            teamScores: syncedTeams.map((team: any) => ({
+              id: team.id,
+              name: team.name,
+              score: team.score || 0
+            }))
+          }));
+        }
+        break;
+      case 'TEAM_UPDATE':
+        const { teamId, teamName } = message.payload;
+        setGameState(prevState => {
+          const existingTeams = prevState?.teams || [];
+          const teamExists = existingTeams.some((t: any) => t.id === teamId);
+          if (teamExists) {
+            // Update existing team
+            return {
+              ...prevState,
+              teams: existingTeams.map((t: any) =>
+                t.id === teamId ? { ...t, name: teamName, lastUsedAt: Date.now() } : t
+              )
+            };
+          } else {
+            // Add new team
+            return {
+              ...prevState,
+              teams: [...existingTeams, { id: teamId, name: teamName, createdAt: Date.now(), lastUsedAt: Date.now() }]
+            };
+          }
+        });
+        // Also update detailedGameState teamScores
+        setDetailedGameState(prevState => {
+          const existingScores = prevState.teamScores || [];
+          const scoreExists = existingScores.some(t => t.id === teamId);
+          if (scoreExists) {
+            return {
+              ...prevState,
+              teamScores: existingScores.map(t =>
+                t.id === teamId ? { ...t, name: teamName } : t
+              )
+            };
+          } else {
+            return {
+              ...prevState,
+              teamScores: [...existingScores, { id: teamId, name: teamName, score: 0 }]
+            };
+          }
+        });
+        break;
+      case 'COMMANDS_LIST':
+        // Handle commands list from host
+        const commands = message.payload.commands || [];
+        console.log('[ScreenView] Commands list received:', commands.length, 'teams');
+        // Convert commands to teams format for display
+        const teamsFromCommands = commands.map((cmd: { id: string; name: string }) => ({
+          id: cmd.id,
+          name: cmd.name,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now()
+        }));
+        setGameState(prevState => ({
+          ...prevState,
+          teams: teamsFromCommands
+        }));
+        // Update detailedGameState teamScores - REPLACE with current commands list
+        setDetailedGameState(prevState => {
+          const updatedTeamScores = commands.map((cmd: { id: string; name: string }) => {
+            const existing = prevState.teamScores?.find(t => t.id === cmd.id);
+            return {
+              id: cmd.id,
+              name: cmd.name,
+              score: existing?.score ?? 0
+            };
+          });
+          return {
+            ...prevState,
+            teamScores: updatedTeamScores
+          };
+        });
+        break;
+      case 'BROADCAST':
+        if (message.payload?.type === 'GAME_STATE_UPDATE') {
+          handleGameStateUpdate(message.payload.state, message.payload);
+        } else if (message.payload?.type === 'MEDIA_TRANSFER') {
+          demoScreenMedia.processMediaMessage(message);
+        } else if (message.payload?.type === 'SUPER_GAME_STATE_SYNC') {
+          setDetailedGameState(prevState => ({
+            ...prevState,
+            superGamePhase: message.payload.phase || 'idle'
+          }));
+        }
+        break;
+      // TIMER_STATE is ignored - demo screen calculates timer locally
+      case 'QR_CODE_STATE':
+        setQrCodeState({
+          isVisible: message.payload.showQRCode || false,
+          position: message.payload.position
+        });
+        break;
+      // TIMER_CONTROL is ignored - demo screen controls timer locally
+      case 'MEDIA_TRANSFER':
+      case 'MEDIA_CHUNK_METADATA':
+      case 'MEDIA_CHUNK':
+      case 'MEDIA_CHUNK_COMPLETE':
+      case 'MEDIA_PROGRESS':
+        // Handle all media messages via demo screen media hook
+        demoScreenMedia.processMediaMessage(message);
+        break;
+      case 'BUZZ_EVENT':
+        // Handle buzz event for visual feedback on demo screen
+        console.log('[ScreenView] BUZZ_EVENT received:', message.payload);
+        const buzzClientId = message.payload.clientId;
+        const clientsList = gameState.clients?.map((c: any) => ({ id: c.id, peerId: c.peerId, name: c.name, teamId: c.teamId })) || [];
+        console.log('[ScreenView] Current clients in gameState:', clientsList);
+        console.log('[ScreenView] Looking for clientId:', buzzClientId, 'in buzzing check');
+        // Log each client for debugging
+        clientsList.forEach((c: any) => {
+          console.log('[ScreenView] Client:', c.name, 'id:', c.id, 'peerId:', c.peerId, 'matches id:', c.id === buzzClientId, 'matches peerId:', c.peerId === buzzClientId);
+        });
+        // Check both id and peerId for match
+        const matchedClient = clientsList.find((c: any) => c.id === buzzClientId || c.peerId === buzzClientId);
+        console.log('[ScreenView] Match found:', !!matchedClient, matchedClient ? `client: ${matchedClient.name}` : '');
+        // Add to buzzing clients for visual flash effect (use the matched client's id or the buzzClientId)
+        const clientIdToAdd = matchedClient?.id || buzzClientId;
+        setBuzingClientIds(prev => new Set(prev).add(clientIdToAdd));
+        // Remove after 500ms
+        setTimeout(() => {
+          setBuzingClientIds(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(clientIdToAdd);
+            return newSet;
+          });
+        }, 500);
+
+        // If team is not active, add to buzzedTeamIds for shrink/lighten effect
+        const buzzTeamId = message.payload.teamId;
+        const isTeamActive = message.payload.isTeamActive !== false; // Default to true if not specified
+        if (!isTeamActive && buzzTeamId) {
+          setBuzzedTeamIds(prev => new Set(prev).add(buzzTeamId));
+          setTimeout(() => {
+            setBuzzedTeamIds(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(buzzTeamId);
+              return newSet;
+            });
+          }, 500);
+        }
+        break;
+      default:
+    }
+  }, [demoScreenMedia]); // Demo screen media dependency
 
   // Host info from URL
   const urlHostId = useMemo(() => {
@@ -119,7 +282,17 @@ export const ScreenView: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
 
   // Game state from host (synced via P2P)
-  const [gameState, setGameState] = useState<any>(null);
+  const [gameState, setGameState] = useState<any>({
+    teams: [],
+    clients: [],
+    isSessionActive: false
+  });
+
+  // Track which clients are currently buzzing (for visual flash effect)
+  const [buzzingClientIds, setBuzingClientIds] = useState<Set<string>>(new Set());
+
+  // Track which teams are currently buzzing (for shrink/lighten effect on inactive teams)
+  const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
 
   // QR Code state from host
   const [qrCodeState, setQrCodeState] = useState<{
@@ -146,8 +319,15 @@ export const ScreenView: React.FC = () => {
       themeName: string;
       roundName?: string;
       questionId?: string; // Add question ID for proper comparison
+      hint?: {
+        text?: string;
+        media?: any;
+        answers?: string[];
+        correctAnswer?: number;
+      };
     };
     showAnswer?: boolean;
+    showHint?: boolean;
     teamScores?: Array<{ id: string; name: string; score: number }>;
     buzzerState?: {
       active: boolean;
@@ -171,6 +351,11 @@ export const ScreenView: React.FC = () => {
       number?: number;
       type?: string;
       cover?: any;
+      // Timer settings - demo screen reads these to calculate timer independently
+      readingTimePerLetter?: number;
+      responseWindow?: number;
+      handicapEnabled?: boolean;
+      handicapDelay?: number;
     };
     // Add game board data
     allThemes?: Array<{
@@ -206,30 +391,89 @@ export const ScreenView: React.FC = () => {
     superGameBets?: Array<{ teamId: string; bet: number; ready: boolean }>;
     superGameAnswers?: Array<{ teamId: string; answer: string; revealed: boolean }>;
     selectedSuperAnswerTeam?: string | null;
-    // Add team states for player panel colors
-    teamStates?: {
-      wrongAnswerTeams?: string[];
-      activeTeamIds?: string[];
-      clashingTeamIds?: string[];
-    };
+    // Team states using new status system (TeamStatus enum)
+    // Can be in per-team format (Record<string, TeamState>) or grouped format (Record<string, string[]>)
+    teamStates?: Record<string, any>;
     showQRCode?: boolean; // QR code visibility state
     hostId?: string; // Host ID for QR code generation
     qrCodePosition?: { x: number; y: number }; // QR code position from host
     highlightedQuestion?: string | null; // Currently highlighted question (for visual feedback)
     themesScrollPosition?: number; // Scroll position for themes list
-  }>({});
+  }>({
+    buzzerState: {
+      active: false,
+      timerPhase: 'inactive',
+      readingTimerRemaining: 0,
+      responseTimerRemaining: 0,
+      readingTimeTotal: 5,
+      responseTimeTotal: 30,
+      handicapActive: false,
+      isPaused: false,
+      timerBarColor: 'bg-gray-500',
+      timerTextColor: 'text-gray-300'
+    }
+  });
 
   // Timer display refs for direct DOM manipulation (no re-renders)
   const timerTextRef = useRef<HTMLSpanElement>(null);
   const timerBarRef = useRef<HTMLDivElement>(null);
+  const timerPauseIndicatorRef = useRef<HTMLDivElement>(null);
 
-  // Ref for buzzerState to avoid recreating intervals
-  const buzzerStateRef = useRef(detailedGameState.buzzerState);
+  // Local timer state - demo screen runs timer independently, NOT syncing with host
+  const localTimerStateRef = useRef({
+    phase: 'inactive' as 'reading' | 'response' | 'inactive',
+    readingRemaining: 0,
+    responseRemaining: 0,
+    readingTotal: 0,
+    responseTotal: 0,
+    isPaused: false,
+    hasSwitchedPhase: false, // Track if we've sent TIMER_PHASE_SWITCH for current reading phase
+    phaseSwitchedLocally: false, // Track if WE switched phase (waiting for host confirmation)
+    currentQuestionId: null as string | null, // Track current question to detect changes
+    // Timer settings - will be calculated from question text
+    readingTimePerLetter: 0.05, // Default value
+    responseWindow: 30 // Default value
+  });
 
-  // Update buzzerStateRef when detailedGameState changes
+  // Ref to track when question opens for timer initialization
+  const lastQuestionIdRef = useRef<string | null>(null);
+
+  // Calculate timer settings from question text (same logic as host uses)
+  // Timer settings come from currentRound - demo screen reads from pack just like host
+  const calculateTimerFromQuestion = useCallback((questionText: string, hasMedia: boolean) => {
+    // Get timer settings from currentRound (received from host via broadcast)
+    const readingTimePerLetter = detailedGameState.currentRound?.readingTimePerLetter ?? 0.05;
+    const responseWindow = detailedGameState.currentRound?.responseWindow ?? 30;
+
+    // Count letters (same logic as host)
+    const questionTextLetters = (questionText || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
+    const readingTime = readingTimePerLetter > 0
+      ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+      : 0;
+
+    // Minimum 1 second for reading timer
+    return {
+      readingTime: Math.max(readingTime, 1.0),
+      responseTime: responseWindow,
+      readingTimePerLetter,
+      responseWindow
+    };
+  }, [detailedGameState.currentRound?.readingTimePerLetter, detailedGameState.currentRound?.responseWindow]);
+
+  // Initialize media handler for background downloads
   useEffect(() => {
-    buzzerStateRef.current = detailedGameState.buzzerState;
-  }, [detailedGameState.buzzerState]);
+    demoScreenMediaHandler.initialize((updates) => {
+      // Media download progress updates - could trigger UI updates here if needed
+    });
+
+    // Run initial health check
+    MediaSystemDebugger.healthCheck();
+
+    return () => {
+      // Cleanup on unmount
+      demoScreenMediaHandler.clear();
+    };
+  }, []);
 
   // Connection quality
   const [connectionQuality, setConnectionQuality] = useState({
@@ -239,6 +483,8 @@ export const ScreenView: React.FC = () => {
     lastPing: Date.now(),
     healthScore: 100
   });
+
+  // Local countdown state - managed by timer useEffect below
 
   // Initialize P2P client for screen (connects to host as client)
   const p2pClient = useP2PClient({
@@ -250,262 +496,66 @@ export const ScreenView: React.FC = () => {
     currentTeamId: undefined,
     isModerator: false, // Not a moderator, just a display
     onMessage: (message) => {
-      console.log('[ScreenView] Message received:', message.type, 'from host');
+      // Process message directly with new architecture
+      // This handles ALL message types including COMMANDS_LIST, TEAM_UPDATE, STATE_SYNC, etc.
+      processMessage(message);
+
+      // Note: TEAM_UPDATE and COMMANDS_LIST are handled in processMessage()
+      // to avoid duplicate processing and ensure consistent state updates
+
+      // Handle specific message types that need special handling
       switch (message.type) {
-        case 'STATE_SYNC':
-          console.log('[ScreenView] State sync received:', message.payload);
-          // Merge with existing state to preserve all fields
-          setGameState(prevState => {
-            const payload = message.payload;
-            const updatedState = {
-              ...prevState,
-              ...payload,
-              // Ensure clients array is properly set, but don't overwrite with empty array
-              clients: (payload.clients && payload.clients.length > 0) ? payload.clients : (prevState?.clients || []),
-              // Ensure teams array is properly set, but don't overwrite with empty array
-              teams: (payload.teams && payload.teams.length > 0) ? payload.teams : (prevState?.teams || []),
-              // NEVER overwrite buzzerState from STATE_SYNC - only BROADCAST messages should update it
-              // buzzerState: (payload.buzzerState && payload.buzzerState.timerPhase) ? payload.buzzerState : (prevState?.buzzerState || {}),
-              // Update session status
-              isSessionActive: payload.isSessionActive !== undefined ? payload.isSessionActive : (prevState?.isSessionActive || false)
-            };
-            console.log('[ScreenView] Merged state:', updatedState);
-            return updatedState;
-          });
-          break;
-        case 'TEAMS_SYNC':
-          const syncedTeams = message.payload.teams || [];
-          // Only update if we actually received teams (prevent empty array overwriting valid state)
-          if (syncedTeams.length > 0) {
-            console.log('[ScreenView] Teams synced:', syncedTeams);
-            setGameState(prevState => ({
-              ...prevState,
-              teams: syncedTeams
-            }));
-          // Also update detailedGameState teamScores
-          setDetailedGameState(prevState => ({
-            ...prevState,
-            teamScores: syncedTeams.map((team: any) => ({
-              id: team.id,
-              name: team.name,
-              score: team.score || 0
-            }))
-          }));
-          } else {
-            console.log('[ScreenView] Skipping TEAMS_SYNC with empty teams array');
-          }
-          break;
-        case 'TEAM_UPDATE':
-          const { teamId, teamName } = message.payload;
-          console.log('[ScreenView] Team update received:', teamId, teamName);
-          setGameState(prevState => {
-            const existingTeams = prevState?.teams || [];
-            const teamExists = existingTeams.some((t: any) => t.id === teamId);
-            if (teamExists) {
-              // Update existing team
-              return {
-                ...prevState,
-                teams: existingTeams.map((t: any) =>
-                  t.id === teamId ? { ...t, name: teamName, lastUsedAt: Date.now() } : t
-                )
-              };
-            } else {
-              // Add new team
-              return {
-                ...prevState,
-                teams: [...existingTeams, { id: teamId, name: teamName, createdAt: Date.now(), lastUsedAt: Date.now() }]
-              };
-            }
-          });
-          // Also update detailedGameState teamScores
-          setDetailedGameState(prevState => {
-            const existingScores = prevState.teamScores || [];
-            const scoreExists = existingScores.some(t => t.id === teamId);
-            if (scoreExists) {
-              return {
-                ...prevState,
-                teamScores: existingScores.map(t =>
-                  t.id === teamId ? { ...t, name: teamName } : t
-                )
-              };
-            } else {
-              return {
-                ...prevState,
-                teamScores: [...existingScores, { id: teamId, name: teamName, score: 0 }]
-              };
-            }
-          });
-          break;
-        case 'COMMANDS_LIST':
-          const commands = message.payload.commands || [];
-          // Only update if we actually received commands (prevent empty array overwriting valid state)
-          if (commands.length > 0) {
-            console.log('[ScreenView] Commands list received:', commands);
-            // Convert commands to teams format for display
-            const teamsFromCommands = commands.map((cmd: { id: string; name: string }) => ({
-              id: cmd.id,
-              name: cmd.name,
-              createdAt: Date.now(),
-              lastUsedAt: Date.now()
-            }));
-            setGameState(prevState => ({
-              ...prevState,
-              teams: teamsFromCommands
-            }));
-            // Also update detailedGameState teamScores if they don't exist yet
-            setDetailedGameState(prevState => {
-              const existingTeamIds = new Set(prevState.teamScores?.map(t => t.id) || []);
-              const newTeamScores = commands
-                .filter((cmd: { id: string; name: string }) => !existingTeamIds.has(cmd.id))
-                .map((cmd: { id: string; name: string }) => ({
-                  id: cmd.id,
-                  name: cmd.name,
-                  score: 0
-                }));
-              return {
-                ...prevState,
-                teamScores: [...(prevState.teamScores || []), ...newTeamScores]
-              };
-            });
-          } else {
-            console.log('[ScreenView] Skipping COMMANDS_LIST with empty commands array');
-          }
-          break;
+        // TEAM_UPDATE is now handled in processMessage() only
+        // COMMANDS_LIST is handled in processMessage() only
         case 'BROADCAST':
           if (message.payload?.type === 'GAME_STATE_UPDATE') {
-            console.log('[ScreenView] Game state update received');
-            console.log('[ScreenView] Buzzer state in broadcast:', JSON.stringify(message.payload.state?.buzzerState, null, 2));
-            handleGameStateUpdate(message.payload.state);
+            handleGameStateUpdate(message.payload.state, message.payload);
+          } else if (message.payload?.type === 'MEDIA_TRANSFER') {
+            const payload = message.payload;
+            if (!window.mediaTransferCache) {
+              window.mediaTransferCache = new Map();
+            }
+            if (payload.isYouTube && payload.url) {
+              window.mediaTransferCache.set(payload.mediaId, {
+                type: payload.mediaType,
+                url: payload.url,
+                isYouTube: true
+              });
+            } else if (payload.fileData && payload.fileType) {
+              window.mediaTransferCache.set(payload.mediaId, {
+                type: payload.mediaType,
+                url: null,
+                fileData: payload.fileData,
+                fileType: payload.fileType,
+                isYouTube: false
+              });
+            } else if (payload.url) {
+              window.mediaTransferCache.set(payload.mediaId, {
+                type: payload.mediaType,
+                url: payload.url,
+                isYouTube: false
+              });
+            }
+          } else if (message.payload?.type === 'SUPER_GAME_STATE_SYNC') {
+            setDetailedGameState(prevState => ({
+              ...prevState,
+              superGamePhase: message.payload.phase || 'idle'
+            }));
           }
           break;
-        case 'BUZZER_STATE':
-          console.log('[ScreenView] Buzzer state received:', JSON.stringify(message.payload, null, 2));
-          // Handle buzzer state updates (timer state, pause state, etc.)
-          setDetailedGameState(prevState => {
-            const buzzerState = message.payload;
-            return {
-              ...prevState,
-              buzzerState: {
-                ...prevState.buzzerState,
-                ...buzzerState,
-                // Ensure timer phase is preserved
-                timerPhase: buzzerState.timerPhase || prevState.buzzerState?.timerPhase || 'inactive',
-                // Update remaining time values
-                readingTimerRemaining: buzzerState.readingTimerRemaining ?? prevState.buzzerState?.readingTimerRemaining ?? 0,
-                responseTimerRemaining: buzzerState.responseTimerRemaining ?? prevState.buzzerState?.responseTimerRemaining ?? 0,
-                // Update total time values - CRITICAL for local countdown
-                readingTimeTotal: buzzerState.readingTimeTotal ?? prevState.buzzerState?.readingTimeTotal ?? 5,
-                responseTimeTotal: buzzerState.responseTimeTotal ?? prevState.buzzerState?.responseTimeTotal ?? 30,
-                // Update pause state - this is critical for timer start/stop
-                isPaused: buzzerState.isPaused ?? prevState.buzzerState?.isPaused ?? false,
-                // Preserve other important fields
-                active: buzzerState.active ?? prevState.buzzerState?.active ?? false,
-                handicapActive: buzzerState.handicapActive ?? prevState.buzzerState?.handicapActive ?? false,
-                handicapTeamId: buzzerState.handicapTeamId ?? prevState.buzzerState?.handicapTeamId
-              }
-            };
-          });
-          break;
         case 'QR_CODE_STATE':
-          console.log('[ScreenView] QR code state received:', message.payload);
           setQrCodeState({
             isVisible: message.payload.showQRCode || false,
             position: message.payload.position
           });
           break;
-        case 'TIMER_CONTROL':
-          console.log('[ScreenView] Timer control received:', message.payload);
-          // Handle explicit timer control commands
-          const { action, timerPhase, readingTimerRemaining, responseTimerRemaining } = message.payload;
-
-          setDetailedGameState(prevState => {
-            const updatedState = { ...prevState };
-
-            if (updatedState.buzzerState) {
-              switch (action) {
-                case 'pause':
-                  updatedState.buzzerState.isPaused = true;
-                  break;
-                case 'resume':
-                  updatedState.buzzerState.isPaused = false;
-                  break;
-                case 'stop':
-                  updatedState.buzzerState.isPaused = false;
-                  updatedState.buzzerState.timerPhase = 'inactive';
-                  break;
-                case 'switch':
-                  if (timerPhase) {
-                    updatedState.buzzerState.timerPhase = timerPhase;
-                  }
-                  if (readingTimerRemaining !== undefined) {
-                    updatedState.buzzerState.readingTimerRemaining = readingTimerRemaining;
-                  }
-                  if (responseTimerRemaining !== undefined) {
-                    updatedState.buzzerState.responseTimerRemaining = responseTimerRemaining;
-                  }
-                  updatedState.buzzerState.isPaused = false;
-                  break;
-                case 'start':
-                  if (timerPhase) {
-                    updatedState.buzzerState.timerPhase = timerPhase;
-                  }
-                  if (readingTimerRemaining !== undefined) {
-                    updatedState.buzzerState.readingTimerRemaining = readingTimerRemaining;
-                  }
-                  if (responseTimerRemaining !== undefined) {
-                    updatedState.buzzerState.responseTimerRemaining = responseTimerRemaining;
-                  }
-                  updatedState.buzzerState.isPaused = false;
-                  updatedState.buzzerState.active = true;
-                  break;
-              }
-            }
-
-            return updatedState;
-          });
-          break;
         case 'MEDIA_TRANSFER':
-          console.log('[ScreenView] Media transfer received:', message.payload);
-          // Process media transfer message - store the media URL for later use
-          const { payload } = message;
-
-          if (payload.isYouTube && payload.url) {
-            // YouTube links - store directly
-            console.log('[ScreenView] YouTube media received:', payload.url);
-            // Store in a map for later use when question is displayed
-            if (!window.mediaTransferCache) {
-              window.mediaTransferCache = new Map();
-            }
-            window.mediaTransferCache.set(payload.mediaId, {
-              type: payload.mediaType,
-              url: payload.url,
-              isYouTube: true
-            });
-          } else if (payload.fileData && payload.fileType) {
-            // Local files transferred as base64
-            console.log('[ScreenView] Local file media received:', payload.fileName);
-            if (!window.mediaTransferCache) {
-              window.mediaTransferCache = new Map();
-            }
-            window.mediaTransferCache.set(payload.mediaId, {
-              type: payload.mediaType,
-              url: null, // Will be processed when needed
-              fileData: payload.fileData,
-              fileType: payload.fileType,
-              isYouTube: false
-            });
-          } else if (payload.url) {
-            // External URLs
-            console.log('[ScreenView] External URL media received:', payload.url);
-            if (!window.mediaTransferCache) {
-              window.mediaTransferCache = new Map();
-            }
-            window.mediaTransferCache.set(payload.mediaId, {
-              type: payload.mediaType,
-              url: payload.url,
-              isYouTube: false
-            });
-          }
+        case 'MEDIA_CHUNK_METADATA':
+        case 'MEDIA_CHUNK':
+        case 'MEDIA_CHUNK_COMPLETE':
+        case 'MEDIA_PROGRESS':
+          // Handle all media messages via demo screen media hook
+          demoScreenMedia.processMediaMessage(message);
           break;
         default:
       }
@@ -537,7 +587,7 @@ export const ScreenView: React.FC = () => {
   // Auto-connect when we have host ID
   useEffect(() => {
     if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting) {
-      console.log('[ScreenView] Auto-connecting to host:', urlHostId);
+      console.log('[ScreenView] Connecting to host...');
       p2pClient.connect();
     }
   }, [urlHostId, p2pClient]);
@@ -547,147 +597,80 @@ export const ScreenView: React.FC = () => {
 
   useEffect(() => {
     if (connectionStatus !== previousConnectionStatusRef.current) {
-      console.log('[ScreenView] Connection status changed:', {
-        from: previousConnectionStatusRef.current,
-        to: connectionStatus
-      });
+      console.log('[ScreenView] Connection:', connectionStatus);
 
-      // When transitioning to connected, request full state sync only on first connection
-      // (periodic sync will handle subsequent updates)
+      // When transitioning to connected, request full state sync from host
       if (connectionStatus === 'connected' && previousConnectionStatusRef.current !== 'connected') {
-        console.log('[ScreenView] Connected to host, periodic sync will handle state updates');
+        // Request initial state sync from host
+        p2pClient.send({
+          id: `sync_${Date.now()}`,
+          category: MessageCategory.SYNC,
+          timestamp: Date.now(),
+          senderId: clientId,
+          type: 'STATE_SYNC_REQUEST',
+          payload: {}
+        });
       }
 
       previousConnectionStatusRef.current = connectionStatus;
     }
-  }, [connectionStatus, p2pClient.isConnected, p2pClient.send]);
+  }, [connectionStatus, p2pClient.isConnected, p2pClient.send, clientId]);
 
   // Handle game state updates with media restoration
-  const handleGameStateUpdate = useCallback(async (state: any) => {
-    console.log('[ScreenView] Processing game state update with media restoration');
+  const handleGameStateUpdate = useCallback(async (state: any, fullPayload?: any) => {
+    // Debug: Log incoming fullPayload to see if teamStates and teamScores are present
+    console.log('[ScreenView] 📥 handleGameStateUpdate called with:', {
+      hasFullPayload: !!fullPayload,
+      hasTeamStatesInPayload: !!fullPayload?.teamStates,
+      hasTeamScoresInPayload: !!fullPayload?.teamScores,
+      teamScoresCount: fullPayload?.teamScores?.length || 0,
+      teamScoresValue: fullPayload?.teamScores,
+      stateKeys: Object.keys(state || {}),
+      payloadKeys: fullPayload ? Object.keys(fullPayload) : []
+    });
 
-    // Check for transferred media files for active question
-    if (state.activeQuestion?.media?.url && window.mediaTransferCache) {
-      const questionMediaId = `question_${state.activeQuestion.questionId || 'current'}_media`;
-      const cachedMedia = window.mediaTransferCache.get(questionMediaId);
-
-      if (cachedMedia) {
-        console.log('[ScreenView] Using cached media for question:', questionMediaId);
-
-        if (cachedMedia.url) {
-          // For YouTube and external URLs, use directly
-          state.activeQuestion.media.url = cachedMedia.url;
-        } else if (cachedMedia.fileData && cachedMedia.fileType) {
-          // For local files, convert base64 to blob URL
-          try {
-            const blobUrl = processMediaTransfer({
-              id: 'cached',
-              category: 'state' as const,
-              timestamp: Date.now(),
-              senderId: 'host',
-              type: 'MEDIA_TRANSFER',
-              payload: {
-                mediaId: questionMediaId,
-                mediaType: cachedMedia.type,
-                fileName: 'media',
-                fileType: cachedMedia.fileType,
-                fileSize: 0,
-                fileData: cachedMedia.fileData,
-                url: cachedMedia.url,
-                isYouTube: cachedMedia.isYouTube
-              }
-            });
-
-            if (blobUrl) {
-              state.activeQuestion.media.url = blobUrl;
-              console.log('[ScreenView] Media blob URL created from cache:', questionMediaId);
-            }
-          } catch (error) {
-            console.error('[ScreenView] Error creating blob URL from cache:', error);
-          }
-        }
-      }
+    // Transform currentQuestion to activeQuestion format for compatibility
+    if (state.currentQuestion && !state.activeQuestion) {
+      state.activeQuestion = {
+        text: state.currentQuestion.text,
+        media: state.currentQuestion.media,
+        answer: state.currentQuestion.answerText,
+        answerMedia: state.currentQuestion.answerMedia,
+        points: state.currentQuestion.points,
+        themeName: state.currentQuestion.themeName || 'Unknown Theme',
+        roundName: state.currentQuestion.roundName,
+        questionId: state.currentQuestion.id,
+        // Include hint if available
+        hint: state.currentQuestion.hint ? {
+          text: state.currentQuestion.hint.text,
+          media: state.currentQuestion.hint.media,
+          answers: state.currentQuestion.hint.answers,
+          correctAnswer: state.currentQuestion.hint.correctAnswer
+        } : undefined
+      };
+      console.log('[ScreenView] Transformed activeQuestion:', {
+        questionId: state.activeQuestion.questionId,
+        text: state.activeQuestion.text?.slice(0, 30),
+        hasMedia: !!state.activeQuestion.media,
+        hasAnswerMedia: !!state.activeQuestion.answerMedia,
+        hasHint: !!state.activeQuestion.hint
+      });
     }
 
-    // Check for transferred media files for answer media
-    if (state.activeQuestion?.answerMedia?.url && window.mediaTransferCache) {
-      const answerMediaId = `question_${state.activeQuestion.questionId || 'current'}_answer_media`;
-      const cachedMedia = window.mediaTransferCache.get(answerMediaId);
-
-      if (cachedMedia) {
-        console.log('[ScreenView] Using cached media for answer:', answerMediaId);
-
-        if (cachedMedia.url) {
-          state.activeQuestion.answerMedia.url = cachedMedia.url;
-        } else if (cachedMedia.fileData && cachedMedia.fileType) {
-          try {
-            const blobUrl = processMediaTransfer({
-              id: 'cached',
-              category: 'state' as const,
-              timestamp: Date.now(),
-              senderId: 'host',
-              type: 'MEDIA_TRANSFER',
-              payload: {
-                mediaId: answerMediaId,
-                mediaType: cachedMedia.type,
-                fileName: 'media',
-                fileType: cachedMedia.fileType,
-                fileSize: 0,
-                fileData: cachedMedia.fileData,
-                url: cachedMedia.url,
-                isYouTube: cachedMedia.isYouTube
-              }
-            });
-
-            if (blobUrl) {
-              state.activeQuestion.answerMedia.url = blobUrl;
-              console.log('[ScreenView] Answer media blob URL created from cache:', answerMediaId);
-            }
-          } catch (error) {
-            console.error('[ScreenView] Error creating answer blob URL from cache:', error);
-          }
-        }
-      }
+    // Debug active question media
+    if (state.activeQuestion) {
+      MediaSystemDebugger.debugActiveQuestionMedia(state.activeQuestion);
+    } else if (state.currentQuestion) {
+      console.log('[ScreenView] Using currentQuestion instead of activeQuestion:', {
+        id: state.currentQuestion.id,
+        text: state.currentQuestion.text?.slice(0, 30),
+        hasMedia: !!state.currentQuestion.media,
+        hasAnswerMedia: !!state.currentQuestion.answerMedia
+      });
     }
 
-    // Restore media URLs for active question (fallback to IndexedDB)
-    if (state.activeQuestion?.media?.localFile?.mediaId) {
-      const restoredUrl = await restoreBlobFromStorage(state.activeQuestion.media.localFile.mediaId);
-      if (restoredUrl) {
-        state.activeQuestion.media.url = restoredUrl;
-        console.log('[ScreenView] Question media blob URL restored:', state.activeQuestion.media.localFile.mediaId);
-      }
-    }
-
-    if (state.activeQuestion?.answerMedia?.localFile?.mediaId) {
-      const restoredUrl = await restoreBlobFromStorage(state.activeQuestion.answerMedia.localFile.mediaId);
-      if (restoredUrl) {
-        state.activeQuestion.answerMedia.url = restoredUrl;
-        console.log('[ScreenView] Answer media blob URL restored:', state.activeQuestion.answerMedia.localFile.mediaId);
-      }
-    }
-
-    // Restore media URLs for pack cover
-    if (state.packCover?.localFile?.mediaId) {
-      const restoredUrl = await restoreBlobFromStorage(state.packCover.localFile.mediaId);
-      if (restoredUrl) {
-        // Set both url and value for compatibility
-        state.packCover.url = restoredUrl;
-        state.packCover.value = restoredUrl;
-        console.log('[ScreenView] Pack cover blob URL restored:', state.packCover.localFile.mediaId);
-      }
-    }
-
-    // Restore media URLs for current round cover
-    if (state.currentRound?.cover?.localFile?.mediaId) {
-      const restoredUrl = await restoreBlobFromStorage(state.currentRound.cover.localFile.mediaId);
-      if (restoredUrl) {
-        // Set both url and value for compatibility
-        state.currentRound.cover.url = restoredUrl;
-        state.currentRound.cover.value = restoredUrl;
-        console.log('[ScreenView] Round cover blob URL restored:', state.currentRound.cover.localFile.mediaId);
-      }
-    }
+    // NOTE: Media cache processing moved to after finalActiveQuestion determination
+    // This ensures media URLs from MEDIA_TRANSFER messages are properly applied
 
     setDetailedGameState(prevState => {
       // Preserve important fields if not provided in new state
@@ -698,9 +681,7 @@ export const ScreenView: React.FC = () => {
 
       // Log screen changes for debugging
       if (newScreen && newScreen !== oldScreen) {
-        console.log('[ScreenView] ⚠️ Screen changing from', oldScreen, 'to', newScreen);
       } else if (!newScreen) {
-        console.log('[ScreenView] ⚠️ No currentScreen in update, keeping:', oldScreen);
       }
 
       // Check if question actually changed (deep comparison)
@@ -710,144 +691,273 @@ export const ScreenView: React.FC = () => {
           !oldQuestion || // No previous question - must set new one
           (oldQuestion.questionId !== newQuestion.questionId) || // Different question ID
           (oldQuestion.text !== newQuestion.text) ||
-          (oldQuestion.points !== newQuestion.points)
+          (oldQuestion.points !== newQuestion.points) ||
+          (oldQuestion.themeName !== newQuestion.themeName)
         )
       );
 
       // Use new question if should update, otherwise preserve old
-      const finalActiveQuestion = shouldUpdateQuestion ? newQuestion : oldQuestion;
+      let finalActiveQuestion = shouldUpdateQuestion ? newQuestion : oldQuestion;
+
+      // CRITICAL: Apply cached media URLs AFTER finalActiveQuestion is determined
+      // This ensures media URLs from MEDIA_TRANSFER messages are preserved
+      finalActiveQuestion = demoScreenMedia.applyCachedMedia(finalActiveQuestion);
 
       // Log question changes for debugging (only when actually changed)
-      if (shouldUpdateQuestion && newQuestion?.questionId) {
-        console.log('[ScreenView] ⚠️ Question updated:', {
-          oldId: oldQuestion?.questionId,
-          newId: newQuestion.questionId,
-          oldText: oldQuestion?.text?.slice(0, 30),
-          newText: newQuestion.text?.slice(0, 30)
-        });
-      } else if (newQuestion === null && oldQuestion) {
-        console.log('[ScreenView] ✅ Question CLOSED (was:', oldQuestion.questionId, ')');
-      } else if (!newQuestion && oldQuestion) {
-        console.log('[ScreenView] ⚠️ Question cleared (was:', oldQuestion.questionId);
-      }
+      if (shouldUpdateQuestion) {
+        if (newQuestion?.questionId) {
+          console.log('[ScreenView] ⚠️ Question updated:', {
+            oldId: oldQuestion?.questionId,
+            newId: newQuestion.questionId,
+            oldText: oldQuestion?.text?.slice(0, 30),
+            newText: newQuestion.text?.slice(0, 30),
+            oldTheme: oldQuestion?.themeName,
+            newTheme: newQuestion.themeName,
+            showAnswer: state.showAnswer
+          });
 
-      // Always use new buzzerState if provided and valid - BROADCAST from host is authoritative
-      let finalBuzzerState = state.buzzerState;
+          // Initialize local timer when question opens
+          const hasMedia = newQuestion.media?.type === 'audio' ||
+                          newQuestion.media?.type === 'video' ||
+                          newQuestion.media?.type === 'youtube';
 
-      if (!state.buzzerState || !state.buzzerState.timerPhase) {
-        // No new buzzerState - keep old one
-        finalBuzzerState = prevState.buzzerState;
-        console.log('[ScreenView] 🔧 Keeping old buzzerState (no new state)');
+          // Get timer settings from currentRound (same as host uses)
+          const readingTimePerLetter = detailedGameState.currentRound?.readingTimePerLetter ?? 0.05;
+          const responseWindow = detailedGameState.currentRound?.responseWindow ?? 30;
+
+          const questionTextLetters = (newQuestion.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
+          const readingTime = readingTimePerLetter > 0
+            ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+            : 0;
+          const calculatedReadingTime = Math.max(readingTime, 1.0);
+
+          localTimerStateRef.current = {
+            phase: calculatedReadingTime > 0 ? 'reading' : 'response',
+            readingRemaining: calculatedReadingTime,
+            responseRemaining: responseWindow,
+            readingTotal: calculatedReadingTime,
+            responseTotal: responseWindow,
+            isPaused: false, // Timer starts running immediately
+            hasSwitchedPhase: false,
+            phaseSwitchedLocally: false,
+            currentQuestionId: newQuestion.questionId || null,
+            readingTimePerLetter,
+            responseWindow
+          };
+
+          lastQuestionIdRef.current = newQuestion.questionId || null;
+
+          console.log('[ScreenView] 🕐 Local timer initialized:', {
+            questionId: newQuestion.questionId,
+            readingTime: calculatedReadingTime,
+            responseTime: responseWindow,
+            phase: calculatedReadingTime > 0 ? 'reading' : 'response',
+            hasMedia
+          });
+        } else if (newQuestion === null && oldQuestion) {
+          console.log('[ScreenView] ✅ Question CLOSED (was:', oldQuestion.questionId, ')');
+          // Clear media cache when question closes to prevent stale media
+          demoScreenMedia.clearQuestionMedia(oldQuestion.questionId || oldQuestion.id || '');
+
+          // Reset local timer when question closes
+          localTimerStateRef.current = {
+            phase: 'inactive',
+            readingRemaining: 0,
+            responseRemaining: 0,
+            readingTotal: 0,
+            responseTotal: 0,
+            isPaused: false,
+            hasSwitchedPhase: false,
+            phaseSwitchedLocally: false,
+            currentQuestionId: null,
+            readingTimePerLetter: 0.05,
+            responseWindow: 30
+          };
+          lastQuestionIdRef.current = null;
+        }
       } else {
-        // New state is valid - use it (BROADCAST from host is authoritative)
-        console.log('[ScreenView] 🔧 Using new buzzerState', {
-          isPaused: state.buzzerState.isPaused,
-          timerPhase: state.buzzerState.timerPhase,
-          time: state.buzzerState.readingTimerRemaining || state.buzzerState.responseTimerRemaining,
+        console.log('[ScreenView] ♻️ Question preserved (no change):', {
+          currentId: oldQuestion?.questionId,
           showAnswer: state.showAnswer,
-          activeQuestion: !!state.activeQuestion
+          reason: !newQuestion ? 'no new question' :
+                  !oldQuestion ? 'no old question' :
+                  oldQuestion.questionId === newQuestion.questionId ? 'same question ID' :
+                  'other fields unchanged'
         });
       }
+
+      // buzzerState from host is ignored - demo screen uses local timer
+      const finalBuzzerState = prevState.buzzerState || {
+        active: false,
+        timerPhase: 'inactive',
+        readingTimerRemaining: 0,
+        responseTimerRemaining: 0,
+        readingTimeTotal: 5,
+        responseTimeTotal: 30,
+        handicapActive: false,
+        isPaused: false,
+        timerBarColor: 'bg-gray-500',
+        timerTextColor: 'text-gray-300'
+      };
 
       const updatedState = {
         ...state,
         // Preserve currentScreen if not provided (prevent screen jumping)
         currentScreen: state.currentScreen || prevState.currentScreen || 'cover',
-        // Preserve teamScores if not provided
-        teamScores: state.teamScores || prevState.teamScores || [],
+        // CRITICAL: teamScores comes from fullPayload (top level), not from state
+        // This ensures score updates sync properly from host to demo screen
+        teamScores: fullPayload?.teamScores || state.teamScores || prevState.teamScores || [],
+        // Extract packCover and packName from full payload (they are outside state)
+        packCover: fullPayload?.packCover !== undefined ? fullPayload.packCover : prevState.packCover,
+        packName: fullPayload?.packName !== undefined ? fullPayload.packName : prevState.packName,
+        // Extract allThemes and boardData from full payload
+        allThemes: fullPayload?.allThemes !== undefined ? fullPayload.allThemes : prevState.allThemes,
+        boardData: fullPayload?.boardData !== undefined ? fullPayload.boardData : prevState.boardData,
+        // Extract currentRound from full payload
+        currentRound: fullPayload?.currentRound !== undefined ? fullPayload.currentRound : prevState.currentRound,
+        // Extract super game data from full payload
+        selectedSuperThemeId: fullPayload?.selectedSuperThemeId !== undefined ? fullPayload.selectedSuperThemeId : prevState.selectedSuperThemeId,
+        disabledSuperThemeIds: fullPayload?.disabledSuperThemeIds !== undefined ? fullPayload.disabledSuperThemeIds : prevState.disabledSuperThemeIds,
+        superGameBets: fullPayload?.superGameBets !== undefined ? fullPayload.superGameBets : prevState.superGameBets,
+        superGameAnswers: fullPayload?.superGameAnswers !== undefined ? fullPayload.superGameAnswers : prevState.superGameAnswers,
+        selectedSuperAnswerTeam: fullPayload?.selectedSuperAnswerTeam !== undefined ? fullPayload.selectedSuperAnswerTeam : prevState.selectedSuperAnswerTeam,
+        // Extract highlightedQuestion from full payload
+        highlightedQuestion: fullPayload?.highlightedQuestion !== undefined ? fullPayload.highlightedQuestion : prevState.highlightedQuestion,
+        // Extract themesScrollPosition from full payload
+        themesScrollPosition: fullPayload?.themesScrollPosition !== undefined ? fullPayload.themesScrollPosition : prevState.themesScrollPosition,
         // Use final activeQuestion (either new or preserved old)
         activeQuestion: finalActiveQuestion,
         // Use calculated final buzzerState
         buzzerState: finalBuzzerState,
-        // Include showAnswer from state (important for answer display)
-        showAnswer: state.showAnswer ?? prevState.showAnswer ?? false,
+        // CRITICAL: Always update showAnswer and showHint from host state
+        // This ensures instant sync when host shows/hides answer or hint
+        showAnswer: state.showAnswer !== undefined ? state.showAnswer : prevState.showAnswer,
+        showHint: state.showHint !== undefined ? state.showHint : prevState.showHint,
+        // Log showAnswer/showHint changes for debugging
+        ...(state.showAnswer !== undefined && state.showAnswer !== prevState.showAnswer && {
+          _showAnswerChanged: {
+            from: prevState.showAnswer,
+            to: state.showAnswer,
+            timestamp: Date.now()
+          }
+        }),
+        ...(state.showHint !== undefined && state.showHint !== prevState.showHint && {
+          _showHintChanged: {
+            from: prevState.showHint,
+            to: state.showHint,
+            timestamp: Date.now()
+          }
+        }),
+
+        // Log incoming showAnswer value for debugging
+        ...(state.showAnswer !== undefined && {
+          _debugShowAnswer: state.showAnswer
+        }),
         // Preserve teamStates if not provided (critical for player panel colors)
-        // ALWAYS create new object to trigger re-render, even if data hasn't changed
-        teamStates: state.teamStates ? {
-          wrongAnswerTeams: state.teamStates.wrongAnswerTeams ? [...state.teamStates.wrongAnswerTeams] : [],
-          activeTeamIds: state.teamStates.activeTeamIds ? [...state.teamStates.activeTeamIds] : [],
-          clashingTeamIds: state.teamStates.clashingTeamIds ? [...state.teamStates.clashingTeamIds] : []
-        } : (prevState.teamStates || {
-          wrongAnswerTeams: [],
-          activeTeamIds: [],
-          clashingTeamIds: []
-        })
+        // Host sends grouped format (Record<string, string[]>), transform to per-team format
+        // NOTE: teamStates is in fullPayload (top level), not in state
+        teamStates: (() => {
+          // teamStates comes from fullPayload, not from state
+          const incomingTeamStates = fullPayload?.teamStates;
+
+          if (!incomingTeamStates) {
+            return prevState.teamStates || {};
+          }
+
+          // Check if teamStates is in grouped format (from host) or per-team format
+          const firstKey = Object.keys(incomingTeamStates)[0];
+          if (firstKey && (Array.isArray(incomingTeamStates[firstKey]) || firstKey === 'inactive' || firstKey === 'active' || firstKey === 'answering' || firstKey === 'penalty' || firstKey === 'clash' || firstKey === 'first_clash' || firstKey === 'simple_clash')) {
+            // Grouped format from host - transform to per-team format
+            const groupedStates = incomingTeamStates as Record<string, string[]>;
+            const perTeamStates: Record<string, TeamState> = {};
+
+            // Get all team IDs from teamScores
+            const allTeamIds = new Set((state.teamScores || prevState.teamScores || []).map((t: any) => t.id));
+
+            // Process each status group
+            Object.entries(groupedStates).forEach(([status, teamIds]) => {
+              // Skip sub-status arrays (first_clash, simple_clash) - they'll be processed separately
+              if (status === 'first_clash' || status === 'simple_clash') {
+                return;
+              }
+
+              teamIds.forEach((teamId: string) => {
+                const clashSubStatus = (groupedStates.first_clash?.includes(teamId) ? 'first_clash' :
+                                       groupedStates.simple_clash?.includes(teamId) ? 'simple_clash' : undefined) as 'first_clash' | 'simple_clash' | undefined;
+
+                perTeamStates[teamId] = {
+                  status: status as TeamStatus,
+                  previousStatus: 'inactive' as TeamStatus,
+                  hasAttempted: status === 'penalty' || status === 'answering',
+                  statusSince: Date.now(),
+                  ...(clashSubStatus && { clashSubStatus })
+                };
+              });
+            });
+
+            // Ensure all teams have a state (default to INACTIVE)
+            allTeamIds.forEach(teamId => {
+              if (!perTeamStates[teamId]) {
+                perTeamStates[teamId] = {
+                  status: 'inactive' as TeamStatus,
+                  previousStatus: 'inactive' as TeamStatus,
+                  hasAttempted: false,
+                  statusSince: Date.now()
+                };
+              }
+            });
+
+            return perTeamStates;
+          }
+
+          // Already in per-team format - use as-is
+          return incomingTeamStates as Record<string, TeamState>;
+        })()
       };
+
+      // Log when showAnswer changes
+      if (state.showAnswer !== undefined && state.showAnswer !== prevState.showAnswer) {
+        console.log('[ScreenView] 📝 showAnswer changed:', {
+          from: prevState.showAnswer,
+          to: state.showAnswer,
+          questionId: state.activeQuestion?.questionId
+        });
+      }
+
+      // Log updated state for debugging
+      console.log('[ScreenView] Updated detailedGameState:', {
+        currentScreen: updatedState.currentScreen,
+        showAnswer: updatedState.showAnswer,
+        activeQuestion: !!updatedState.activeQuestion,
+        questionText: updatedState.activeQuestion?.text?.slice(0, 30),
+        hasPackCover: !!updatedState.packCover,
+        packCoverValue: updatedState.packCover?.value?.slice(0, 60) || 'none',
+        packName: updatedState.packName,
+        allThemesCount: updatedState.allThemes?.length || 0,
+        hasBoardData: !!updatedState.boardData
+      });
+
       return updatedState;
     });
 
-    // Force re-render by logging current screen
-    console.log('[ScreenView] Updated detailedGameState:', {
-      currentScreen: state.currentScreen,
-      showAnswer: state.showAnswer ?? detailedGameState.showAnswer ?? false,
-      activeQuestion: !!state.activeQuestion,
-      questionText: state.activeQuestion?.text?.slice(0, 30)
+    console.log('[ScreenView] 📊 Team scores update:', {
+      fromPayload: fullPayload?.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score })),
+      fromState: state.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score })),
+      currentPreserved: detailedGameState.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score }))
     });
-    console.log('[ScreenView] Team scores preserved:', detailedGameState.teamScores);
-    console.log('[ScreenView] Team states updated:', {
-      wrongAnswerTeams: state.teamStates?.wrongAnswerTeams,
-      activeTeamIds: state.teamStates?.activeTeamIds,
-      clashingTeamIds: state.teamStates?.clashingTeamIds
-    });
+    console.log('[ScreenView] Team states updated:', fullPayload?.teamStates);
 
     // Enhanced logging for team card states
     if (state.teamStates) {
-      console.log('[ScreenView] 🎨 Team Card States Summary:');
-      console.log(`  ❌ Wrong Answer Teams: ${state.teamStates.wrongAnswerTeams?.join(', ') || 'none'}`);
-      console.log(`  ✅ Active Teams: ${state.teamStates.activeTeamIds?.join(', ') || 'none'}`);
-      console.log(`  ⚔️ Clashing Teams: ${state.teamStates.clashingTeamIds?.join(', ') || 'none'}`);
+      console.log('[ScreenView] 🎨 Team Card States Summary (new system):');
+      Object.entries(state.teamStates).forEach(([teamId, teamState]) => {
+        const clashInfo = teamState.clashSubStatus ? ` [clash: ${teamState.clashSubStatus}]` : '';
+        console.log(`  Team ${teamId}: ${teamState.status}${clashInfo} (attempted: ${teamState.hasAttempted})`);
+      });
       console.log(`  🎯 Answering Team: ${state.answeringTeamId || 'none'}`);
     }
-
-    // Sync local timer state with host buzzer state
-    if (state.buzzerState) {
-      const buzzerInfo = {
-        timerPhase: state.buzzerState.timerPhase,
-        readingTimerRemaining: state.buzzerState.readingTimerRemaining,
-        responseTimerRemaining: state.buzzerState.responseTimerRemaining,
-        isPaused: state.buzzerState.isPaused,
-        active: state.buzzerState.active,
-        handicapActive: state.buzzerState.handicapActive
-      };
-
-      console.log('[ScreenView] Syncing timer state:', buzzerInfo);
-      console.log('[ScreenView] Full buzzerState:', JSON.stringify(state.buzzerState, null, 2));
-
-      // Immediately update timer display on state change
-      if (timerTextRef.current) {
-        const { timerPhase, readingTimerRemaining, responseTimerRemaining, timerTextColor, isPaused } = state.buzzerState;
-        if (timerPhase === 'reading') {
-          const pauseText = isPaused ? ' <span class="text-red-400 text-sm font-bold">[PAUSED]</span>' : '';
-          timerTextRef.current.innerHTML = `${readingTimerRemaining.toFixed(1)}сек${pauseText}`;
-          timerTextRef.current.className = `text-xl font-bold ${timerTextColor || 'text-yellow-300'}`;
-        } else if (timerPhase === 'response') {
-          const pauseText = isPaused ? ' <span class="text-red-400 text-sm font-bold">[PAUSED]</span>' : '';
-          timerTextRef.current.innerHTML = `${responseTimerRemaining.toFixed(1)}сек${pauseText}`;
-          timerTextRef.current.className = `text-xl font-bold ${timerTextColor || 'text-green-300'}`;
-        } else {
-          timerTextRef.current.textContent = '';
-        }
-      }
-
-      if (timerBarRef.current) {
-        const { timerPhase, readingTimerRemaining, responseTimerRemaining, readingTimeTotal, responseTimeTotal, timerBarColor } = state.buzzerState;
-        let progress = 0;
-
-        if (timerPhase === 'reading') {
-          const totalTime = readingTimeTotal ?? 5;
-          const elapsed = totalTime - readingTimerRemaining;
-          progress = Math.min(100, Math.max(0, (elapsed / totalTime) * 100));
-        } else if (timerPhase === 'response') {
-          const totalTime = responseTimeTotal ?? 30;
-          const elapsed = totalTime - responseTimerRemaining;
-          progress = Math.min(100, Math.max(0, (elapsed / totalTime) * 100));
-        }
-
-        timerBarRef.current.style.width = `${progress}%`;
-        timerBarRef.current.className = `h-full transition-all duration-100 ease-linear ${timerBarColor || 'bg-gray-500'}`;
-      }
-    }
-  }, []);
+    // Note: buzzerState from host is ignored - demo screen uses local timer
+  }, [demoScreenMedia]);
 
   // Sync themes scroll position with host
   useEffect(() => {
@@ -856,77 +966,102 @@ export const ScreenView: React.FC = () => {
     }
   }, [detailedGameState.themesScrollPosition, detailedGameState.currentScreen]);
 
-  // Local timer countdown - demo screen runs timer independently after receiving initial state from host
+  // Reset currentScreen when session ends (transition back to lobby)
   useEffect(() => {
-    let localTimerRemaining = {
-      reading: 0,
-      response: 0
-    };
-    let lastUpdateTime = Date.now();
-    let isRunning = false;
+    console.log('[ScreenView] gameState.isSessionActive changed:', gameState?.isSessionActive);
+    if (!gameState?.isSessionActive && detailedGameState.currentScreen && detailedGameState.currentScreen !== 'lobby') {
+      console.log('[ScreenView] Session ended, resetting currentScreen to show lobby');
+      setDetailedGameState(prevState => ({
+        ...prevState,
+        currentScreen: undefined
+      }));
+    }
+  }, [gameState?.isSessionActive]);
+
+  // Local timer countdown - demo screen runs timer independently, NOT syncing with host
+  // When reading timer finishes locally, demo screen switches to response phase
+  // and sends TIMER_PHASE_SWITCH to host
+  useEffect(() => {
+    let lastLocalUpdateTime = Date.now();
 
     const interval = setInterval(() => {
-      const buzzerState = buzzerStateRef.current;
-      if (!buzzerState) return;
+      const now = Date.now();
+      const deltaTime = (now - lastLocalUpdateTime) / 1000; // in seconds
+      lastLocalUpdateTime = now;
 
-      const actualTimerPhase = buzzerState.timerPhase || 'inactive';
-      const isPaused = buzzerState.isPaused || false;
+      const localState = localTimerStateRef.current;
 
-      // Sync local timer when receiving new state from host
-      const timeSinceLastUpdate = (Date.now() - lastUpdateTime) / 1000;
+      // Update local timer if not paused and in active phase
+      if (!localState.isPaused && localState.phase !== 'inactive' && localState.phase !== 'complete') {
+        if (localState.phase === 'reading') {
+          localState.readingRemaining = Math.max(0, localState.readingRemaining - deltaTime);
 
-      // Check if we should run the timer
-      const shouldRun = !isPaused && (actualTimerPhase === 'reading' || actualTimerPhase === 'response');
+          // Check if reading timer finished locally - switch to response phase
+          // Only send signal if question is still active on host (not closed, answer not shown)
+          const isQuestionStillActive = detailedGameState.activeQuestion?.questionId === localState.currentQuestionId
+                                     && !detailedGameState.showAnswer;
 
-      if (shouldRun && !isRunning) {
-        // Timer just started - initialize from host values
-        localTimerRemaining.reading = buzzerState.readingTimerRemaining || 0;
-        localTimerRemaining.response = buzzerState.responseTimerRemaining || 0;
-        isRunning = true;
-        lastUpdateTime = Date.now();
+          if (localState.readingRemaining <= 0 && !localState.hasSwitchedPhase && isQuestionStillActive) {
+            localState.readingRemaining = 0;
+            localState.phase = 'response';
+            localState.hasSwitchedPhase = true;
+            localState.phaseSwitchedLocally = true;
 
-        console.log('[ScreenView] Local timer started:', {
-          timerPhase: actualTimerPhase,
-          readingRemaining: localTimerRemaining.reading,
-          responseRemaining: localTimerRemaining.response,
-          readingTimeTotal: buzzerState.readingTimeTotal,
-          responseTimeTotal: buzzerState.responseTimeTotal
-        });
-      } else if (!shouldRun && isRunning) {
-        // Timer stopped/paused - sync with host values
-        localTimerRemaining.reading = buzzerState.readingTimerRemaining || 0;
-        localTimerRemaining.response = buzzerState.responseTimerRemaining || 0;
-        isRunning = false;
-        lastUpdateTime = Date.now();
-      } else if (shouldRun && isRunning) {
-        // Timer is running - count down locally
-        if (actualTimerPhase === 'reading') {
-          localTimerRemaining.reading = Math.max(0, localTimerRemaining.reading - timeSinceLastUpdate);
-        } else if (actualTimerPhase === 'response') {
-          localTimerRemaining.response = Math.max(0, localTimerRemaining.response - timeSinceLastUpdate);
+            console.log('[ScreenView] 🟡 Reading timer finished, switching to 🟢 response phase');
+
+            // Send TIMER_PHASE_SWITCH to host
+            if (p2pClient.isConnected) {
+              p2pClient.send({
+                id: `phase_switch_${Date.now()}`,
+                category: MessageCategory.EVENT,
+                timestamp: Date.now(),
+                senderId: clientId,
+                type: 'TIMER_PHASE_SWITCH',
+                payload: {
+                  fromPhase: 'reading',
+                  toPhase: 'response'
+                }
+              });
+              console.log('[ScreenView] ➡️ Sent TIMER_PHASE_SWITCH to host');
+            }
+          } else if (localState.readingRemaining <= 0 && !localState.hasSwitchedPhase && !isQuestionStillActive) {
+            // Question closed before timer finished - just switch locally without signaling host
+            localState.readingRemaining = 0;
+            localState.phase = 'response';
+            localState.hasSwitchedPhase = true;
+            console.log('[ScreenView] 🟡 Reading timer finished but question not active - skipping host signal');
+          }
+        } else if (localState.phase === 'response') {
+          localState.responseRemaining = Math.max(0, localState.responseRemaining - deltaTime);
+
+          // Check if response timer finished
+          if (localState.responseRemaining <= 0) {
+            localState.responseRemaining = 0;
+            localState.phase = 'complete';
+            console.log('[ScreenView] ⏱️ Response timer finished');
+          }
         }
-        lastUpdateTime = Date.now();
-      } else {
-        // Not running - keep synced with host
-        localTimerRemaining.reading = buzzerState.readingTimerRemaining || 0;
-        localTimerRemaining.response = buzzerState.responseTimerRemaining || 0;
-        lastUpdateTime = Date.now();
       }
 
       // Update display with local countdown values
       if (timerTextRef.current) {
-        const displayTime = actualTimerPhase === 'reading'
-          ? localTimerRemaining.reading
-          : localTimerRemaining.response;
+        let displayTime = 0;
+        let displayPhase = localState.phase;
 
-        if (actualTimerPhase === 'reading' && displayTime !== undefined) {
-          const timerTextColor = buzzerState.timerTextColor || 'text-yellow-300';
-          const pauseText = isPaused ? ' <span class="text-red-400 text-sm font-bold">[PAUSED]</span>' : '';
-          timerTextRef.current.innerHTML = `${displayTime.toFixed(1)}сек${pauseText}`;
-          timerTextRef.current.className = `text-xl font-bold ${timerTextColor}`;
-        } else if (actualTimerPhase === 'response' && displayTime !== undefined) {
-          const timerTextColor = buzzerState.timerTextColor || 'text-green-300';
-          const pauseText = isPaused ? ' <span class="text-red-400 text-sm font-bold">[PAUSED]</span>' : '';
+        // Determine which time to display
+        if (displayPhase === 'reading') {
+          displayTime = localState.readingRemaining;
+        } else if (displayPhase === 'response') {
+          displayTime = localState.responseRemaining;
+        }
+
+        if (displayPhase === 'reading' || displayPhase === 'response') {
+          const timerTextColor = displayPhase === 'reading'
+            ? 'text-yellow-300'
+            : 'text-green-300';
+          const pauseText = localState.isPaused
+            ? ' <span class="text-red-400 text-sm font-bold">[PAUSED]</span>'
+            : '';
           timerTextRef.current.innerHTML = `${displayTime.toFixed(1)}сек${pauseText}`;
           timerTextRef.current.className = `text-xl font-bold ${timerTextColor}`;
         } else {
@@ -937,16 +1072,18 @@ export const ScreenView: React.FC = () => {
       // Update timer bar with local countdown values
       if (timerBarRef.current) {
         let progress = 0;
-        const timerBarColor = buzzerState.timerBarColor || 'bg-gray-500';
+        const timerBarColor = localState.phase === 'reading'
+          ? 'bg-yellow-500'
+          : localState.phase === 'response' ? 'bg-green-500' : 'bg-gray-500';
 
-        if (actualTimerPhase === 'reading') {
-          const totalTime = buzzerState.readingTimeTotal ?? 5;
-          const currentTime = localTimerRemaining.reading;
+        if (localState.phase === 'reading') {
+          const totalTime = localState.readingTotal;
+          const currentTime = localState.readingRemaining;
           const elapsed = totalTime - currentTime;
           progress = Math.min(100, Math.max(0, (elapsed / totalTime) * 100));
-        } else if (actualTimerPhase === 'response') {
-          const totalTime = buzzerState.responseTimeTotal ?? 30;
-          const currentTime = localTimerRemaining.response;
+        } else if (localState.phase === 'response') {
+          const totalTime = localState.responseTotal;
+          const currentTime = localState.responseRemaining;
           const elapsed = totalTime - currentTime;
           progress = Math.min(100, Math.max(0, (elapsed / totalTime) * 100));
         }
@@ -954,16 +1091,21 @@ export const ScreenView: React.FC = () => {
         timerBarRef.current.style.width = `${progress}%`;
         timerBarRef.current.className = `h-full transition-all duration-100 ease-linear ${timerBarColor}`;
       }
+
+      // Update pause indicator visibility
+      if (timerPauseIndicatorRef.current) {
+        const shouldShow = localState.isPaused &&
+          (localState.phase === 'reading' || localState.phase === 'response');
+        timerPauseIndicatorRef.current.classList.toggle('hidden', !shouldShow);
+      }
     }, 50); // Update every 50ms for smooth countdown
 
     return () => clearInterval(interval);
-  }, []); // Empty deps - create interval once
+  }, [p2pClient, clientId]);
 
   // Request state sync periodically (but NOT commands - those are event-driven)
   useEffect(() => {
     if (connectionStatus !== 'connected' || !p2pClient.isConnected) return;
-
-    console.log('[ScreenView] Setting up periodic STATE sync (every 5s)...');
 
     const requestStateSync = () => {
       const stateRequest = {
@@ -974,24 +1116,17 @@ export const ScreenView: React.FC = () => {
       p2pClient.send(stateRequest);
     };
 
-    // Request immediately on connection
+    // Request immediately on connection - ONLY ONCE
     requestStateSync();
 
-    // Then request every 5 seconds only for STATE, not commands
-    const syncInterval = setInterval(() => {
-      requestStateSync();
-    }, 5000);
-
-    return () => {
-      clearInterval(syncInterval);
-      console.log('[ScreenView] Cleaning up periodic STATE sync');
-    };
+    // NO periodic sync - rely on host broadcasts for all updates
+    // This prevents stale state from overwriting fresh host updates
   }, [connectionStatus, p2pClient.isConnected, p2pClient.send]);
 
-  // Request commands immediately when session becomes active (ONE TIME)
+  // Request commands immediately when connected (ONE TIME) - not just when session active
+  // This ensures demo screen gets teams/commands list for lobby display
   useEffect(() => {
-    if (connectionStatus === 'connected' && p2pClient.isConnected && gameState?.isSessionActive) {
-      console.log('[ScreenView] Session became active, requesting commands ONE TIME...');
+    if (connectionStatus === 'connected' && p2pClient.isConnected) {
       const commandsRequest = {
         category: 'sync' as MessageCategory,
         type: 'GET_COMMANDS',
@@ -999,7 +1134,7 @@ export const ScreenView: React.FC = () => {
       };
       p2pClient.send(commandsRequest);
     }
-  }, [gameState?.isSessionActive, connectionStatus, p2pClient.isConnected, p2pClient.send]);
+  }, [connectionStatus, p2pClient.isConnected, p2pClient.send]);
 
 
   // Calculate stats
@@ -1034,6 +1169,13 @@ export const ScreenView: React.FC = () => {
     // Render based on current screen
     switch (currentScreen) {
       case 'cover':
+        console.log('[ScreenView] Rendering cover screen:', {
+          hasPackCover: !!detailedGameState.packCover,
+          coverType: detailedGameState.packCover?.type,
+          coverValue: detailedGameState.packCover?.value?.slice(0, 60) || 'none',
+          coverUrl: detailedGameState.packCover?.url?.slice(0, 60) || 'none',
+          packName: detailedGameState.packName
+        });
         return (
           <div className="fixed inset-0 flex items-center justify-center bg-gray-950 cursor-default">
             <div className="text-center animate-in fade-in zoom-in duration-500 flex flex-col items-center justify-center">
@@ -1044,12 +1186,24 @@ export const ScreenView: React.FC = () => {
                       src={detailedGameState.packCover.value}
                       alt={detailedGameState.packName || 'Game'}
                       className="h-full w-auto object-cover rounded-2xl shadow-2xl cursor-default"
+                      onError={(e) => {
+                        console.error('[ScreenView] Pack cover image error:', {
+                          src: detailedGameState.packCover.value,
+                          error: e.currentTarget.error
+                        });
+                      }}
                     />
                   ) : detailedGameState.packCover?.url ? (
                     <img
                       src={detailedGameState.packCover.url}
                       alt={detailedGameState.packName || 'Game'}
                       className="h-full w-auto object-cover rounded-2xl shadow-2xl cursor-default"
+                      onError={(e) => {
+                        console.error('[ScreenView] Pack cover image error:', {
+                          src: detailedGameState.packCover.url,
+                          error: e.currentTarget.error
+                        });
+                      }}
                     />
                   ) : (
                     <div className="aspect-video h-full flex items-center justify-center bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl shadow-2xl cursor-default">
@@ -1079,7 +1233,7 @@ export const ScreenView: React.FC = () => {
                 {detailedGameState.allThemes?.map((theme) => (
                   <div
                     key={theme.id}
-                    className="rounded-xl p-6 shadow-lg flex flex-col items-center relative cursor-default"
+                    className="rounded-lg p-6 shadow-lg flex flex-col items-center relative cursor-default"
                     style={{
                       backgroundColor: theme.color || '#3b82f6',
                       minHeight: '120px'
@@ -1150,7 +1304,7 @@ export const ScreenView: React.FC = () => {
                         return (
                           <div
                             key={theme.id}
-                            className="flex-1 rounded-xl p-3 flex items-center justify-center shadow-lg cursor-default"
+                            className="flex-1 rounded-lg p-3 flex items-center justify-center shadow-lg cursor-default"
                             style={{ backgroundColor: themeColor }}
                           >
                             <h3 className="font-bold text-center text-2xl leading-tight" style={{ color: themeTextColor }}>
@@ -1246,7 +1400,7 @@ export const ScreenView: React.FC = () => {
                                 <div
                                   key={questionId}
                                   className={`
-                                    rounded-xl shadow-md flex items-center justify-center
+                                    rounded-lg shadow-md flex items-center justify-center
                                     transition-all duration-200 ease-in-out
                                     ${answered
                                       ? 'cursor-not-allowed opacity-50'
@@ -1296,7 +1450,7 @@ export const ScreenView: React.FC = () => {
                   return (
                     <div
                       key={theme.id}
-                      className={`rounded-xl p-6 shadow-lg flex flex-col items-center relative transition-all ${
+                      className={`rounded-lg p-6 shadow-lg flex flex-col items-center relative transition-all ${
                         isDisabled
                           ? 'opacity-30 grayscale'
                           : isLastRemaining
@@ -1397,14 +1551,26 @@ export const ScreenView: React.FC = () => {
                         <img
                           src={detailedGameState.activeQuestion.media.url}
                           alt="Вопрос"
-                          className="max-w-full max-h-[60vh] mx-auto rounded"
+                          className="max-w-full max-h-[60vh] mx-auto rounded-lg"
                         />
                       )}
                       {detailedGameState.activeQuestion.media.type === 'video' && (
                         <video
                           src={detailedGameState.activeQuestion.media.url}
                           controls
-                          className="max-w-full max-h-[60vh] mx-auto rounded"
+                          className="max-w-full max-h-[60vh] mx-auto rounded-lg"
+                          onError={(e) => {
+                            console.error('[ScreenView] Video error:', {
+                              url: detailedGameState.activeQuestion.media.url,
+                              error: e.currentTarget.error
+                            });
+                          }}
+                          onLoadStart={() => {
+                            console.log('[ScreenView] Video loading started:', detailedGameState.activeQuestion.media.url);
+                          }}
+                          onCanPlay={() => {
+                            console.log('[ScreenView] Video can play:', detailedGameState.activeQuestion.media.url);
+                          }}
                         />
                       )}
                       {detailedGameState.activeQuestion.media.type === 'audio' && (
@@ -1412,6 +1578,18 @@ export const ScreenView: React.FC = () => {
                           src={detailedGameState.activeQuestion.media.url}
                           controls
                           className="w-full"
+                          onError={(e) => {
+                            console.error('[ScreenView] Audio error:', {
+                              url: detailedGameState.activeQuestion.media.url,
+                              error: e.currentTarget.error
+                            });
+                          }}
+                          onLoadStart={() => {
+                            console.log('[ScreenView] Audio loading started:', detailedGameState.activeQuestion.media.url);
+                          }}
+                          onCanPlay={() => {
+                            console.log('[ScreenView] Audio can play:', detailedGameState.activeQuestion.media.url);
+                          }}
                         />
                       )}
                     </div>
@@ -1468,7 +1646,7 @@ export const ScreenView: React.FC = () => {
               {/* Two containers: Teams (top) and Correct Answer (bottom) */}
               <div className="flex flex-col h-full items-center justify-center gap-4 p-4">
                 {/* Top container - Teams grid */}
-                <div className="w-[60vw] h-[38vh] p-6 overflow-auto bg-gray-900 rounded-xl">
+                <div className="w-[60vw] h-[38vh] p-6 overflow-auto bg-gray-900 rounded-lg">
                   {/* Calculate grid columns based on number of teams (max 25 teams)
                        - up to 6 teams: 3 cols (2 rows)
                        - 7-12 teams: 4 cols (3 rows)
@@ -1505,7 +1683,7 @@ export const ScreenView: React.FC = () => {
                           return (
                             <div
                               key={team.id}
-                              className={`relative rounded-xl border-[3px] flex flex-col ${cardStyle}`}
+                              className={`relative rounded-lg border-[3px] flex flex-col ${cardStyle}`}
                               style={{ minHeight: '140px', padding: '8px' }}
                             >
                               {/* Top: Team name */}
@@ -1547,7 +1725,7 @@ export const ScreenView: React.FC = () => {
                 {/* Bottom container - Correct Answer card */}
                 <div className="w-[45vw] h-[30vh] flex items-center justify-center">
                   <div
-                    className={`relative p-3 rounded-xl border-[3px] flex flex-col items-center justify-center ${
+                    className={`relative p-3 rounded-lg border-[3px] flex flex-col items-center justify-center ${
                       detailedGameState.superGameAnswers?.some(a => a.revealed)
                         ? 'border-purple-500 bg-purple-500/20'
                         : 'border-gray-700 bg-gray-900'
@@ -1649,10 +1827,12 @@ export const ScreenView: React.FC = () => {
       {/* MAIN CONTENT - centered and maximized */}
       <div className="w-full h-full p-6 flex items-center justify-center">
         {connectionStatus === 'connected' && gameState ? (
-          <div className="w-full max-w-[1600px] mx-auto" key={`screen-${detailedGameState.currentScreen || 'cover'}-question-${detailedGameState.activeQuestion ? 'active' : 'inactive'}`}>
+          <div className="w-full max-w-[1600px] mx-auto" key={`screen-${detailedGameState.currentScreen || 'cover'}-question-${detailedGameState.activeQuestion?.questionId || 'none'}-answer-${detailedGameState.showAnswer ? 'showing' : 'hidden'}-hint-${detailedGameState.showHint ? 'showing' : 'hidden'}`}>
             {/* Check if host is in lobby mode or game session */}
             {/* Key prop above forces React to re-render when currentScreen OR activeQuestion changes */}
-            {!gameState.isSessionActive && (!detailedGameState.currentScreen || detailedGameState.currentScreen === 'lobby') ? (
+            {/* Show lobby when session is not active, regardless of currentScreen state */}
+            {/* This ensures demo screen transitions to lobby immediately when host exits game */}
+            {!gameState.isSessionActive ? (
               // LOBBY MODE - Show exact same lobby as host but without controls
               <div className="grid lg:grid-cols-2 gap-6 md:gap-8 animate-in fade-in duration-500">
                 {/* LEFT COLUMN: QR Code */}
@@ -1672,7 +1852,7 @@ export const ScreenView: React.FC = () => {
                             <Users className="w-5 h-5 text-blue-400" />
                             <span className="text-gray-400 text-sm">Session ID</span>
                           </div>
-                          <div className="bg-gray-800 px-4 py-2 rounded text-white font-mono text-xl">
+                          <div className="bg-gray-800 px-4 py-2 rounded-lg text-white font-mono text-xl">
                             {sessionId || '---'}
                           </div>
                         </div>
@@ -1694,27 +1874,47 @@ export const ScreenView: React.FC = () => {
                         </div>
 
                         <div className="flex-1 overflow-y-auto space-y-2 pr-1.5 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
-                          {/* Show all teams with clients */}
+                          {/* Show all teams with clients - same UI as host */}
                           {gameState.teams && gameState.teams.length > 0 && gameState.teams.map((team: Team) => {
                             const clientsArray = Array.isArray(gameState.clients) ? gameState.clients : Object.values(gameState.clients);
                             const teamClients = gameState.clients ? clientsArray.filter((c: any) => c.teamId === team.id) : [];
 
                             return (
-                              <div key={team.id} className="bg-gray-800/50 rounded-lg p-5 border border-gray-700">
-                                <div className="flex items-center justify-between mb-2">
-                                  <span className="text-white font-medium text-xl">{team.name}</span>
-                                  <span className="bg-blue-500/20 text-blue-400 px-3 py-1 rounded-full text-sm font-medium">
-                                    {teamClients.length} {teamClients.length === 1 ? 'player' : 'players'}
+                              <div key={team.id} className="animate-in slide-in-from-bottom-2 duration-300">
+                                {/* Team header - same style as host */}
+                                <div className="flex items-center gap-2.5 p-2.5 rounded-lg border bg-gray-800/50 border-gray-700/50">
+                                  <div className="w-7 h-7 rounded-full bg-violet-500 flex items-center justify-center text-[11px] font-bold text-white">
+                                    {typeof team.name === 'string' && team.name.length > 0 ? team.name.charAt(0).toUpperCase() : '?'}
+                                  </div>
+                                  <span className="font-medium text-gray-200 text-base">{team.name}</span>
+                                  <span className={`text-sm ${teamClients.length === 0 ? 'text-gray-600' : 'text-gray-500'}`}>
+                                    ({teamClients.length})
                                   </span>
                                 </div>
+
+                                {/* Team players */}
                                 {teamClients.length > 0 && (
-                                  <div className="space-y-1">
-                                    {teamClients.map((client: any) => (
-                                      <div key={client.id} className="flex items-center gap-2 text-sm text-gray-300">
-                                        <div className="w-2 h-2 rounded-full bg-green-400"></div>
-                                        <span>{client.name}</span>
-                                      </div>
-                                    ))}
+                                  <div className="ml-6 mt-1 space-y-1">
+                                    {teamClients.map((client: any) => {
+                                      const isBuzzing = buzzingClientIds.has(client.id);
+                                      return (
+                                        <div key={client.id} className={`flex items-center justify-between p-2.5 rounded-lg ${isBuzzing ? 'outline-2 outline-white/70 outline-offset-2 bg-gray-900/50' : 'bg-gray-900/50'}`}>
+                                          <div className="flex items-center gap-2.5">
+                                            <div className="w-6 h-6 rounded-full bg-blue-500/80 flex items-center justify-center text-[10px] font-bold text-white">
+                                              {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
+                                            </div>
+                                            <span className="text-base text-gray-300">
+                                              {typeof client.name === 'string' ? client.name : 'Unnamed'}
+                                            </span>
+                                            {isBuzzing && (
+                                              <div className="ml-1">
+                                                <div className="w-3.5 h-3.5 rounded-full bg-white animate-double-flash shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
@@ -1739,32 +1939,65 @@ export const ScreenView: React.FC = () => {
                   {detailedGameState.teamScores && detailedGameState.teamScores.length > 0 && (
                       <div
                         key={`player-panel-${
-                          JSON.stringify({
-                            wrong: detailedGameState.teamStates?.wrongAnswerTeams?.sort(),
-                            active: detailedGameState.teamStates?.activeTeamIds?.sort(),
-                            clashing: detailedGameState.teamStates?.clashingTeamIds?.sort(),
-                            answering: detailedGameState.answeringTeamId
-                          })
+                          JSON.stringify(detailedGameState.teamStates || {})
                         }`}
                         className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
                         {detailedGameState.teamScores.map((team: { id: string; name: string; score: number }) => {
-                          const isAnswering = detailedGameState.answeringTeamId === team.id;
-                          const isHandicapTeam = detailedGameState.buzzerState?.handicapTeamId === team.id;
-                          const hasWrongAnswer = detailedGameState.teamStates?.wrongAnswerTeams?.includes(team.id);
-                          const isActive = detailedGameState.teamStates?.activeTeamIds?.includes(team.id);
-                          const isClashing = detailedGameState.teamStates?.clashingTeamIds?.includes(team.id);
+                          // Get team status from new system
+                          const teamState = detailedGameState.teamStates?.[team.id];
+                          const teamStatus = teamState?.status || 'inactive';
+
+                          // Special cases for super game
                           const hasPlacedBet = detailedGameState.currentScreen === 'placeBets' && detailedGameState.superGameBets?.find(b => b.teamId === team.id)?.ready;
                           const hasSubmittedAnswer = detailedGameState.currentScreen === 'superQuestion' && detailedGameState.superGameAnswers?.find(a => a.teamId === team.id)?.answer;
 
-                          // Determine card state for logging and debugging
-                          let cardState = 'default';
-                          if (hasWrongAnswer) cardState = 'wrong-answer (gray)';
-                          else if (hasPlacedBet || hasSubmittedAnswer) cardState = 'bet-placed (green)';
-                          else if (isAnswering) cardState = 'answering (green)';
-                          else if (isClashing) cardState = 'clashing (blue)';
-                          else if (isActive) cardState = 'active (yellow)';
+                          // Helper to get CSS classes for team status
+                          const getCardClassesForStatus = (status: TeamStatus, clashSubStatus?: 'first_clash' | 'simple_clash'): string => {
+                            switch (status) {
+                              case 'inactive':
+                                return 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]';
+                              case 'active':
+                                return 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]';
+                              case 'answering':
+                                return 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105';
+                              case 'penalty':
+                                return 'bg-red-500/30 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.5)]';
+                              case 'clash':
+                                // Clash cards have special animation - yellow to green transition
+                                // Different styling for first_clash vs simple_clash
+                                if (clashSubStatus === 'first_clash') {
+                                  return 'clash-card bg-yellow-500/40 border-yellow-300 shadow-[0_0_25px_rgba(234,179,8,0.7)]';
+                                }
+                                return 'clash-card bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]';
+                              default:
+                                return 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]';
+                            }
+                          };
 
-                          // Store previous state in a ref to detect changes
+                          // Determine final card state and classes
+                          let cardState: string;
+                          let cardClasses: string;
+
+                          // Check if team is currently buzzing (for inactive team shrink/lighten effect)
+                          const isTeamBuzzing = buzzedTeamIds.has(team.id);
+
+                          // Get clash sub-status for both bet/non-bet cases
+                          const clashSubStatus = teamState?.clashSubStatus as 'first_clash' | 'simple_clash' | undefined;
+
+                          if (hasPlacedBet || hasSubmittedAnswer) {
+                            cardState = 'bet-placed (green)';
+                            cardClasses = 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105';
+                          } else {
+                            cardState = teamStatus;
+                            cardClasses = getCardClassesForStatus(teamStatus, clashSubStatus);
+
+                            // Apply shrink/lighten effect for inactive team when buzzing
+                            if (isTeamBuzzing && teamStatus === 'inactive') {
+                              cardClasses = cardClasses.replace('bg-gray-100/40', 'bg-gray-50/60').replace('scale-105', '') + ' scale-90';
+                            }
+                          }
+
+                          // Store previous state to detect changes
                           const prevStateKey = `team-state-${team.id}`;
                           const previousState = (window as any)[prevStateKey];
                           const stateChanged = previousState !== cardState;
@@ -1774,13 +2007,12 @@ export const ScreenView: React.FC = () => {
 
                           // Log when state changes
                           if (stateChanged) {
-                            console.log(`[ScreenView] 🎨 Team "${team.name}" card state changed: "${previousState}" → "${cardState}"`);
+                            const clashInfo = clashSubStatus ? ` [clash: ${clashSubStatus}]` : '';
+                            console.log(`[ScreenView] 🎨 Team "${team.name}" card state changed: "${previousState}" → "${cardState}${clashInfo}"`);
                             console.log(`  Details:`, {
                               teamId: team.id,
-                              isAnswering,
-                              hasWrongAnswer,
-                              isActive,
-                              isClashing,
+                              teamStatus,
+                              clashSubStatus,
                               hasPlacedBet,
                               hasSubmittedAnswer
                             });
@@ -1788,26 +2020,14 @@ export const ScreenView: React.FC = () => {
 
                           return (
                             <div
-                              key={`${team.id}-${cardState}`} // Include state in key to force re-render
-                              className={`px-6 py-2 rounded-lg border-2 transition-all relative ${
-                                hasWrongAnswer
-                                  ? 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                                  : hasPlacedBet || hasSubmittedAnswer
-                                    ? 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105'
-                                    : isAnswering
-                                      ? 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105'
-                                      : isClashing
-                                        ? 'bg-blue-500/40 border-blue-400 shadow-[0_0_20px_rgba(59,130,246,0.8)] scale-105'
-                                        : isActive
-                                          ? 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]'
-                                          : 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]'
-                              }`}
+                              key={`${team.id}-${cardState}`}
+                              className={`px-6 py-2 rounded-lg border-2 transition-all relative ${cardClasses}`}
                             >
                               <div className="text-center">
                                 <div className="text-2xl font-bold text-white">{team.name}</div>
                                 <div className="h-px bg-gray-600 my-1"></div>
                                 <div className={`text-2xl font-bold ${
-                                  hasWrongAnswer ? 'text-red-400' : team.score >= 0 ? 'text-white' : 'text-red-400'
+                                  teamStatus === 'penalty' ? 'text-red-400' : team.score >= 0 ? 'text-white' : 'text-red-400'
                                 }`}>
                                   {team.score}
                                 </div>
@@ -1836,11 +2056,21 @@ export const ScreenView: React.FC = () => {
                       const mediaType = detailedGameState.activeQuestion.media?.type;
 
                       // Calculate dynamic font sizes
+                      // Priority: Answer > Hint > Question text
                       const currentQuestionText = detailedGameState.showAnswer && detailedGameState.activeQuestion.answer
                         ? detailedGameState.activeQuestion.answer
-                        : detailedGameState.activeQuestion.text || '';
+                        : detailedGameState.showHint && detailedGameState.activeQuestion.hint?.text
+                          ? detailedGameState.activeQuestion.hint.text
+                          : detailedGameState.activeQuestion.text || '';
                       const questionFontSizeMobile = calculateQuestionFontSize(currentQuestionText, 3); // 3rem base for mobile
                       const questionFontSizeDesktop = calculateQuestionFontSize(currentQuestionText, 5); // 5rem base for desktop
+
+                      // Check if hint has media
+                      const hasHintMedia = detailedGameState.activeQuestion.hint?.media &&
+                        detailedGameState.activeQuestion.hint.media.url &&
+                        detailedGameState.activeQuestion.hint.media.url.trim() !== '';
+                      const hintMediaUrl = detailedGameState.activeQuestion.hint?.media?.url;
+                      const hintMediaType = detailedGameState.activeQuestion.hint?.media?.type;
 
                       const modalMaxHeight = 'calc(100vh - 140px)';
                       const modalTop = '100px';
@@ -1878,21 +2108,35 @@ export const ScreenView: React.FC = () => {
                               </div>
 
                               {/* Timer bar - same as host */}
-                              <div className="bg-gray-700 w-full overflow-hidden" style={{ height: '16px' }}>
+                              <div className="relative">
+                                {/* Pause indicator - centered on the timer bar */}
                                 <div
-                                  ref={timerBarRef}
-                                  className="h-full transition-all duration-100 ease-linear bg-gray-500"
-                                  style={{ width: '0%' }}
-                                />
+                                  ref={timerPauseIndicatorRef}
+                                  className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 z-10 hidden"
+                                >
+                                  <div className="w-8 h-8 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                                    <div className="flex gap-1">
+                                      <div className="w-1 h-3 bg-gray-800 rounded-sm" />
+                                      <div className="w-1 h-3 bg-gray-800 rounded-sm" />
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="bg-gray-700 w-full overflow-hidden" style={{ height: '16px' }}>
+                                  <div
+                                    ref={timerBarRef}
+                                    className="h-full transition-all duration-100 ease-linear"
+                                    style={{ width: '0%' }}
+                                  />
+                                </div>
                               </div>
 
                               {/* Question content */}
                               <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
                                 <div className={`w-full h-full flex ${
-                                  (detailedGameState.showAnswer ? hasAnswerMedia : hasQuestionMedia) ? 'items-center justify-start' : 'items-center justify-center'
+                                  (detailedGameState.showAnswer ? hasAnswerMedia : detailedGameState.showHint ? hasHintMedia : hasQuestionMedia) ? 'items-center justify-start' : 'items-center justify-center'
                                 }`}>
                                   {/* Media container on left - 50% width when media exists */}
-                                  {(detailedGameState.showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
+                                  {(detailedGameState.showAnswer ? hasAnswerMedia : detailedGameState.showHint ? hasHintMedia : hasQuestionMedia) ? (
                                     <div className="w-1/2 h-full flex items-center justify-center p-4">
                                       {detailedGameState.showAnswer && detailedGameState.activeQuestion.answerMedia ? (
                                         // Answer media
@@ -1909,6 +2153,18 @@ export const ScreenView: React.FC = () => {
                                               src={detailedGameState.activeQuestion.answerMedia.url}
                                               controls
                                               className="w-full h-auto object-contain rounded-lg shadow-xl"
+                                              onError={(e) => {
+                                                console.error('[ScreenView] Answer video error:', {
+                                                  url: detailedGameState.activeQuestion.answerMedia.url,
+                                                  error: e.currentTarget.error
+                                                });
+                                              }}
+                                              onLoadStart={() => {
+                                                console.log('[ScreenView] Answer video loading started:', detailedGameState.activeQuestion.answerMedia.url);
+                                              }}
+                                              onCanPlay={() => {
+                                                console.log('[ScreenView] Answer video can play:', detailedGameState.activeQuestion.answerMedia.url);
+                                              }}
                                             />
                                           )}
                                           {detailedGameState.activeQuestion.answerMedia.type === 'audio' && (
@@ -1920,13 +2176,98 @@ export const ScreenView: React.FC = () => {
                                                   <circle cx="18" cy="16" r="3"></circle>
                                                 </svg>
                                               </div>
-                                              <audio src={detailedGameState.activeQuestion.answerMedia.url} controls className="w-full" />
+                                              <audio
+                                                src={detailedGameState.activeQuestion.answerMedia.url}
+                                                controls
+                                                className="w-full"
+                                                onError={(e) => {
+                                                  console.error('[ScreenView] Answer audio error:', {
+                                                    url: detailedGameState.activeQuestion.answerMedia.url,
+                                                    error: e.currentTarget.error
+                                                  });
+                                                }}
+                                                onLoadStart={() => {
+                                                  console.log('[ScreenView] Answer audio loading started:', detailedGameState.activeQuestion.answerMedia.url);
+                                                }}
+                                                onCanPlay={() => {
+                                                  console.log('[ScreenView] Answer audio can play:', detailedGameState.activeQuestion.answerMedia.url);
+                                                }}
+                                              />
                                             </div>
                                           )}
                                           {detailedGameState.activeQuestion.answerMedia.type === 'youtube' && (
                                             <div className="w-full h-full flex items-center justify-center">
                                               <iframe
                                                 src={detailedGameState.activeQuestion.answerMedia.url}
+                                                className="w-full h-full rounded-lg shadow-xl"
+                                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                                allowFullScreen
+                                                title="YouTube video"
+                                              />
+                                            </div>
+                                          )}
+                                        </>
+                                      ) : detailedGameState.showHint && detailedGameState.activeQuestion.hint?.media ? (
+                                        // Hint media
+                                        <>
+                                          {hintMediaType === 'image' && (
+                                            <img
+                                              src={hintMediaUrl}
+                                              alt="Hint media"
+                                              className="w-full h-auto object-contain rounded-lg shadow-xl"
+                                            />
+                                          )}
+                                          {hintMediaType === 'video' && (
+                                            <video
+                                              src={hintMediaUrl}
+                                              controls
+                                              className="w-full h-auto object-contain rounded-lg shadow-xl"
+                                              onError={(e) => {
+                                                console.error('[ScreenView] Hint video error:', {
+                                                  url: hintMediaUrl,
+                                                  error: e.currentTarget.error
+                                                });
+                                              }}
+                                              onLoadStart={() => {
+                                                console.log('[ScreenView] Hint video loading started:', hintMediaUrl);
+                                              }}
+                                              onCanPlay={() => {
+                                                console.log('[ScreenView] Hint video can play:', hintMediaUrl);
+                                              }}
+                                            />
+                                          )}
+                                          {hintMediaType === 'audio' && (
+                                            <div className="w-full flex flex-col items-center justify-center gap-3 bg-gray-800 rounded-lg p-4">
+                                              <div className="w-20 h-20 bg-gradient-to-br from-yellow-600 to-orange-600 rounded-lg flex items-center justify-center shadow-lg">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white">
+                                                  <path d="M9 18V5l12-2v13"></path>
+                                                  <circle cx="6" cy="18" r="3"></circle>
+                                                  <circle cx="18" cy="16" r="3"></circle>
+                                                </svg>
+                                              </div>
+                                              <audio
+                                                src={hintMediaUrl}
+                                                controls
+                                                className="w-full"
+                                                onError={(e) => {
+                                                  console.error('[ScreenView] Hint audio error:', {
+                                                    url: hintMediaUrl,
+                                                    error: e.currentTarget.error
+                                                  });
+                                                }}
+                                                onLoadStart={() => {
+                                                  console.log('[ScreenView] Hint audio loading started:', hintMediaUrl);
+                                                }}
+                                                onCanPlay={() => {
+                                                  console.log('[ScreenView] Hint audio can play:', hintMediaUrl);
+                                                }}
+                                              />
+                                            </div>
+                                          )}
+                                          {hintMediaType === 'youtube' && (
+                                            <div className="w-full h-full flex items-center justify-center">
+                                              <iframe
+                                                src={hintMediaUrl}
                                                 className="w-full h-full rounded-lg shadow-xl"
                                                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                                                 allowFullScreen
@@ -1985,7 +2326,7 @@ export const ScreenView: React.FC = () => {
                                   ) : null}
 
                                   {/* Question text container */}
-                                  {(detailedGameState.showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
+                                  {(detailedGameState.showAnswer ? hasAnswerMedia : detailedGameState.showHint ? hasHintMedia : hasQuestionMedia) ? (
                                     <div className="w-1/2 h-full flex items-center justify-center p-4">
                                       <h2
                                         className="font-bold text-white leading-[1.1] text-center"

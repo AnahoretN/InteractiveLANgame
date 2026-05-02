@@ -3,10 +3,11 @@
  * Manages game packs - create, edit, delete, import, export
  */
 
-import React, { memo, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { FolderOpen, Trash2, Edit2, Download, Upload, Plus, FileText } from 'lucide-react';
 import type { GamePack } from './types';
 import { fileToBase64 } from './utils';
+import { withSmartMemo } from '../../../utils/memoUtils.tsx';
 
 interface PackManagerProps {
   packs: GamePack[];
@@ -18,7 +19,7 @@ interface PackManagerProps {
   onImportPack: (pack: GamePack) => void;
 }
 
-export const PackManager = memo(({
+export const PackManager = withSmartMemo(({
   packs,
   selectedPackIds,
   onSelectPack,
@@ -125,7 +126,7 @@ export const PackManager = memo(({
                 onDragStart={(e) => handleDragStart(e, pack.id)}
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, pack.id)}
-                className={`bg-gray-900 rounded-xl p-4 border-2 transition-all group ${
+                className={`bg-gray-900 rounded-lg p-4 border-2 transition-all group ${
                   isSelected ? 'border-blue-500' : 'border-gray-700 hover:border-gray-600'
                 }`}
               >
@@ -209,6 +210,8 @@ export const PackManager = memo(({
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['packs.length', 'selectedPackIds'],
+  componentName: 'PackManager'
 });
-
-PackManager.displayName = 'PackManager';

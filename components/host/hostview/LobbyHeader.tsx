@@ -58,7 +58,7 @@ export const LobbyHeader = memo(({
             <div className="flex items-center gap-2 mb-2">
               <h2 className="text-xl font-bold text-white">Session ID</h2>
               {!isOnline && (
-                <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">
+                <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded-lg">
                   Offline
                 </span>
               )}

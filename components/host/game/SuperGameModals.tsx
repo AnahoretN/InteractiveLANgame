@@ -3,11 +3,12 @@
  * Modals for super game: question display and answers grid
  */
 
-import React, { memo, useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { Music, X } from 'lucide-react';
 import type { Round } from '../packeditor/types';
 import type { SuperGameBet, SuperGameAnswer } from './types';
 import { calculateQuestionFontSize } from './fontUtils';
+import { withSmartMemo } from '../../../utils/memoUtils.tsx';
 
 // ============= CONSTANTS =============
 const SUPER_GAME_QUESTION_TIME = 60; // seconds
@@ -21,7 +22,7 @@ interface SuperGameQuestionModalProps {
   onClose: () => void;
 }
 
-export const SuperGameQuestionModal = memo(({
+export const SuperGameQuestionModal = withSmartMemo(({
   round,
   selectedSuperThemeId,
   onClose,
@@ -81,7 +82,7 @@ export const SuperGameQuestionModal = memo(({
   const timerProgress = ((SUPER_GAME_QUESTION_TIME - timerRemaining) / SUPER_GAME_QUESTION_TIME) * 100;
 
   return (
-    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default"
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default modal-contained"
       style={{ paddingTop: '100px', paddingBottom: '20px' }}
     >
       <style>{`
@@ -168,9 +169,11 @@ export const SuperGameQuestionModal = memo(({
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['round.id', 'selectedSuperThemeId'],
+  componentName: 'SuperGameQuestionModal'
 });
-
-SuperGameQuestionModal.displayName = 'SuperGameQuestionModal';
 
 // ============= SUPER GAME ANSWERS MODAL =============
 
@@ -186,7 +189,7 @@ interface SuperGameAnswersModalProps {
   onClose: () => void;
 }
 
-export const SuperGameAnswersModal = memo(({
+export const SuperGameAnswersModal = withSmartMemo(({
   round,
   selectedSuperThemeId,
   teamScores,
@@ -241,7 +244,7 @@ export const SuperGameAnswersModal = memo(({
   const answerFontSize = calculateQuestionFontSize(correctAnswer, 2);
 
   return (
-    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 modal-contained"
       style={{ paddingTop: '100px', paddingBottom: '20px' }}
     >
       <div
@@ -264,7 +267,7 @@ export const SuperGameAnswersModal = memo(({
         {/* Two containers: Teams (top) and Correct Answer (bottom) */}
         <div className="flex flex-col h-full items-center justify-center gap-4 p-4">
           {/* Top container - Teams grid */}
-          <div className="w-[60vw] h-[38vh] p-6 overflow-auto bg-gray-900 rounded-xl">
+          <div className="w-[60vw] h-[38vh] p-6 overflow-auto bg-gray-900 rounded-lg card-contained">
             {/* Calculate grid columns based on number of teams (max 25 teams)
                  - up to 6 teams: 3 cols (2 rows)
                  - 7-12 teams: 4 cols (3 rows)
@@ -306,7 +309,7 @@ export const SuperGameAnswersModal = memo(({
                   <button
                     key={team.teamId}
                     onClick={() => onTeamSelect(team.teamId)}
-                    className={`relative rounded-xl border-[3px] transition-all flex flex-col cursor-pointer ${cardStyle}`}
+                    className={`relative rounded-lg border-[3px] transition-all flex flex-col cursor-pointer ${cardStyle}`}
                     style={{ minHeight: '140px', padding: '8px' }}
                   >
                     {/* Top: Team name */}
@@ -347,7 +350,7 @@ export const SuperGameAnswersModal = memo(({
           <div className="w-[45vw] h-[30vh] flex items-center justify-center">
             <button
               onClick={() => setShowCorrectAnswer(!showCorrectAnswer)}
-              className={`relative p-3 rounded-xl border-[3px] transition-all flex flex-col items-center justify-center cursor-pointer ${
+              className={`relative p-3 rounded-lg border-[3px] transition-all flex flex-col items-center justify-center cursor-pointer ${
                 showCorrectAnswer
                   ? 'border-purple-500 bg-purple-500/20 scale-105'
                   : 'border-gray-700 bg-gray-900 hover:border-gray-600'
@@ -373,6 +376,8 @@ export const SuperGameAnswersModal = memo(({
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['round.id', 'selectedSuperThemeId', 'teamScores.length'],
+  componentName: 'SuperGameAnswersModal'
 });
-
-SuperGameAnswersModal.displayName = 'SuperGameAnswersModal';

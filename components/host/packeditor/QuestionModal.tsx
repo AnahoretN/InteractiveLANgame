@@ -41,6 +41,16 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
     question?.answerMedia?.localFile
   );
 
+  // Hint fields
+  const [hintText, setHintText] = useState(question?.hint?.text || '');
+  const [hintHasAnswers, setHintHasAnswers] = useState(question?.hint?.answers !== undefined);
+  const [hintAnswers, setHintAnswers] = useState<string[]>(question?.hint?.answers || ['', '', '', '']);
+  const [hintCorrectAnswer, setHintCorrectAnswer] = useState(question?.hint?.correctAnswer ?? 0);
+  const [hintMediaUrl, setHintMediaUrl] = useState(question?.hint?.media?.url || '');
+  const [hintMediaLocalFile, setHintMediaLocalFile] = useState<LocalFileInfo | undefined>(
+    question?.hint?.media?.localFile
+  );
+
   // Reset form when question changes or modal opens
   useEffect(() => {
     if (isOpen) {
@@ -66,6 +76,14 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       setAnswerText(question?.answerText || '');
       setAnswerMediaUrl(question?.answerMedia?.url || '');
       setAnswerMediaLocalFile(question?.answerMedia?.localFile);
+
+      // Hint fields
+      setHintText(question?.hint?.text || '');
+      setHintHasAnswers(question?.hint?.answers !== undefined);
+      setHintAnswers(question?.hint?.answers || ['', '', '', '']);
+      setHintCorrectAnswer(question?.hint?.correctAnswer ?? 0);
+      setHintMediaUrl(question?.hint?.media?.url || '');
+      setHintMediaLocalFile(question?.hint?.media?.localFile);
     }
   }, [isOpen, question]);
 
@@ -115,12 +133,29 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
           ...(answerMediaLocalFile ? { localFile: answerMediaLocalFile } : {})
         }
       } : {}),
+      // Save hint
+      ...(hintText || hintMediaUrl || (hintHasAnswers && hintAnswers.some(a => a.trim() !== '')) ? {
+        hint: {
+          ...(hintText ? { text: hintText } : {}),
+          ...(hintMediaUrl ? {
+            media: {
+              type: 'image',
+              url: hintMediaUrl,
+              ...(hintMediaLocalFile ? { localFile: hintMediaLocalFile } : {})
+            }
+          } : {}),
+          ...(hintHasAnswers ? {
+            answers: hintAnswers.filter(a => a.trim() !== ''),
+            correctAnswer: hintCorrectAnswer,
+          } : {}),
+        }
+      } : {}),
     };
 
     console.log('💾 Saving question data:', saveData);
     onSave(saveData);
     onClose();
-  }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, multimediaLocalFile, answerText, answerMediaUrl, answerMediaLocalFile, onSave, onClose]);
+  }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, multimediaLocalFile, answerText, answerMediaUrl, answerMediaLocalFile, hintText, hintHasAnswers, hintAnswers, hintCorrectAnswer, hintMediaUrl, hintMediaLocalFile, onSave, onClose]);
 
   if (!isOpen) return null;
 
@@ -332,6 +367,87 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
             }}
             placeholder="https://example.com/answer.jpg"
             label="Answer Image (optional)"
+          />
+        </div>
+
+        {/* ========== HINT SECTION ========== */}
+        <div className="border-t border-gray-700 pt-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-0.5 h-4 bg-yellow-500"></div>
+            <span className="text-sm font-medium text-yellow-400">Hint</span>
+          </div>
+
+          {/* Multiple Choice Toggle for Hint */}
+          <div className="bg-gray-800/50 rounded-lg p-3 mb-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-300">Multiple Choice Mode</span>
+              <button
+                onClick={() => setHintHasAnswers(!hintHasAnswers)}
+                className={`w-11 h-6 rounded-full transition-colors ${hintHasAnswers ? 'bg-blue-600' : 'bg-gray-700'}`}
+              >
+                <div className={`w-5 h-5 bg-white rounded-full transition-transform ${hintHasAnswers ? 'translate-x-6' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+          </div>
+
+          {/* Multiple Choice Answers for Hint */}
+          {hintHasAnswers && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-1.5">Hint Answer Choices</label>
+              <div className="space-y-2">
+                {hintAnswers.map((answer, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <button
+                      onClick={() => setHintCorrectAnswer(idx)}
+                      className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
+                        hintCorrectAnswer === idx ? 'bg-green-500 border-green-500' : 'border-gray-600 hover:border-gray-500'
+                      }`}
+                    >
+                      {hintCorrectAnswer === idx && <div className="w-2 h-2 bg-white rounded-full" />}
+                    </button>
+                    <input
+                      type="text"
+                      value={answer}
+                      onChange={(e) => {
+                        const newAnswers = [...hintAnswers];
+                        newAnswers[idx] = e.target.value;
+                        setHintAnswers(newAnswers);
+                      }}
+                      placeholder={`Hint Answer ${idx + 1}`}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Select circle next to correct answer</p>
+            </div>
+          )}
+
+          {/* Text Hint (for non-multiple choice or additional text) */}
+          {!hintHasAnswers && (
+            <div className="mb-4">
+              <label className="block text-xs text-gray-400 mb-1.5">Hint Text</label>
+              <textarea
+                value={hintText}
+                onChange={(e) => setHintText(e.target.value)}
+                placeholder="Enter a hint to help players..."
+                rows={2}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-yellow-500 resize-none"
+              />
+            </div>
+          )}
+
+          {/* Hint Image (always available) */}
+          <FileUpload
+            value={hintMediaUrl}
+            onChange={setHintMediaUrl}
+            accept="image/*"
+            onLocalFile={(file, blobUrl) => {
+              console.log('💾 Saving hint local file info:', file.name);
+              setHintMediaLocalFile(createLocalFileInfo(file));
+            }}
+            placeholder="https://example.com/hint.jpg"
+            label="Hint Image (optional)"
           />
         </div>
 

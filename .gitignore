@@ -28,3 +28,8 @@ dist-ssr
 
 # Reserved Windows device names
 nul
+
+# Graphify output
+graphify-out/
+.graphify_python
+.graphifyignore

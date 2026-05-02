@@ -104,7 +104,7 @@ export const MobileQuestion = memo(({
                 onClick={() => handleAnswerSelect(index)}
                 disabled={!isActive || isRevealed}
                 className={`
-                  relative aspect-square bg-gray-800 rounded-xl border-2
+                  relative aspect-square bg-gray-800 rounded-lg border-2
                   transition-all duration-200
                   ${!isActive ? 'opacity-70' : 'hover:scale-105'}
                   ${isRevealed
@@ -137,7 +137,7 @@ export const MobileQuestion = memo(({
         <div className="mt-auto">
           <button
             onClick={handleConfirm}
-            className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-lg"
+            className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-lg"
           >
             Подтвердить ответ ({selectedAnswer + 1})
           </button>

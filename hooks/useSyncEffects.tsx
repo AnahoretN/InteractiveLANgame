@@ -1,7 +1,6 @@
 /**
  * useSyncEffects Hook
- * Handles sync effects for teams in HostView
- * Teams are broadcast to all clients as commands list
+ * Handles storage persistence for teams and commands in HostView
  */
 
 import { useEffect } from 'react';
@@ -20,19 +19,10 @@ export interface Command {
   name: string;
 }
 
-interface P2PHost {
-  isReady: boolean;
-  broadcast: (data: {
-    category: string;
-    type: string;
-    payload: unknown;
-  }) => void;
-}
-
 interface UseSyncEffectsOptions {
   teams: Team[];
   commands: Command[];
-  p2pHost?: P2PHost;
+  p2pHost?: any;
 }
 
 export const useSyncEffects = ({
@@ -40,23 +30,6 @@ export const useSyncEffects = ({
   commands,
   p2pHost,
 }: UseSyncEffectsOptions) => {
-
-  // Broadcast teams list to all clients when teams change
-  // Send as COMMANDS_LIST for compatibility with clients
-  useEffect(() => {
-    if (p2pHost?.isReady) {
-      const commandsSync = {
-        category: 'SYNC',
-        type: 'COMMANDS_LIST',
-        payload: {
-          commands: teams.map((t: Team) => ({ id: t.id, name: t.name }))
-        }
-      };
-      p2pHost.broadcast(commandsSync);
-      console.log('[useSyncEffects] Broadcasted teams as commands list:', teams.length);
-    }
-  }, [teams, p2pHost?.isReady, p2pHost?.broadcast]);
-
   // Save teams to storage when changed
   useEffect(() => {
     storage.set(STORAGE_KEYS.TEAMS, JSON.stringify(teams));

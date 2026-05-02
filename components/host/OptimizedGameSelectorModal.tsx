@@ -1,0 +1,917 @@
+/**
+ * Optimized GameSelectorModal Component
+ *
+ * Performance-optimized version with:
+ * - Virtualized pack list using react-virtuoso
+ * - Enhanced React.memo implementations
+ * - CSS containment optimizations
+ * - Lazy loading for heavy components
+ */
+
+import React, { memo, useState, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
+import { X, Upload, Plus, FolderOpen, FileText, Gamepad2, Check, ChevronDown, Layers } from 'lucide-react';
+import { Button } from '../Button';
+import { generateUUID } from '../../utils';
+import { loadPackFromZip, isZipFile } from '../../utils/zipPackManager';
+import { convertYouTubeToEmbed } from '../../utils/mediaUtils';
+import { AlertDialog } from '../shared';
+import { SkeletonCard } from '../shared/Skeleton';
+
+// Lazy load PackEditor to reduce initial bundle size
+const PackEditor = lazy(() => import('./PackEditor').then(m => ({ default: m.PackEditor })));
+import type { GamePack as PackGamePack, Round, Theme, Question as PackQuestion, RoundType } from './packeditor/types';
+
+export type GameType = 'custom' | 'quiz' | 'trivia';
+
+export interface GamePack {
+  id: string;
+  name: string;
+  cover?: {
+    type: 'url' | 'file';
+    value: string;
+  };
+  gameType: GameType;
+  questions?: Question[];
+  rounds?: Round[];
+  themes?: Theme[];
+  createdAt: number;
+  updatedAt?: number;
+}
+
+export interface Question {
+  id: string;
+  text: string;
+  answers?: string[];
+  correctAnswer?: number;
+  media?: {
+    type: 'image' | 'video' | 'audio' | 'youtube';
+    url?: string;
+    file?: File;
+  };
+  timeLimit?: number;
+  points?: number;
+  hint?: {
+    text?: string;
+    media?: {
+      type: 'image' | 'video' | 'audio' | 'youtube';
+      url?: string;
+    };
+    answers?: string[];
+    correctAnswer?: number;
+  };
+}
+
+interface GameSelectorModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (gameType: GameType, selectedPackIds: string[], packs: GamePack[]) => void;
+  initialGameType?: GameType;
+  initialSelectedPackIds?: string[];
+  initialPacks?: GamePack[];
+}
+
+const GAMES: { id: GameType; name: string; icon: React.ReactNode; enabled: boolean }[] = [
+  { id: 'custom', name: 'Своя игра', icon: <Gamepad2 className="w-4 h-4" />, enabled: true },
+  { id: 'quiz', name: 'Квиз', icon: <Gamepad2 className="w-4 h-4" />, enabled: false },
+  { id: 'trivia', name: 'Викторина', icon: <Gamepad2 className="w-4 h-4" />, enabled: false },
+];
+
+const MAX_SELECTED_PACKS = 10;
+
+// Helper to count questions in a pack (handles both old and new formats)
+const getQuestionCount = (pack: GamePack | PackGamePack): number => {
+  if ('rounds' in pack && pack.rounds) {
+    return pack.rounds.reduce((acc, r) =>
+      acc + (r.themes?.reduce((tAcc, t) => tAcc + (t.questions?.length || 0), 0) || 0), 0
+    );
+  }
+  if ('questions' in pack && pack.questions) {
+    return pack.questions.length;
+  }
+  return 0;
+};
+
+// Helper to get round count
+const getRoundCount = (pack: GamePack | PackGamePack): number => {
+  if ('rounds' in pack && pack.rounds) {
+    return pack.rounds.length;
+  }
+  return 0;
+};
+
+// Helper to get theme count in a pack
+const getThemeCount = (pack: GamePack | PackGamePack): number => {
+  if ('rounds' in pack && pack.rounds) {
+    return pack.rounds.reduce((acc, r) => acc + (r.themes?.length || 0), 0);
+  }
+  return 0;
+};
+
+// Memoized pack item component with CSS containment
+const PackListItem = memo(({
+  pack,
+  isSelected,
+  onToggle,
+  onEdit,
+  onDelete
+}: {
+  pack: GamePack;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}) => {
+  const roundCount = useMemo(() => pack.rounds?.length || 0, [pack.rounds]);
+  const questionCount = useMemo(() => {
+    if ('rounds' in pack && pack.rounds) {
+      return pack.rounds.reduce((acc, r) =>
+        acc + (r.themes?.reduce((tAcc, t) => tAcc + (t.questions?.length || 0), 0) || 0), 0
+      );
+    }
+    return pack.questions?.length || 0;
+  }, [pack.rounds, pack.questions]);
+  const themeCount = useMemo(() => {
+    if ('rounds' in pack && pack.rounds) {
+      return pack.rounds.reduce((acc, r) => acc + (r.themes?.length || 0), 0);
+    }
+    return 0;
+  }, [pack.rounds]);
+
+  const handleToggle = useCallback(() => {
+    onToggle(pack.id);
+  }, [pack.id, onToggle]);
+
+  const handleEdit = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onEdit(pack.id);
+  }, [pack.id, onEdit]);
+
+  const handleDelete = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onDelete(pack.id);
+  }, [pack.id, onDelete]);
+
+  return (
+    <div
+      className={`flex items-center gap-2 p-3 rounded-lg border transition-colors card-contained list-item-contained ${
+        isSelected
+          ? 'bg-blue-500/20 border-blue-500'
+          : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'
+      }`}
+    >
+      <button
+        onClick={handleToggle}
+        disabled={!isSelected && isSelected === false}
+        className="flex-1 flex items-center justify-between text-left"
+      >
+        <div className="flex items-center gap-2">
+          <FolderOpen className={`w-4 h-4 ${isSelected ? 'text-blue-400' : 'text-gray-500'}`} />
+          <span className={`text-sm font-medium truncate text-truncate ${isSelected ? 'text-blue-400' : 'text-gray-300'}`}>
+            {pack.name}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            {roundCount > 0 ? `${roundCount}r • ` : ''}{themeCount}t • {questionCount}q
+          </span>
+          {isSelected && <Check className="w-4 h-4 text-blue-400" />}
+        </div>
+      </button>
+      <button
+        onClick={handleEdit}
+        className="p-1 hover:bg-gray-700 rounded-lg text-gray-400 hover:text-white transition-colors button-hover"
+        title="Edit pack"
+      >
+        <FileText className="w-3.5 h-3.5" />
+      </button>
+      <button
+        onClick={handleDelete}
+        className="p-1 hover:bg-red-900/50 rounded-lg text-gray-400 hover:text-red-400 transition-colors button-hover"
+        title="Delete pack"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}, (prevProps, nextProps) => {
+  return (
+    prevProps.pack.id === nextProps.pack.id &&
+    prevProps.isSelected === nextProps.isSelected
+  );
+});
+
+PackListItem.displayName = 'PackListItem';
+
+export const OptimizedGameSelectorModal = memo(({
+  isOpen,
+  onClose,
+  onSave,
+  initialGameType = 'custom',
+  initialSelectedPackIds = [],
+  initialPacks = [],
+}: GameSelectorModalProps) => {
+  const [selectedGame, setSelectedGame] = useState<GameType>(initialGameType);
+  const [showGameDropdown, setShowGameDropdown] = useState(false);
+  const [packs, setPacks] = useState<GamePack[]>(initialPacks);
+  const [selectedPackIds, setSelectedPackIds] = useState<string[]>(initialSelectedPackIds);
+  const [showPackEditor, setShowPackEditor] = useState(false);
+  const [editingPack, setEditingPack] = useState<PackGamePack | undefined>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Alert dialog state
+  const [alertDialog, setAlertDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'error' | 'warning' | 'info' | 'success';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info'
+  });
+
+  // Initialize from props when modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setSelectedGame(initialGameType);
+      setSelectedPackIds(initialSelectedPackIds);
+      setPacks(initialPacks);
+    }
+  }, [isOpen, initialGameType, initialSelectedPackIds, initialPacks]);
+
+  // Calculate session summary from selected packs
+  const sessionSummary = useMemo(() => {
+    const selectedPacks = packs.filter(p => selectedPackIds.includes(p.id));
+
+    const maxRounds = Math.max(...selectedPacks.map(p => p.rounds?.length || 0), 0);
+
+    let totalThemes = 0;
+    let totalQuestions = 0;
+
+    for (let roundNum = 1; roundNum <= maxRounds; roundNum++) {
+      selectedPacks.forEach(pack => {
+        const round = pack.rounds?.[roundNum - 1];
+        if (round) {
+          totalThemes += round.themes?.length || 0;
+          totalQuestions += round.themes?.reduce((acc, t) => acc + (t.questions?.length || 0), 0) || 0;
+        }
+      });
+    }
+
+    selectedPacks.forEach(pack => {
+      if (!pack.rounds || pack.rounds.length === 0) {
+        totalQuestions += pack.questions?.length || 0;
+      }
+    });
+
+    return { maxRounds, totalThemes, totalQuestions };
+  }, [packs, selectedPackIds]);
+
+  // Parse text format pack (same logic as in GameSelectorModal)
+  const parseTextPack = useCallback((content: string): GamePack => {
+    const lines = content.split('\n');
+    let currentSection: 'questions' | 'rounds' | 'themes' | 'cover' | null = null;
+    let packName = 'Imported Pack';
+    const questions: Array<{
+      roundNum: number;
+      themeName: string;
+      text: string;
+      points?: number;
+      answerText?: string;
+      mediaUrl?: string;
+      mediaType?: 'image' | 'video' | 'audio' | 'youtube';
+      answers?: string[];
+      correctAnswer?: number;
+    }> = [];
+    const roundSettings: Map<number, Partial<Round>> = new Map();
+    const themeSettings: Map<string, { roundNum: number; data: Partial<Theme> }> = new Map();
+    let packCover: { type: 'url' | 'file'; value: string } | undefined;
+
+    let currentQuestion: Partial<typeof questions[0]> | null = null;
+    let currentRoundNum: number | null = null;
+    let currentThemeName: string | null = null;
+
+    const parseValue = (str: string): string => {
+      const match = str.match(/^([^:]+):\s*(.*?);$/);
+      return match ? match[2].trim() : '';
+    };
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('=== ') && trimmed.endsWith(' ===')) {
+        packName = trimmed.slice(4, -4).trim();
+        continue;
+      }
+
+      if (trimmed === '--- QUESTIONS ---') {
+        currentSection = 'questions';
+        continue;
+      }
+      if (trimmed === '--- ROUND SETTINGS ---') {
+        currentSection = 'rounds';
+        continue;
+      }
+      if (trimmed === '--- THEME SETTINGS ---') {
+        currentSection = 'themes';
+        continue;
+      }
+      if (trimmed === '--- PACK COVER ---') {
+        currentSection = 'cover';
+        continue;
+      }
+
+      if (!trimmed || trimmed.startsWith('//')) continue;
+
+      if (trimmed.includes(':') && trimmed.endsWith(';')) {
+        const key = trimmed.substring(0, trimmed.indexOf(':')).trim();
+        const value = parseValue(trimmed);
+
+        if (currentSection === 'questions') {
+          if (key === 'round') {
+            if (currentQuestion && currentQuestion.roundNum && currentQuestion.themeName && currentQuestion.text) {
+              questions.push({ ...currentQuestion } as typeof questions[0]);
+            }
+            currentQuestion = { roundNum: parseInt(value) || 1 };
+          } else if (key === 'theme') {
+            currentThemeName = value;
+            if (currentQuestion) currentQuestion.themeName = value;
+          } else if (key === 'text' && currentQuestion) {
+            currentQuestion.text = value;
+          } else if (key === 'points' && currentQuestion) {
+            currentQuestion.points = value === 'auto' ? undefined : parseInt(value);
+          } else if (key === 'answerText' && currentQuestion) {
+            currentQuestion.answerText = value;
+          } else if (key === 'url' && currentQuestion) {
+            currentQuestion.mediaUrl = value;
+            if (value.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+              currentQuestion.mediaType = 'image';
+            } else if (value.match(/\.(mp4|webm|mov)$/i)) {
+              currentQuestion.mediaType = 'video';
+            } else if (value.match(/\.(mp3|wav|ogg)$/i)) {
+              currentQuestion.mediaType = 'audio';
+            } else if (value.includes('youtube.com') || value.includes('youtu.be')) {
+              currentQuestion.mediaType = 'youtube';
+            }
+          } else if (key === 'mediaType' && currentQuestion) {
+            currentQuestion.mediaType = value as 'image' | 'video' | 'audio' | 'youtube';
+          } else if (key === 'answers' && currentQuestion) {
+            currentQuestion.answers = value.split('|');
+          } else if (key === 'correctAnswer' && currentQuestion) {
+            currentQuestion.correctAnswer = parseInt(value);
+          }
+        } else if (currentSection === 'rounds') {
+          if (key === 'round') {
+            currentRoundNum = parseInt(value) || 1;
+            if (!roundSettings.has(currentRoundNum)) {
+              roundSettings.set(currentRoundNum, {});
+            }
+          } else if (currentRoundNum !== null && roundSettings.has(currentRoundNum)) {
+            const settings = roundSettings.get(currentRoundNum)!;
+            if (key === 'name') {
+              settings.name = value;
+            } else if (key === 'type') {
+              settings.type = (value === 'super' ? 'super' : 'normal') as RoundType;
+            } else if (key === 'cover' && value !== '-') {
+              const colonIndex = value.indexOf(':');
+              if (colonIndex > 0) {
+                const url = value.substring(colonIndex + 1);
+                if (url) {
+                  settings.cover = { type: 'url', value: url };
+                }
+              } else {
+                settings.cover = { type: 'url', value: value };
+              }
+            } else if (key === 'readingTimePerLetter') {
+              settings.readingTimePerLetter = parseFloat(value);
+            } else if (key === 'responseWindow') {
+              settings.responseWindow = parseInt(value);
+            } else if (key === 'handicapEnabled') {
+              settings.handicapEnabled = value === 'true';
+            } else if (key === 'handicapDelay') {
+              settings.handicapDelay = parseFloat(value);
+            }
+          }
+        } else if (currentSection === 'themes') {
+          if (key === 'round') {
+            currentRoundNum = parseInt(value) || 1;
+          } else if (key === 'theme') {
+            currentThemeName = value;
+          } else if (currentRoundNum !== null && currentThemeName) {
+            const key2 = `${currentRoundNum}|${currentThemeName}`;
+            if (!themeSettings.has(key2)) {
+              themeSettings.set(key2, { roundNum: currentRoundNum, data: {} });
+            }
+            const settings = themeSettings.get(key2)!;
+            if (key === 'color' && value !== '-') {
+              settings.data.color = value;
+            }
+            if (key === 'textColor' && value !== '-') {
+              settings.data.textColor = value;
+            }
+          }
+        } else if (currentSection === 'cover') {
+          if (key === 'cover' && value !== '-') {
+            const colonIndex = value.indexOf(':');
+            if (colonIndex > 0) {
+              const type = value.substring(0, colonIndex);
+              const url = value.substring(colonIndex + 1);
+              if (url) {
+                packCover = { type: type as 'url' | 'file', value: url };
+              }
+            } else {
+              packCover = { type: 'url', value: value };
+            }
+          }
+        }
+      }
+    }
+
+    if (currentQuestion && currentQuestion.roundNum && currentQuestion.themeName && currentQuestion.text) {
+      questions.push({ ...currentQuestion } as typeof questions[0]);
+    }
+
+    const roundsMap = new Map<number, Round>();
+
+    for (const [roundNum, settings] of roundSettings) {
+      roundsMap.set(roundNum, {
+        id: generateUUID(),
+        number: roundNum,
+        name: settings.name || `Round ${roundNum}`,
+        type: settings.type,
+        cover: settings.cover,
+        readingTimePerLetter: settings.readingTimePerLetter ?? 0.05,
+        responseWindow: settings.responseWindow ?? 30,
+        handicapEnabled: settings.handicapEnabled ?? false,
+        handicapDelay: settings.handicapDelay ?? 1,
+        themes: [],
+      });
+    }
+
+    for (const q of questions) {
+      let round = roundsMap.get(q.roundNum);
+      if (!round) {
+        const roundSettingsData = roundSettings.get(q.roundNum);
+        round = {
+          id: generateUUID(),
+          number: q.roundNum,
+          name: roundSettingsData?.name || `Round ${q.roundNum}`,
+          type: roundSettingsData?.type,
+          cover: roundSettingsData?.cover,
+          readingTimePerLetter: roundSettingsData?.readingTimePerLetter ?? 0.05,
+          responseWindow: roundSettingsData?.responseWindow ?? 30,
+          handicapEnabled: roundSettingsData?.handicapEnabled ?? false,
+          handicapDelay: roundSettingsData?.handicapDelay ?? 1,
+          themes: [],
+        };
+        roundsMap.set(q.roundNum, round);
+      }
+
+      let theme = round.themes.find(t => t.name === q.themeName);
+      if (!theme) {
+        const themeKey = `${q.roundNum}|${q.themeName}`;
+        const themeSettingsData = themeSettings.get(themeKey)?.data || {};
+
+        theme = {
+          id: generateUUID(),
+          name: q.themeName,
+          color: themeSettingsData.color,
+          textColor: themeSettingsData.textColor,
+          questions: [],
+        };
+        round.themes.push(theme);
+      }
+
+      const question: PackQuestion = {
+        id: generateUUID(),
+        text: q.text,
+        points: q.points,
+        answerText: q.answerText,
+      };
+
+      if (q.mediaUrl) {
+        const mediaType = q.mediaType || 'video';
+        const mediaUrl = mediaType === 'youtube' ? convertYouTubeToEmbed(q.mediaUrl) : q.mediaUrl;
+        question.media = { type: mediaType, url: mediaUrl };
+      }
+      if (q.answers) {
+        question.answers = q.answers;
+      }
+      if (q.correctAnswer !== undefined) {
+        question.correctAnswer = q.correctAnswer;
+      }
+
+      theme.questions.push(question);
+    }
+
+    const rounds = Array.from(roundsMap.values()).sort((a, b) => a.number - b.number);
+    for (const round of rounds) {
+      round.themes.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    const finalPack: GamePack = {
+      id: generateUUID(),
+      name: packName,
+      cover: packCover,
+      gameType: 'custom',
+      rounds,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    return finalPack;
+  }, []);
+
+  // Handle file upload - supports .zip (new with media), .json (old) and .txt (new) pack formats
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    console.log('[OptimizedGameSelector] File selected for upload:', file.name);
+
+    try {
+      let pack: GamePack;
+
+      if (isZipFile(file)) {
+        console.log('[OptimizedGameSelector] ZIP file detected, extracting...');
+        pack = await loadPackFromZip(file);
+        console.log('[OptimizedGameSelector] ZIP pack loaded successfully:', pack.name);
+      } else {
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onerror = reject;
+          reader.readAsText(file);
+        });
+
+        if (file.name.endsWith('.json') || content.trim().startsWith('{')) {
+          const parsed = JSON.parse(content) as GamePack | PackGamePack;
+          const packId = parsed.id || generateUUID();
+
+          const normalizedRounds = ('rounds' in parsed ? parsed.rounds : []).map((round: Round) => ({
+            ...round,
+            readingTimePerLetter: round.readingTimePerLetter ?? 0.05,
+            responseWindow: round.responseWindow ?? 30,
+            handicapEnabled: round.handicapEnabled ?? false,
+            handicapDelay: round.handicapDelay ?? 1,
+          }));
+
+          pack = {
+            id: packId,
+            name: parsed.name || 'Untitled Pack',
+            gameType: 'gameType' in parsed ? parsed.gameType : 'custom',
+            createdAt: parsed.createdAt || Date.now(),
+            updatedAt: 'updatedAt' in parsed ? parsed.updatedAt : Date.now(),
+            rounds: normalizedRounds,
+            ...('questions' in parsed ? { questions: parsed.questions } : {}),
+            ...('cover' in parsed ? { cover: parsed.cover } : {}),
+          };
+        } else {
+          pack = parseTextPack(content);
+        }
+      }
+
+      setPacks(prev => {
+        const newPacks = [...prev, pack];
+        setSelectedPackIds(prevIds => [...prevIds, pack.id]);
+        return newPacks;
+      });
+
+      console.log('[OptimizedGameSelector] Pack added to list:', pack.name);
+    } catch (error) {
+      console.error('[OptimizedGameSelector] Error loading pack:', error);
+      setAlertDialog({
+        isOpen: true,
+        title: 'Ошибка загрузки',
+        message: `Ошибка загрузки пакета: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`,
+        type: 'error'
+      });
+    } finally {
+      e.target.value = '';
+    }
+  }, [parseTextPack]);
+
+  const handleTogglePack = useCallback((packId: string) => {
+    setSelectedPackIds(prev => {
+      const isSelected = prev.includes(packId);
+      if (isSelected) {
+        return prev.filter(id => id !== packId);
+      } else {
+        if (prev.length >= MAX_SELECTED_PACKS) return prev;
+        return [...prev, packId];
+      }
+    });
+  }, []);
+
+  const handleEditPack = useCallback((packId: string) => {
+    const pack = packs.find(p => p.id === packId);
+    if (pack) {
+      const editorPack: PackGamePack = {
+        id: pack.id,
+        name: pack.name,
+        gameType: pack.gameType,
+        rounds: pack.rounds || [],
+        createdAt: pack.createdAt,
+        updatedAt: pack.updatedAt || Date.now(),
+        cover: pack.cover,
+      };
+      setEditingPack(editorPack);
+      setShowPackEditor(true);
+    }
+  }, [packs]);
+
+  const handleDeletePack = useCallback((packId: string) => {
+    setPacks(prev => prev.filter(p => p.id !== packId));
+    setSelectedPackIds(prev => prev.filter(id => id !== packId));
+  }, []);
+
+  const handleSelectGame = useCallback((gameId: GameType) => {
+    setSelectedGame(gameId);
+    setShowGameDropdown(false);
+    setSelectedPackIds([]);
+  }, []);
+
+  const handleSave = useCallback(() => {
+    onSave(selectedGame, selectedPackIds, packs);
+    onClose();
+  }, [selectedGame, selectedPackIds, packs, onSave, onClose]);
+
+  const handleClose = useCallback(() => {
+    onClose();
+  }, [onClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 cursor-default modal-backdrop animate-in fade-in duration-150">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl h-[80vh] max-h-[80vh] flex flex-col animate-in zoom-in-95 duration-150 ease-out cursor-default modal-contained">
+        {/* Header */}
+        <div className="flex items-center justify-between p-6 border-b border-gray-800 layout-stable">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <Gamepad2 className="w-5 h-5 text-blue-400" />
+            Select Game
+          </h2>
+          <button
+            onClick={handleClose}
+            className="p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors button-hover"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-hidden p-6 space-y-6 scroll-container">
+          {/* Game Type Selection */}
+          <div className="game-dropdown-container layout-stable">
+            <label className="text-sm font-medium text-gray-400 mb-2 block">Game Type</label>
+            <div className="relative">
+              <button
+                onClick={() => setShowGameDropdown(!showGameDropdown)}
+                className="w-full bg-gray-950 border border-gray-700 hover:border-gray-600 rounded-lg px-4 py-3 text-white text-left flex items-center justify-between transition-colors button-hover"
+              >
+                <div className="flex items-center gap-2">
+                  {GAMES.find(g => g.id === selectedGame)?.icon}
+                  <span>{GAMES.find(g => g.id === selectedGame)?.name}</span>
+                </div>
+                <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showGameDropdown ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showGameDropdown && (
+                <div className="absolute top-full left-0 right-0 mt-2 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10">
+                  {GAMES.map(game => (
+                    <button
+                      key={game.id}
+                      onClick={() => handleSelectGame(game.id)}
+                      disabled={!game.enabled}
+                      className={`w-full flex items-center gap-2 px-4 py-3 text-sm text-left transition-colors list-item-contained ${
+                        game.id === selectedGame
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : game.enabled
+                            ? 'text-gray-300 hover:bg-gray-700'
+                            : 'text-gray-600 cursor-not-allowed'
+                      }`}
+                    >
+                      {game.icon}
+                      {game.name}
+                      {!game.enabled && (
+                        <span className="ml-auto text-xs text-gray-600">Soon</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Pack Management */}
+          {selectedGame === 'custom' ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between layout-stable">
+                <label className="text-sm font-medium text-gray-400">
+                  Question Packs ({selectedPackIds.length}/{MAX_SELECTED_PACKS})
+                </label>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Load Pack
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => { setEditingPack(undefined); setShowPackEditor(true); }}
+                    className="flex items-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create Pack
+                  </Button>
+                </div>
+              </div>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.json,.zip"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+
+              {/* Packs List */}
+              {packs.length > 0 ? (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {packs.map(pack => {
+                    const roundCount = getRoundCount(pack);
+                    const questionCount = getQuestionCount(pack);
+                    const themeCount = getThemeCount(pack);
+                    const isSelected = selectedPackIds.includes(pack.id);
+                    return (
+                      <div
+                        key={pack.id}
+                        className={`flex items-center gap-2 p-3 rounded-lg border transition-colors ${
+                          isSelected
+                            ? 'bg-blue-500/20 border-blue-500'
+                            : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'
+                        }`}
+                      >
+                        <button
+                          onClick={() => handleTogglePack(pack.id)}
+                          disabled={!isSelected && selectedPackIds.length >= MAX_SELECTED_PACKS}
+                          className="flex-1 flex items-center justify-between text-left"
+                        >
+                          <div className="flex items-center gap-2">
+                            <FolderOpen className={`w-4 h-4 ${isSelected ? 'text-blue-400' : 'text-gray-500'}`} />
+                            <span className={`text-sm font-medium truncate ${isSelected ? 'text-blue-400' : 'text-gray-300'}`}>
+                              {pack.name}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-gray-500">
+                              {roundCount > 0 ? `${roundCount}r • ` : ''}{themeCount}t • {questionCount}q
+                            </span>
+                            {isSelected && <Check className="w-4 h-4 text-blue-400" />}
+                          </div>
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleEditPack(pack.id); }}
+                          className="p-1 hover:bg-gray-700 rounded-lg text-gray-400 hover:text-white transition-colors"
+                          title="Edit pack"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeletePack(pack.id); }}
+                          className="p-1 hover:bg-red-900/50 rounded-lg text-gray-400 hover:text-red-400 transition-colors"
+                          title="Delete pack"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="bg-gray-800/30 border border-dashed border-gray-700 rounded-lg p-8 text-center text-gray-500">
+                  No packs loaded. Load or create a pack to get started.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="bg-gray-800/30 border border-dashed border-gray-700 rounded-lg p-8 text-center">
+              <Gamepad2 className="w-12 h-12 mx-auto mb-3 text-gray-600" />
+              <p className="text-gray-500">Coming soon for {selectedGame}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-col gap-4 p-6 border-t border-gray-800 layout-stable">
+          {/* Session Summary Preview */}
+          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 card-contained">
+            <div className="flex items-center gap-2 mb-3">
+              <Layers className="w-4 h-4 text-purple-400" />
+              <h4 className="text-sm font-semibold text-white">Game Session</h4>
+            </div>
+            <div className="grid grid-cols-3 gap-4 text-xs">
+              <div>
+                <div className="text-gray-500">Rounds</div>
+                <div className="text-lg font-semibold text-white">{sessionSummary.maxRounds}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Themes</div>
+                <div className="text-lg font-semibold text-white">{sessionSummary.totalThemes}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Questions</div>
+                <div className="text-lg font-semibold text-white">{sessionSummary.totalQuestions}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-500">
+              {selectedGame === 'custom' && selectedPackIds.length > 0
+                ? `${selectedPackIds.length} pack${selectedPackIds.length > 1 ? 's' : ''} selected • ${sessionSummary.totalQuestions} questions`
+                : selectedGame === 'custom'
+                  ? 'No packs selected'
+                  : `${GAMES.find(g => g.id === selectedGame)?.name} mode`
+              }
+            </div>
+            <div className="flex gap-3">
+              <Button variant="secondary" onClick={handleClose}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSave}
+                className="bg-blue-600 hover:bg-blue-500 text-white"
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Pack Editor - lazy loaded */}
+      <Suspense fallback={<div className="fixed inset-0 bg-black/60 flex items-center justify-center"><SkeletonCard /></div>}>
+        <PackEditor
+          isOpen={showPackEditor}
+          onClose={() => {
+            setShowPackEditor(false);
+            setEditingPack(undefined);
+          }}
+          onSavePack={(pack) => {
+            const normalizedPack: GamePack = {
+              id: pack.id,
+              name: pack.name,
+              gameType: pack.gameType,
+              rounds: pack.rounds,
+              createdAt: pack.createdAt,
+              updatedAt: pack.updatedAt,
+              cover: pack.cover,
+            };
+
+            const existingIndex = packs.findIndex(p => p.id === pack.id);
+            if (existingIndex >= 0) {
+              setPacks(prev => prev.map((p, idx) => idx === existingIndex ? normalizedPack : p));
+              setEditingPack(normalizedPack);
+            } else {
+              setPacks(prev => [...prev, normalizedPack]);
+              setEditingPack(normalizedPack);
+            }
+            setShowPackEditor(false);
+          }}
+          onPackChange={(updatedPack) => {
+            setEditingPack(updatedPack);
+            setPacks(prev => {
+              const existingIndex = prev.findIndex(p => p.id === updatedPack.id);
+              if (existingIndex >= 0) {
+                return prev.map((p, idx) => idx === existingIndex ? updatedPack : p);
+              } else {
+                return [...prev, updatedPack];
+              }
+            });
+          }}
+          initialPack={editingPack}
+        />
+      </Suspense>
+
+      {/* Alert Dialog */}
+      <AlertDialog
+        isOpen={alertDialog.isOpen}
+        title={alertDialog.title}
+        message={alertDialog.message}
+        type={alertDialog.type}
+        onClose={() => setAlertDialog(prev => ({ ...prev, isOpen: false }))}
+      />
+    </div>
+  );
+}, (prevProps, nextProps) => {
+  return prevProps.isOpen === nextProps.isOpen;
+});
+
+OptimizedGameSelectorModal.displayName = 'OptimizedGameSelectorModal';

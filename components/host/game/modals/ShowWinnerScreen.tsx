@@ -65,7 +65,7 @@ export const ShowWinnerScreen = memo(({
               return (
                 <div
                   key={team.teamId}
-                  className={`flex items-center justify-between p-4 rounded-xl ${
+                  className={`flex items-center justify-between p-4 rounded-lg ${
                     isWinner
                       ? 'bg-yellow-500/30 border-2 border-yellow-400'
                       : 'bg-white/10'

@@ -3,9 +3,10 @@
  * Displays betting interface for super game
  */
 
-import React, { memo, useState } from 'react';
+import React, { useState } from 'react';
 import type { Team } from '../../../types';
 import type { SuperGameBet } from './types';
+import { withSmartMemo } from '../../../utils/memoUtils.tsx';
 
 interface BettingPanelProps {
   teams: Team[];
@@ -14,7 +15,7 @@ interface BettingPanelProps {
   onPlaceBet: (teamId: string, bet: number) => void;
 }
 
-export const BettingPanel = memo(({ teams, bets, maxBet, onPlaceBet }: BettingPanelProps) => {
+export const BettingPanel = withSmartMemo(({ teams, bets, maxBet, onPlaceBet }: BettingPanelProps) => {
   const [editingBet, setEditingBet] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState<string>('');
 
@@ -44,7 +45,7 @@ export const BettingPanel = memo(({ teams, bets, maxBet, onPlaceBet }: BettingPa
   };
 
   return (
-    <div className="bg-gray-900/50 backdrop-blur rounded-xl p-6 border border-yellow-500/30">
+    <div className="bg-gray-900/50 backdrop-blur rounded-lg p-6 border border-yellow-500/30">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-yellow-400">Ставки</h2>
         {maxBet > 0 && (
@@ -111,6 +112,8 @@ export const BettingPanel = memo(({ teams, bets, maxBet, onPlaceBet }: BettingPa
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['teams.length', 'maxBet', 'bets.length'],
+  componentName: 'BettingPanel'
 });
-
-BettingPanel.displayName = 'BettingPanel';

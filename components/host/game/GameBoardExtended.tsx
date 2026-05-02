@@ -99,7 +99,7 @@ export const GameBoardExtended = memo(({
             return (
               <div
                 key={theme.id}
-                className="flex-1 rounded-xl p-3 flex items-center justify-center shadow-lg cursor-default"
+                className="flex-1 rounded-lg p-3 flex items-center justify-center shadow-lg cursor-default"
                 style={{ backgroundColor: themeColor }}
               >
                 <h3 className="font-bold text-center text-2xl leading-tight" style={{ color: themeTextColor }}>
@@ -130,7 +130,7 @@ export const GameBoardExtended = memo(({
                 <div
                   key={questionId}
                   className={`
-                    rounded-xl shadow-md flex items-center justify-center
+                    rounded-lg shadow-md flex items-center justify-center
                     ${answered
                       ? 'cursor-not-allowed'
                       : 'cursor-pointer'

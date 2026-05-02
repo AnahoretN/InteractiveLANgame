@@ -1,0 +1,239 @@
+/**
+ * Performance Optimizations CSS
+ *
+ * Contains CSS containment, will-change hints, and other performance optimizations
+ */
+
+/* CSS Containment - optimize rendering by isolating components */
+.contain-layout {
+  contain: layout;
+}
+
+.contain-paint {
+  contain: paint;
+}
+
+.contain-size {
+  contain: size;
+}
+
+.contain-style {
+  contain: style;
+}
+
+.contain-strict {
+  contain: strict;
+}
+
+.contain-content {
+  contain: content;
+}
+
+/* Full containment for cards and list items */
+.card-contained {
+  contain: layout style paint;
+}
+
+.list-item-contained {
+  contain: layout style;
+  content-visibility: auto;
+}
+
+.modal-contained {
+  contain: layout style;
+}
+
+/* Will-change hints for animated elements */
+.will-change-transform {
+  will-change: transform;
+}
+
+.will-change-opacity {
+  will-change: opacity;
+}
+
+.will-change-scroll {
+  will-change: scroll-position;
+}
+
+/* GPU acceleration for transforms */
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Optimized images */
+.optimized-image {
+  content-visibility: auto;
+}
+
+/* Prevent layout thrashing */
+.layout-stable {
+  contain: layout;
+}
+
+/* Smooth scrolling */
+.smooth-scroll {
+  scroll-behavior: smooth;
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Skeleton shimmer animation */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(
+    90deg,
+    rgba(55, 65, 81, 0.5) 0%,
+    rgba(75, 85, 99, 0.5) 50%,
+    rgba(55, 65, 81, 0.5) 100%
+  );
+  background-size: 1000px 100%;
+}
+
+/* Double flash animation for buzzing */
+@keyframes double-flash {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.animate-double-flash {
+  animation: double-flash 0.5s ease-in-out 2;
+}
+
+/* Optimized list rendering */
+.virtualized-list {
+  contain: strict;
+  overflow-anchor: none;
+}
+
+.virtualized-list-item {
+  contain: layout style paint;
+  overflow-anchor: none;
+}
+
+/* Prevent text selection during interactions */
+.user-select-none {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Optimized transitions */
+.fast-transition {
+  transition: all 0.15s ease-out;
+}
+
+.medium-transition {
+  transition: all 0.3s ease-out;
+}
+
+.slow-transition {
+  transition: all 0.5s ease-out;
+}
+
+/* Content visibility for large components */
+.content-visibility-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
+}
+
+/* Modal optimizations */
+.modal-backdrop {
+  contain: strict;
+}
+
+.modal-content {
+  contain: layout style paint;
+}
+
+/* Button hover optimizations */
+.button-hover {
+  contain: layout style paint;
+  will-change: background-color, transform;
+}
+
+/* Card hover optimizations */
+.card-hover {
+  contain: layout style paint;
+  will-change: transform, box-shadow;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Loading states */
+.loading-skeleton {
+  contain: layout style paint;
+  pointer-events: none;
+}
+
+/* Performance monitoring utilities */
+.perf-mark {
+  contain: strict;
+}
+
+/* Optimized scroll containers */
+.scroll-container {
+  overflow: auto;
+  contain: strict;
+  overscroll-behavior: contain;
+}
+
+/* Text truncation with performance */
+.text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  contain: layout style paint;
+}
+
+/* Multi-line text truncation */
+.text-truncate-multiline {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  contain: layout style paint;
+}
+
+/* Clash card animation - yellow to green, 100% to 115% scale */
+@keyframes clash-animate {
+  0% {
+    background-color: rgba(234, 179, 8, 0.3); /* yellow-500/30 */
+    border-color: rgba(250, 204, 21, 1); /* yellow-400 */
+    transform: scale(1);
+  }
+  100% {
+    background-color: rgba(74, 222, 128, 0.4); /* green-500/40 */
+    border-color: rgba(74, 222, 128, 1); /* green-400 */
+    transform: scale(1.15);
+  }
+}
+
+.clash-card {
+  animation: clash-animate var(--clash-duration, 1s) ease-out forwards;
+}

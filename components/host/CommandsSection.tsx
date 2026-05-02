@@ -141,7 +141,7 @@ const CommandsSection = memo(({ commands, onCreateCommand, onRenameCommand, onDe
                   onChange={(e) => setEditingName(e.target.value)}
                   onKeyDown={handleKeyPress}
                   onBlur={handleSaveEdit}
-                  className="flex-1 bg-gray-900 border border-blue-500 rounded px-2 py-1 text-sm text-white placeholder-gray-500 focus:outline-none"
+                  className="flex-1 bg-gray-900 border border-blue-500 rounded-lg px-2 py-1 text-sm text-white placeholder-gray-500 focus:outline-none"
                   autoFocus
                   maxLength={20}
                   onClick={(e) => e.stopPropagation()}
@@ -161,18 +161,25 @@ const CommandsSection = memo(({ commands, onCreateCommand, onRenameCommand, onDe
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    const closeDialog = () => setConfirmDialog({
+                      isOpen: false,
+                      title: '',
+                      message: '',
+                      type: 'danger',
+                      onConfirm: () => {}
+                    });
                     setConfirmDialog({
                       isOpen: true,
                       title: 'Delete Room',
                       message: `Are you sure you want to delete room "${command.name}"?`,
                       type: 'danger',
                       onConfirm: () => {
+                        closeDialog();
                         onDeleteCommand(command.id);
-                        setConfirmDialog(prev => ({ ...prev, isOpen: false }));
                       }
                     });
                   }}
-                  className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors opacity-0 group-hover:opacity-100"
+                  className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                   title="Delete room"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

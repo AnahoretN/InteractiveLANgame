@@ -133,7 +133,7 @@ export const TeamManager = memo(({
                         }
                       }}
                       onBlur={() => handleRenameSubmit(team.id)}
-                      className="flex-1 bg-gray-900 border border-blue-500 rounded px-2 py-0.5 text-sm text-white focus:outline-none"
+                      className="flex-1 bg-gray-900 border border-blue-500 rounded-lg px-2 py-0.5 text-sm text-white focus:outline-none"
                       autoFocus
                       onClick={(e) => e.stopPropagation()}
                     />
@@ -147,25 +147,32 @@ export const TeamManager = memo(({
                             onSetEditingTeamId(team.id);
                             onSetEditingTeamName(team.name);
                           }}
-                          className="text-gray-500 hover:text-blue-400 p-1 hover:bg-gray-700 rounded transition-colors"
+                          className="text-gray-500 hover:text-blue-400 p-1 hover:bg-gray-700 rounded-lg transition-colors"
                           title="Rename team"
                         >
                           <Settings className="w-3 h-3" />
                         </button>
                         <button
                           onClick={() => {
+                            const closeDialog = () => setConfirmDialog({
+                              isOpen: false,
+                              title: '',
+                              message: '',
+                              type: 'danger',
+                              onConfirm: () => {}
+                            });
                             setConfirmDialog({
                               isOpen: true,
                               title: 'Delete Team',
                               message: `Are you sure you want to delete team "${team.name}"?`,
                               type: 'danger',
                               onConfirm: () => {
+                                closeDialog();
                                 onDeleteTeam(team.id);
-                                setConfirmDialog(prev => ({ ...prev, isOpen: false }));
                               }
                             });
                           }}
-                          className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors"
+                          className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded-lg transition-colors"
                           title="Delete team"
                         >
                           <Trash2 className="w-3 h-3" />
@@ -271,7 +278,7 @@ const ClientItem = memo(({ client, buzzed, isDragging, onDragStart, onDragEnd, o
           </div>
         )}
       </div>
-      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded transition-colors">
+      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded-lg transition-colors">
         <Trash2 className="w-3.5 h-3.5" />
       </button>
     </div>

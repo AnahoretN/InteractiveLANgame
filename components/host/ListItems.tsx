@@ -46,7 +46,7 @@ export const ClientListItem = memo<ClientListItemProps>(({
       draggable
       onDragStart={() => onDragStart(client.id)}
       onDragEnd={onDragEnd}
-      className={`flex items-center justify-between p-2.5 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
+      className={`flex items-center justify-between p-2.5 rounded-lg ${isDragging ? 'cursor-move' : ''} ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''}`}
     >
       <div className="flex items-center gap-2.5">
         {isDragging && <GripVertical className="w-5 h-5 text-gray-600" />}
@@ -65,7 +65,7 @@ export const ClientListItem = memo<ClientListItemProps>(({
           </div>
         )}
       </div>
-      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors">
+      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded-lg transition-colors">
         <Trash2 className="w-4 h-4" />
       </button>
     </div>
@@ -98,7 +98,7 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
   const stale = isStale(client.lastSeen);
 
   return (
-    <div className={`flex items-center justify-between p-2.5 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'} ${isBuzzing ? 'ring-2 ring-white/70' : hasBuzzed ? 'ring-2 ring-blue-400/50' : ''}`}>
+    <div className={`flex items-center justify-between p-2.5 rounded-lg ${stale ? 'bg-yellow-500/10 opacity-60' : 'bg-gray-900/50'}`}>
       <div className="flex items-center gap-2.5">
         <div className="w-6 h-6 rounded-full bg-blue-500/80 flex items-center justify-center text-[10px] font-bold text-white">
           {typeof client.name === 'string' && client.name.length > 0 ? client.name.charAt(0).toUpperCase() : '?'}
@@ -115,7 +115,7 @@ export const SimpleClientItem = memo<SimpleClientItemProps>(({ client, isStale, 
           </div>
         )}
       </div>
-      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors">
+      <button onClick={() => onRemove(client.id)} className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded-lg transition-colors">
         <Trash2 className="w-4 h-4" />
       </button>
     </div>
@@ -217,7 +217,7 @@ export const TeamListItem = memo<TeamListItemProps>(({
               }
               onEditingIdSet(null);
             }}
-            className="flex-1 bg-gray-900 border border-blue-500 rounded px-2.5 py-1 text-base text-white focus:outline-none"
+            className="flex-1 bg-gray-900 border border-blue-500 rounded-lg px-2.5 py-1 text-base text-white focus:outline-none"
             autoFocus
             onClick={(e) => e.stopPropagation()}
           />
@@ -228,14 +228,14 @@ export const TeamListItem = memo<TeamListItemProps>(({
             <div className="ml-auto flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 onClick={onEditStart}
-                className="text-gray-500 hover:text-blue-400 p-1.5 hover:bg-gray-700 rounded transition-colors"
+                className="text-gray-500 hover:text-blue-400 p-1.5 hover:bg-gray-700 rounded-lg transition-colors"
                 title="Rename team"
               >
                 <Settings className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={onDelete}
-                className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded transition-colors"
+                className="text-gray-500 hover:text-red-400 p-1.5 hover:bg-gray-700 rounded-lg transition-colors"
                 title="Delete team"
               >
                 <Trash2 className="w-3.5 h-3.5" />

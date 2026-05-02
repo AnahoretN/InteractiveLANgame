@@ -75,7 +75,7 @@ export const SuperGameRound = memo(({
                     {superGameAnswers.map((answer) => (
                       <div
                         key={answer.teamId}
-                        className={`p-4 rounded-xl border-2 ${
+                        className={`p-4 rounded-lg border-2 ${
                           answer.revealed
                             ? 'bg-white text-gray-900 border-white'
                             : 'bg-gray-800 border-gray-700'
@@ -99,7 +99,7 @@ export const SuperGameRound = memo(({
               <button
                 key={theme.id}
                 onClick={() => onThemeSelect(theme.id)}
-                className="bg-gray-900/80 backdrop-blur rounded-xl p-6 border-2 border-yellow-500/30 hover:border-yellow-500 hover:bg-gray-800 transition-all group"
+                className="bg-gray-900/80 backdrop-blur rounded-lg p-6 border-2 border-yellow-500/30 hover:border-yellow-500 hover:bg-gray-800 transition-all group"
               >
                 <h3 className="text-xl font-bold text-yellow-400 group-hover:text-yellow-300 transition-colors">
                   {theme.name}
@@ -111,7 +111,7 @@ export const SuperGameRound = memo(({
 
         {/* Bets display */}
         {superGameBets.length > 0 && (
-          <div className="mt-8 bg-gray-900/60 rounded-xl p-6">
+          <div className="mt-8 bg-gray-900/60 rounded-lg p-6">
             <h3 className="text-lg font-semibold mb-4 text-gray-300">Ставки:</h3>
             <div className="grid grid-cols-4 gap-3">
               {superGameBets.map((bet) => (

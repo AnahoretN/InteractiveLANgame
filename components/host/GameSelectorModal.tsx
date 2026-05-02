@@ -52,6 +52,15 @@ export interface Question {
   };
   timeLimit?: number;
   points?: number;
+  hint?: {
+    text?: string;
+    media?: {
+      type: 'image' | 'video' | 'audio' | 'youtube';
+      url?: string;
+    };
+    answers?: string[];
+    correctAnswer?: number;
+  };
 }
 
 interface GameSelectorModalProps {
@@ -818,14 +827,14 @@ export const GameSelectorModal = memo(({
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleEditPack(pack.id); }}
-                          className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors"
+                          className="p-1 hover:bg-gray-700 rounded-lg text-gray-400 hover:text-white transition-colors"
                           title="Edit pack"
                         >
                           <FileText className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeletePack(pack.id); }}
-                          className="p-1 hover:bg-red-900/50 rounded text-gray-400 hover:text-red-400 transition-colors"
+                          className="p-1 hover:bg-red-900/50 rounded-lg text-gray-400 hover:text-red-400 transition-colors"
                           title="Delete pack"
                         >
                           <X className="w-3.5 h-3.5" />

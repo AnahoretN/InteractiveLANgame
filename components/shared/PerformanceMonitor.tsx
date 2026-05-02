@@ -175,7 +175,7 @@ export const PerformanceMonitor = memo(({
 
         {/* Tips */}
         {metrics.averageRenderTime > 33 && (
-          <div className="mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-yellow-400 text-[10px]">
+          <div className="mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-400 text-[10px]">
             <Zap className="w-3 h-3 inline mr-1" />
             Consider using React.memo or useMemo
           </div>

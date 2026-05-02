@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { GamePack } from '../GameSelectorModal';
+import type { GamePack } from '../OptimizedGameSelectorModal';
 import type { Round, Theme, Question } from '../PackEditor';
 import type { GameScreen, SuperGameBet, SuperGameAnswer, BuzzerState } from './types';
 

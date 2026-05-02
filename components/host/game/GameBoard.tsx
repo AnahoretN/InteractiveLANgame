@@ -3,9 +3,10 @@
  * Displays the main game board with themes and point cards
  */
 
-import React, { memo } from 'react';
+import React from 'react';
 import type { Round, Theme, Question } from '../PackEditor';
 import { calculateThemeGrid, calculateThemeCardFontSize } from './fontUtils';
+import { withSmartMemo } from '../../../utils/memoUtils.tsx';
 
 interface GameBoardProps {
   round: Round;
@@ -14,7 +15,7 @@ interface GameBoardProps {
   selectedThemeId?: string | null;
 }
 
-export const GameBoard = memo(({
+export const GameBoard = withSmartMemo(({
   round,
   onThemeSelect,
   onQuestionSelect,
@@ -31,11 +32,11 @@ export const GameBoard = memo(({
 
   return (
     <div
-      className="flex items-center justify-center p-8"
+      className="flex items-center justify-center p-8 card-contained"
       style={{ minHeight: '100vh' }}
     >
       <div
-        className="bg-gray-900 rounded-lg shadow-2xl border-2 border-blue-500/50"
+        className="bg-gray-900 rounded-lg shadow-2xl border-2 border-blue-500/50 contain-layout contain-paint"
         style={{
           width: `${gridConfig.width}px`,
           height: `${gridConfig.height}px`,
@@ -87,7 +88,7 @@ export const GameBoard = memo(({
             {theme.questions?.map((question, qIndex) => (
               <div
                 key={`${theme.id}-${qIndex}`}
-                className="bg-gray-800 border border-blue-500/20 p-3 flex items-center justify-center hover:bg-gray-700 transition-colors cursor-pointer"
+                className="bg-gray-800 border border-blue-500/20 p-3 flex items-center justify-center hover:bg-gray-700 transition-colors cursor-pointer list-item-contained"
                 onClick={() => onQuestionSelect(question, theme.id)}
               >
                 <span className="text-blue-400 font-bold text-2xl">
@@ -100,6 +101,8 @@ export const GameBoard = memo(({
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['round.id', 'selectedThemeId'],
+  componentName: 'GameBoard'
 });
-
-GameBoard.displayName = 'GameBoard';

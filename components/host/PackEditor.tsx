@@ -538,14 +538,14 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   }, [initialPack?.id]); // Use ID instead of object reference
 
   // Notify parent of pack changes
-  const notifyPackChange = useCallback((updatedRounds?: Round[]) => {
+  const notifyPackChange = useCallback((updatedRounds?: Round[], packData?: { name?: string; cover?: { type: 'url' | 'file'; value: string } }) => {
     // Don't notify if we're syncing from props (prevents infinite loop)
     if (!onPackChange || isSyncingFromProps.current) return;
 
     const currentPack: GamePack = {
       id: initialPack?.id || generateUUID(),
-      name: packName,
-      ...(packCoverType !== 'none' && packCoverValue ? { cover: { type: packCoverType, value: packCoverValue } } : {}),
+      name: packData?.name ?? packName,
+      ...(packData?.cover ? { cover: packData.cover } : (packCoverType !== 'none' && packCoverValue ? { cover: { type: packCoverType, value: packCoverValue } } : {})),
       gameType: 'custom',
       rounds: updatedRounds || rounds,
       createdAt: initialPack?.createdAt || Date.now(),
@@ -616,8 +616,11 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
             setSelectedRoundId(null);
             setSelectedThemeId(null);
 
-            // Notify parent of loaded pack data
-            notifyPackChange(pack.rounds);
+            // Notify parent of loaded pack data (pass pack data directly to avoid race condition)
+            notifyPackChange(pack.rounds, {
+              name: pack.name,
+              cover: pack.cover
+            });
           } catch (zipError) {
             console.error('❌ Ошибка загрузки ZIP:', zipError);
             setAlertDialog({
@@ -683,8 +686,11 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         setSelectedRoundId(null);
         setSelectedThemeId(null);
 
-        // Notify parent of loaded pack data
-        notifyPackChange(pack.rounds);
+        // Notify parent of loaded pack data (pass pack data directly to avoid race condition)
+        notifyPackChange(pack.rounds, {
+          name: pack.name,
+          cover: pack.cover
+        });
       } catch (error) {
         console.error('❌ Failed to parse pack file:', error);
       }
@@ -692,7 +698,7 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
     reader.readAsText(file);
     // Reset input so same file can be loaded again
     e.target.value = '';
-  }, []);
+  }, [notifyPackChange]);
 
   // Handlers
   const handleSavePack = useCallback(async () => {
@@ -974,13 +980,13 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
                       <div className="flex gap-1">
                         <button
                           onClick={(e) => { e.stopPropagation(); setEditingRound(round); setShowRoundModal(true); }}
-                          className="p-1 hover:bg-gray-700 rounded"
+                          className="p-1 hover:bg-gray-700 rounded-lg"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-gray-400" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteRound(round.id); }}
-                          className="p-1 hover:bg-red-900/50 rounded"
+                          className="p-1 hover:bg-red-900/50 rounded-lg"
                         >
                           <Trash2 className="w-3.5 h-3.5 text-red-400" />
                         </button>
@@ -1024,13 +1030,13 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
                       <div className="flex gap-1">
                         <button
                           onClick={(e) => { e.stopPropagation(); setEditingTheme(theme); setShowThemeModal(true); }}
-                          className="p-1 hover:bg-gray-700 rounded"
+                          className="p-1 hover:bg-gray-700 rounded-lg"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-gray-400" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteTheme(theme.id); }}
-                          className="p-1 hover:bg-red-900/50 rounded"
+                          className="p-1 hover:bg-red-900/50 rounded-lg"
                         >
                           <Trash2 className="w-3.5 h-3.5 text-red-400" />
                         </button>
@@ -1068,13 +1074,13 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
                       <div className="flex gap-1">
                         <button
                           onClick={(e) => { e.stopPropagation(); setEditingQuestion(question); setShowQuestionModal(true); }}
-                          className="p-1 hover:bg-gray-700 rounded"
+                          className="p-1 hover:bg-gray-700 rounded-lg"
                         >
                           <Edit2 className="w-3.5 h-3.5 text-gray-400" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteQuestion(question.id); }}
-                          className="p-1 hover:bg-red-900/50 rounded"
+                          className="p-1 hover:bg-red-900/50 rounded-lg"
                         >
                           <Trash2 className="w-3.5 h-3.5 text-red-400" />
                         </button>
@@ -1123,42 +1129,28 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       />
 
       {/* Pack Settings Modal */}
-      <BaseModal isOpen={showPackSettings} onClose={() => setShowPackSettings(false)} title="Pack Settings">
+      <BaseModal isOpen={showPackSettings} onClose={() => setShowPackSettings(false)} title="Pack Settings" maxWidth="max-w-4xl" customSize={true}>
         <div className="space-y-4">
-          {/* Cover Image */}
-          {packCoverType !== 'none' ? (
-            <FileUpload
-              value={packCoverValue}
-              onChange={(val) => {
-                setPackCoverValue(val);
-                if (val && (packCoverType === 'none' || !packCoverType)) {
-                  setPackCoverType(val.startsWith('data:') ? 'file' : 'url');
-                }
-                setTimeout(() => notifyPackChange(), 0);
-              }}
-              onLocalFile={(file, blobUrl) => {
-                console.log('💾 Pack cover file selected (ZIP system will handle):', file.name);
-                // ZIP система обработает сохранение при сохранении пака
-              }}
-              accept="image/*"
-              label="Pack Cover"
-            />
-          ) : (
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1.5">Pack Cover</label>
-              <button
-                type="button"
-                onClick={() => {
-                  setPackCoverType('url');
-                  setTimeout(() => notifyPackChange(), 0);
-                }}
-                className="w-full py-3 border-2 border-dashed border-gray-700 rounded-lg text-gray-500 hover:border-gray-600 hover:text-gray-400 transition-colors"
-              >
-                + Add Pack Cover
-              </button>
-            </div>
-          )}
-          {packCoverType !== 'none' && (
+          {/* Cover Image - always visible */}
+          <FileUpload
+            value={packCoverValue}
+            onChange={(val) => {
+              setPackCoverValue(val);
+              if (val && (packCoverType === 'none' || !packCoverType)) {
+                setPackCoverType(val.startsWith('data:') ? 'file' : 'url');
+              } else if (!val) {
+                setPackCoverType('none');
+              }
+              setTimeout(() => notifyPackChange(), 0);
+            }}
+            onLocalFile={(file, blobUrl) => {
+              console.log('💾 Pack cover file selected (ZIP system will handle):', file.name);
+              // ZIP система обработает сохранение при сохранении пака
+            }}
+            accept="image/*"
+            label="Pack Cover"
+          />
+          {packCoverValue && (
             <button
               type="button"
               onClick={() => {
@@ -1193,4 +1185,4 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
 PackEditor.displayName = 'PackEditor';
 
 // Re-export types for compatibility
-export type { GamePack, Round, Theme, Question, RoundType } from './packeditor/types';
+export type { GamePack, Round, Theme, Question, QuestionHint, RoundType } from './packeditor/types';

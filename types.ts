@@ -94,6 +94,7 @@ export interface P2PMessage {
   id: string;                // Unique message ID for deduplication
   category: MessageCategory;
   timestamp: number;
+  type?: string;             // Message type discriminator
   senderId: string;
 }
 
@@ -129,11 +130,13 @@ export interface ScoreStateMessage extends P2PMessage {
   };
 }
 
-// STATE: Buzzer state changes
-export interface BuzzerStateMessage extends P2PMessage {
+// STATE: Timer state changes
+export interface TimerStateMessage extends P2PMessage {
   category: MessageCategory.STATE;
-  type: 'BUZZER_STATE';
+  type: 'TIMER_STATE';
   payload: {
+    // Action type: 'config' for initial timer setup, 'pause'/'resume' for pause control
+    action?: 'config' | 'pause' | 'resume' | 'stop';
     active: boolean;
     timerPhase: 'reading' | 'response' | 'complete' | 'inactive';
     readingTimerRemaining: number;
@@ -142,6 +145,10 @@ export interface BuzzerStateMessage extends P2PMessage {
     handicapTeamId?: string;
     buzzQueue?: Array<{ teamId: string; timestamp: number }>;  // Queue of teams that buzzed
     isPaused?: boolean; // Whether the timer is paused by host
+    readingTimeTotal?: number;  // Total reading time for initial config
+    responseTimeTotal?: number; // Total response time for initial config
+    timerBarColor?: string;
+    timerTextColor?: string;
   };
 }
 
@@ -167,6 +174,19 @@ export interface TimerControlMessage extends P2PMessage {
   };
 }
 
+// EVENT: Timer phase switch request from demo screen to host
+// When demo screen's local timer finishes yellow phase, it requests host to switch to green
+export interface TimerPhaseSwitchMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'TIMER_PHASE_SWITCH';
+  payload: {
+    fromPhase: 'reading' | 'response';
+    toPhase: 'reading' | 'response';
+    readingTimerRemaining: number;
+    responseTimerRemaining: number;
+  };
+}
+
 // EVENT: Client buzzed
 export interface BuzzEventMessage extends P2PMessage {
   category: MessageCategory.EVENT;
@@ -177,6 +197,20 @@ export interface BuzzEventMessage extends P2PMessage {
     teamId?: string;
     teamName?: string;
     buzzTime: number;
+  };
+}
+
+// EVENT: Buzz notification for demo screen (visual feedback)
+export interface BuzzEventNotifyMessage extends P2PMessage {
+  category: MessageCategory.EVENT;
+  type: 'BUZZ_EVENT';
+  payload: {
+    clientId: string;
+    clientName: string;
+    teamId?: string;
+    teamName?: string;
+    isTeamActive?: boolean; // Whether the team is active (can press BUZZ)
+    buzzTime?: number;
   };
 }
 
@@ -314,6 +348,54 @@ export interface StateSyncRequestMessage extends P2PMessage {
   payload: {};
 }
 
+// SYNC: State delta message (contains only changes since last version)
+export interface StateDeltaMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'STATE_DELTA';
+  payload: {
+    version: number;
+    previousVersion: number;
+    changes: Array<{
+      type: string;
+      [key: string]: any;
+    }>;
+  };
+}
+
+// SYNC: State delta v2 - uses StateChange types from CentralStateManager
+export interface StateDeltaV2Message extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'STATE_DELTA_V2';
+  payload: {
+    version: number;
+    previousVersion: number;
+    timestamp: number;
+    changes: Array<{
+      type: 'session_start' | 'session_end' | 'screen_change' | 'team_added' | 'team_updated' |
+            'team_removed' | 'score_changed' | 'client_connected' | 'client_disconnected' |
+            'client_joined_team' | 'question_opened' | 'question_closed' | 'answer_revealed' |
+            'buzzer_state_changed' | 'timer_control' | 'team_states_changed' | 'super_game_phase_changed' |
+            'super_game_bet_placed' | 'super_game_answer_submitted' | 'super_game_answers_revealed' |
+            'board_updated' | 'round_changed' | 'pack_loaded';
+      [key: string]: any;
+    }>;
+    fullState?: any; // Included for major transitions
+  };
+}
+
+// STATE: Timer display update for demo screen
+export interface TimerDisplayMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'TIMER_DISPLAY';
+  payload: {
+    phase: 'reading' | 'response' | 'complete' | 'inactive';
+    remaining: number;
+    total: number;
+    isPaused: boolean;
+    color?: string;
+  };
+}
+
 // CONTROL: Moderator control actions
 export interface ModeratorActionMessage extends P2PMessage {
   category: MessageCategory.CONTROL;
@@ -351,6 +433,44 @@ export interface MediaRequestMessage extends P2PMessage {
   };
 }
 
+// SYNC: Query media readiness from demo screen
+export interface MediaReadinessQueryMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'MEDIA_READINESS_QUERY';
+  payload: {
+    mediaIds: string[];
+    queryId: string;
+    timeout?: number;
+  };
+}
+
+// SYNC: Response to media readiness query
+export interface MediaReadinessResponseMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'MEDIA_READINESS_RESPONSE';
+  payload: {
+    queryId: string;
+    readinessStatus: Record<string, boolean>;
+    timestamp: number;
+  };
+}
+
+// SYNC: Unsolicited media status report from demo screen
+export interface MediaStatusReportMessage extends P2PMessage {
+  category: MessageCategory.SYNC;
+  type: 'MEDIA_STATUS_REPORT';
+  payload: {
+    reports: Array<{
+      mediaId: string;
+      isReady: boolean;
+      status?: 'pending' | 'downloading' | 'assembling' | 'completed' | 'error';
+      progress?: number;
+      url?: string;
+    }>;
+    timestamp: number;
+  };
+}
+
 // Union type for all P2P messages
 export type P2PSMessage =
   | TeamStateMessage
@@ -359,6 +479,7 @@ export type P2PSMessage =
   | BuzzerStateMessage
   | TimerControlMessage
   | BuzzEventMessage
+  | BuzzEventNotifyMessage
   | SuperGameBetMessage
   | SuperGameAnswerMessage
   | StateSyncMessage
@@ -372,9 +493,15 @@ export type P2PSMessage =
   | CommandsListMessage
   | GetCommandsMessage
   | StateSyncRequestMessage
+  | StateDeltaMessage
+  | StateDeltaV2Message
+  | TimerDisplayMessage
   | ModeratorActionMessage
   | MediaTransferMessage
-  | MediaRequestMessage;
+  | MediaRequestMessage
+  | MediaReadinessQueryMessage
+  | MediaReadinessResponseMessage
+  | MediaStatusReportMessage;
 
 // Message handler type
 export type MessageHandler = (message: P2PSMessage, peerId: string) => void;

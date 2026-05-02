@@ -75,7 +75,7 @@ export const QuestionEditor = memo(({
           {!isEditing ? (
             <div
               onClick={toggleEditing}
-              className="cursor-pointer py-2 px-3 rounded hover:bg-gray-800 transition-colors"
+              className="cursor-pointer py-2 px-3 rounded-lg hover:bg-gray-800 transition-colors"
             >
               <p className="text-white text-lg">{question.text || 'Нажмите для редактирования'}</p>
             </div>
@@ -91,7 +91,7 @@ export const QuestionEditor = memo(({
                   toggleEditing();
                 }
               }}
-              className="w-full bg-gray-800 text-white px-3 py-2 rounded border border-blue-500 focus:outline-none"
+              className="w-full bg-gray-800 text-white px-3 py-2 rounded-lg border border-blue-500 focus:outline-none"
               placeholder="Введите вопрос..."
             />
           )}
@@ -120,7 +120,7 @@ export const QuestionEditor = memo(({
                     type="text"
                     value={answer}
                     onChange={(e) => handleAnswerChange(index, e.target.value)}
-                    className="flex-1 bg-gray-800 text-white px-3 py-1 rounded text-sm focus:outline-none"
+                    className="flex-1 bg-gray-800 text-white px-3 py-1 rounded-lg text-sm focus:outline-none"
                     placeholder={`Ответ ${index + 1}`}
                   />
                 </div>

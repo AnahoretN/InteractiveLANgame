@@ -1,194 +1,93 @@
 /**
  * Media Manager
- * Умное управление медиа файлами без хранения в JSON
+ *
+ * Backward compatibility layer - re-exports from new modular structure
+ * @deprecated Import directly from 'utils/media' instead
  */
 
 import type { LocalFileInfo } from '../components/host/packeditor/types';
 import type { GamePack } from '../components/host/packeditor/types';
+import { errorHandler, handleMediaError, safeAsync } from './errorHandler';
 
-// IndexedDB база данных для хранения медиа файлов
-const DB_NAME = 'GamePackMedia';
-const DB_VERSION = 1;
-const STORE_NAME = 'mediaFiles';
+// Re-export everything from the new media module
+export {
+  // Storage
+  mediaStorage,
+  // Cache
+  MediaFileCache,
+  // Blob URL tracking
+  BlobUrlTracker,
+  // Bulk operations
+  bulkSaveMediaFiles,
+  bulkLoadMediaFiles,
+  bulkDeleteMediaFiles,
+  bulkLoadPackMedia,
+  bulkTransferMediaFiles,
+  // Prefetch
+  prefetchNextQuestionsMedia,
+  prefetchMediaFiles,
+  bulkPrefetchMediaFiles,
+  // Utilities
+  generateMediaId,
+  setGlobalCache
+} from './media';
 
-let db: IDBDatabase | null = null;
+export type {
+  MediaFileRecord,
+  StorageStats,
+  CacheEntry,
+  CacheStats,
+  MediaFileCacheOptions,
+  BlobUrlTrackerStats,
+  BlobUrlTrackerOptions,
+  BulkOperationResult,
+  PrefetchOptions
+} from './media';
+
+// Import specific classes and utilities for backward compatibility
+import { MediaFileCache as NewMediaFileCache } from './media';
+import { BlobUrlTracker as NewBlobUrlTracker } from './media';
+import { mediaStorage as newMediaStorage } from './media';
+import { bulkLoadMediaFiles as newBulkLoadMediaFiles } from './media';
+import { getGlobalCache } from './media';
+
+// Global cache instance (maintained for backward compatibility)
+const mediaFileCache = new NewMediaFileCache();
+
+// Global blob URL tracker (maintained for backward compatibility)
+const blobUrlTracker = new NewBlobUrlTracker();
 
 /**
- * Инициализация IndexedDB
+ * Save media file with error handling
  */
-async function initDB(): Promise<IDBDatabase> {
-  if (db) return db;
-
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      db = request.result;
-      resolve(db);
-    };
-
-    request.onupgradeneeded = (event) => {
-      const database = (event.target as IDBOpenDBRequest).result as IDBDatabase;
-
-      // Создаем object store для медиа файлов
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        const objectStore = database.createObjectStore(STORE_NAME, { keyPath: 'id' });
-        objectStore.createIndex('packId', 'packId', { unique: false });
-      }
-    };
-  });
-}
-
-/**
- * Сохраняет файл в IndexedDB
- */
-export async function saveMediaFile(
+export const saveMediaFile = safeAsync(async (
   packId: string,
   mediaId: string,
   file: File
-): Promise<string> {
-  try {
-    const database = await initDB();
-
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction([STORE_NAME], 'readwrite');
-      const objectStore = transaction.objectStore(STORE_NAME);
-
-      const mediaRecord = {
-        id: mediaId,
-        packId: packId,
-        file: file,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-        lastModified: file.lastModified,
-        createdAt: Date.now()
-      };
-
-      const request = objectStore.put(mediaRecord);
-
-      request.onsuccess = () => {
-        console.log('💾 Медиа файл сохранен в IndexedDB:', file.name);
-        resolve(mediaId);
-      };
-
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    console.error('❌ Ошибка сохранения в IndexedDB:', error);
-    throw error;
-  }
-}
+): Promise<string> => {
+  return newMediaStorage.save(packId, mediaId, file);
+}, 'saveMediaFile');
 
 /**
- * Получает файл из IndexedDB
+ * Get media file with caching
  */
 export async function getMediaFile(mediaId: string): Promise<File | null> {
-  try {
-    const database = await initDB();
-
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction([STORE_NAME], 'readonly');
-      const objectStore = transaction.objectStore(STORE_NAME);
-      const request = objectStore.get(mediaId);
-
-      request.onsuccess = () => {
-        const record = request.result;
-        if (record && record.file) {
-          console.log('✅ Медиа файл получен из IndexedDB:', record.fileName);
-          resolve(record.file);
-        } else {
-          resolve(null);
-        }
-      };
-
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    console.error('❌ Ошибка получения из IndexedDB:', error);
-    return null;
-  }
+  return mediaFileCache.get(mediaId, async (id: string) => {
+    return newMediaStorage.get(id);
+  });
 }
 
 /**
- * Удаляет все медиа файлы для пакета
+ * Delete all media files for a pack
  */
 export async function deletePackMedia(packId: string): Promise<void> {
-  try {
-    const database = await initDB();
-
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction([STORE_NAME], 'readwrite');
-      const objectStore = transaction.objectStore(STORE_NAME);
-      const index = objectStore.index('packId');
-      const request = index.openCursor(IDBKeyRange.only(packId));
-
-      request.onsuccess = (event) => {
-        const cursor = (event.target as IDBRequest).result;
-        if (cursor) {
-          cursor.delete();
-          cursor.continue();
-        } else {
-          console.log('🗑️ Все медиа файлы пакета удалены:', packId);
-          resolve();
-        }
-      };
-
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    console.error('❌ Ошибка удаления медиа файлов:', error);
-  }
+  return newMediaStorage.deletePack(packId);
 }
 
 /**
- * Генерирует уникальный ID для медиа файла
+ * Restore blob URL from storage
  */
-export function generateMediaId(): string {
-  return `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
-
-/**
- * Создает blob URL с сохранением в IndexedDB
- */
-export async function createBlobUrlWithStorage(
-  packId: string,
-  file: File
-): Promise<{
-  blobUrl: string;
-  mediaId: string;
-  localFileInfo: LocalFileInfo;
-}> {
-  const mediaId = generateMediaId();
-  const blobUrl = URL.createObjectURL(file);
-
-  // Сохраняем файл в IndexedDB
-  await saveMediaFile(packId, mediaId, file);
-
-  const localFileInfo: LocalFileInfo = {
-    fileName: file.name,
-    fileSize: file.size,
-    fileType: file.type,
-    lastModified: file.lastModified,
-    mediaId: mediaId // ID для получения из IndexedDB
-  };
-
-  console.log('🔗 Создан blob URL с сохранением в IndexedDB:', {
-    fileName: file.name,
-    mediaId: mediaId,
-    blobUrl: blobUrl.slice(0, 50) + '...'
-  });
-
-  return { blobUrl, mediaId, localFileInfo };
-}
-
-/**
- * Восстанавливает blob URL из IndexedDB
- */
-export async function restoreBlobFromStorage(
-  mediaId: string
-): Promise<string | null> {
+export async function restoreBlobFromStorage(mediaId: string): Promise<string | null> {
   try {
     const file = await getMediaFile(mediaId);
     if (!file) {
@@ -206,7 +105,7 @@ export async function restoreBlobFromStorage(
 }
 
 /**
- * Массовое восстановление blob URL для всего пака из IndexedDB
+ * Restore pack blob URLs from storage
  */
 export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<void> {
   console.log('🔄 Восстановление blob URL из IndexedDB для пака:', pack.name);
@@ -214,7 +113,7 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
   let restoredCount = 0;
   let skippedCount = 0;
 
-  // Восстанавливаем обложку пака
+  // Restore pack cover
   if (pack.cover?.value && pack.cover.value.startsWith('blob:')) {
     if (pack.cover.localFile?.mediaId) {
       const restoredUrl = await restoreBlobFromStorage(pack.cover.localFile.mediaId);
@@ -229,7 +128,7 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
     }
   }
 
-  // Восстанавливаем обложки раундов
+  // Restore round covers and media
   for (const round of pack.rounds || []) {
     if (round.cover?.value && round.cover.value.startsWith('blob:')) {
       if (round.cover.localFile?.mediaId) {
@@ -245,10 +144,9 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
       }
     }
 
-    // Восстанавливаем медиа вопросов
     for (const theme of round.themes || []) {
       for (const question of theme.questions || []) {
-        // Вопрос медиа
+        // Question media
         if (question.media?.url && question.media.url.startsWith('blob:')) {
           if (question.media.localFile?.mediaId) {
             const restoredUrl = await restoreBlobFromStorage(question.media.localFile.mediaId);
@@ -263,7 +161,7 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
           }
         }
 
-        // Ответ медиа
+        // Answer media
         if (question.answerMedia?.url && question.answerMedia.url.startsWith('blob:')) {
           if (question.answerMedia.localFile?.mediaId) {
             const restoredUrl = await restoreBlobFromStorage(question.answerMedia.localFile.mediaId);
@@ -283,3 +181,81 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
 
   console.log(`✅ Восстановление завершено: ${restoredCount} восстановлено, ${skippedCount} пропущено`);
 }
+
+/**
+ * Create blob URL with storage
+ */
+export async function createBlobUrlWithStorage(
+  packId: string,
+  file: File
+): Promise<{
+  blobUrl: string;
+  mediaId: string;
+  localFileInfo: LocalFileInfo;
+}> {
+  const mediaId = generateMediaId();
+  const blobUrl = URL.createObjectURL(file);
+
+  blobUrlTracker.track(blobUrl);
+  await saveMediaFile(packId, mediaId, file);
+
+  const localFileInfo: LocalFileInfo = {
+    fileName: file.name,
+    fileSize: file.size,
+    fileType: file.type,
+    lastModified: file.lastModified,
+    mediaId: mediaId
+  };
+
+  console.log('🔗 Создан blob URL с сохранением в IndexedDB:', {
+    fileName: file.name,
+    mediaId: mediaId,
+    blobUrl: blobUrl.slice(0, 50) + '...'
+  });
+
+  return { blobUrl, mediaId, localFileInfo };
+}
+
+/**
+ * Cache management functions
+ */
+export function clearMediaFileCache() {
+  mediaFileCache.clear();
+}
+
+export function getMediaFileCacheStats() {
+  return mediaFileCache.getStats();
+}
+
+export function removeMediaFileFromCache(mediaId: string) {
+  mediaFileCache.delete(mediaId);
+}
+
+/**
+ * Blob URL tracking functions
+ */
+export function trackBlobUrl(url: string): void {
+  blobUrlTracker.track(url);
+}
+
+export function revokeBlobUrl(url: string): void {
+  blobUrlTracker.revoke(url);
+}
+
+export function revokeAllBlobUrls(): void {
+  blobUrlTracker.revokeAll();
+}
+
+export function getBlobUrlStats(): { trackedUrls: number; urls: string[] } {
+  return blobUrlTracker.getStats();
+}
+
+/**
+ * Get enhanced cache statistics
+ */
+export function getEnhancedCacheStats() {
+  return mediaFileCache.getStats();
+}
+
+// Re-export bulk load with proper type
+export { bulkLoadMediaFiles };

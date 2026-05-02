@@ -5,22 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Interactive LAN Game</title>
     <link rel="icon" href="data:image/x-icon;base64,">
+    <script src="https://cdn.tailwindcss.com"></script>
     <script>
-      // Suppress specific warnings to keep console clean
-      const originalWarn = console.warn;
-      const originalLog = console.log;
-      
-      console.warn = (...args) => {
-        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
-        originalWarn.apply(console, args);
-      };
-
-      console.log = (...args) => {
-        if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
-        originalLog.apply(console, args);
+      tailwind.config = {
+        theme: {
+          extend: {
+            borderRadius: {
+              DEFAULT: '2px',
+              lg: '4px',
+              xl: '6px',
+              '2xl': '8px',
+            }
+          }
+        }
       }
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
     <style>
       /* Custom scrollbar for webkit */
       ::-webkit-scrollbar {

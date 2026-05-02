@@ -4,8 +4,8 @@
  * Extended version with timer, buzzer state, and scoring
  */
 
-import React, { memo, useState, useEffect, useRef } from 'react';
-import { Music, Play, Pause, Check, X, SkipForward } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Music, Play, Pause, Check, X, SkipForward, Lightbulb } from 'lucide-react';
 import type { Question, Theme } from '../../PackEditor';
 import type { TeamScore } from '../../../../types';
 import {
@@ -13,6 +13,7 @@ import {
   calculateAnswerFontSizeMobile,
   calculateAnswerFontSizeDesktop
 } from '../fontUtils';
+import { withSmartMemo } from '../../../../utils/memoUtils.tsx';
 
 // TypeScript declarations for YouTube IFrame API
 declare global {
@@ -37,6 +38,7 @@ export interface QuestionModalProps {
   theme: Theme;
   points: number;
   showAnswer: boolean;
+  onShowHint?: (show: boolean) => void;  // Callback to notify parent (demo screen)
   buzzedTeamId: string | null;
   teamScores: TeamScore[];
   onClose: () => void;
@@ -51,15 +53,16 @@ export interface QuestionModalProps {
   handicapDelay: number;
   answeringTeamId?: string | null;  // Team that gets to answer question
   roundName?: string;
-  onBuzzerStateChange?: (state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused: boolean }) => void;
+  onBuzzerStateChange?: (state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused: boolean; readingTimeTotal?: number; responseTimeTotal?: number }) => void;
   onTimerPauseChange?: (isPaused: boolean) => void;  // Notify parent about timer pause state changes
 }
 
-export const QuestionModal = memo(({
+export const QuestionModal = withSmartMemo(({
   question,
   theme,
   points,
   showAnswer,
+  onShowHint,
   buzzedTeamId,
   teamScores,
   onClose: _onClose,
@@ -124,6 +127,7 @@ export const QuestionModal = memo(({
   const [isMediaPaused, setIsMediaPaused] = useState(false);
   const [waitingForFirstMediaPlay, setWaitingForFirstMediaPlay] = useState(false);
   const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+  const [showHint, setShowHint] = useState(false); // Local state for UI
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const youtubeRef = useRef<HTMLIFrameElement>(null);
@@ -137,6 +141,9 @@ export const QuestionModal = memo(({
     readingTime,
     responseWindow
   });
+
+  // Ref to track previous timer phase for detecting changes
+  const prevTimerPhaseRef = useRef<typeof timerPhase>(timerPhase);
 
   // Update refs when values change
   useEffect(() => {
@@ -172,18 +179,21 @@ export const QuestionModal = memo(({
     setIsManuallyPaused(shouldStartPaused);
     setIsMediaPlaying(false);
     setIsMediaPaused(false);
+    setShowHint(false);  // Reset local hint state
+    // Reset hint state via parent callback
+    onShowHint?.(false);
 
     console.log('🔄 Question reset - starting with pause:', shouldStartPaused);
 
-    // Immediately send initial timer state to demo screen for ALL questions
+    // Send initial timer state to demo screen - timer state depends on host
     const initialState = {
-      active: true,
+      active: true,  // Timer is active when question opens
       timerPhase: newReadingTime > 0 ? 'reading' : 'response',
       readingTimerRemaining: newReadingTime,
       responseTimerRemaining: responseWindow,
       handicapActive: false,
       handicapTeamId: undefined,
-      isPaused: shouldStartPaused,
+      isPaused: shouldStartPaused,  // Paused only if has media
       readingTimeTotal: newReadingTime,
       responseTimeTotal: responseWindow
     };
@@ -193,11 +203,18 @@ export const QuestionModal = memo(({
       responseTime: responseWindow,
       isPaused: shouldStartPaused,
       timerPhase: newReadingTime > 0 ? 'reading' : 'response',
+      active: true,
       fullState: initialState
     });
 
     onBuzzerStateChange?.(initialState);
   }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia, onBuzzerStateChange]);
+
+  // Sync showHint with parent (demo screen)
+  useEffect(() => {
+    // Notify parent when showHint changes
+    onShowHint?.(showHint);
+  }, [showHint, onShowHint]);
 
   // Auto-show answer when correct answer is given
   useEffect(() => {
@@ -205,16 +222,39 @@ export const QuestionModal = memo(({
       console.log('✅ Correct answer given - auto-showing answer');
       onShowAnswer();
     }
-  }, [scoreChangeType, showAnswer, onShowAnswer]);
+  }, [scoreChangeType, showAnswer]); // Removed onShowAnswer from dependencies to prevent infinite re-renders
 
   // Single unified timer effect
   useEffect(() => {
     // Stop timer if answer shown
     if (showAnswer) {
+      console.log('[QuestionModal] Answer shown - stopping timer and media');
       setTimerPhase('complete');
       setReadingTimerRemaining(0);
       setResponseTimerRemaining(0);
       setHandicapTimerRemaining(0);
+
+      // Stop all media when answer is shown
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      // Pause YouTube if playing
+      if (mediaType === 'youtube' && youtubeRef.current && (youtubeRef.current as any)._player) {
+        try {
+          const player = (youtubeRef.current as any)._player;
+          if (player.pauseVideo) {
+            player.pauseVideo();
+          }
+        } catch (e) {
+          console.log('Failed to pause YouTube:', e);
+        }
+      }
+
       return;
     }
 
@@ -267,21 +307,25 @@ export const QuestionModal = memo(({
 
   // Immediately send state update when timer phase changes
   useEffect(() => {
+    // Update ref with current phase
+    prevTimerPhaseRef.current = timerPhase;
+
     if (showAnswer || timerPhase === 'complete') return;
 
-    console.log('🔄 Timer phase changed:', timerPhase, '- sending immediate update');
+    console.log('🔄 Timer phase changed:', timerPhase, '- sending immediate update with current values from ref');
+    // Use current values from ref to avoid stale closure issues
     onBuzzerStateChange?.({
       active: true,
       timerPhase: timerPhase,
-      readingTimerRemaining: Math.max(0, readingTimerRemaining),
-      responseTimerRemaining: Math.max(0, responseTimerRemaining),
+      readingTimerRemaining: Math.max(0, timerValuesRef.current.readingTimerRemaining),
+      responseTimerRemaining: Math.max(0, timerValuesRef.current.responseTimerRemaining),
       handicapActive: false,
       handicapTeamId: undefined,
-      isPaused: isManuallyPaused,
-      readingTimeTotal: readingTime,
-      responseTimeTotal: responseWindow
+      isPaused: timerValuesRef.current.isManuallyPaused,
+      readingTimeTotal: timerValuesRef.current.readingTime,
+      responseTimeTotal: timerValuesRef.current.responseWindow
     });
-  }, [timerPhase]); // Only depends on timerPhase - sends update on phase change
+  }, [timerPhase, showAnswer]); // Only depend on phase changes, use ref for current values
 
   // Calculate progress for timer visualization - each timer fills bar independently
   const timerProgress = (() => {
@@ -588,23 +632,36 @@ export const QuestionModal = memo(({
   };
 
   // Calculate dynamic font sizes
-  const currentQuestionText = showAnswer && question.answerText ? question.answerText : question.text;
+  // Priority: Answer text > Hint text > Question text
+  const currentQuestionText = showAnswer && question.answerText
+    ? question.answerText
+    : showHint && question.hint?.text
+      ? question.hint.text
+      : question.text;
   const questionFontSizeMobile = calculateQuestionFontSize(currentQuestionText, 3); // 3rem base for mobile
   const questionFontSizeDesktop = calculateQuestionFontSize(currentQuestionText, 5); // 5rem base for desktop
 
   // Calculate answer font sizes (independent of question font size)
-  const answerFontSizes = question.answers?.map((answer) => ({
+  // Use hint answers if showing hint, otherwise use question answers
+  const currentAnswers = showHint && question.hint?.answers
+    ? question.hint.answers
+    : question.answers;
+  const currentCorrectAnswer = showHint && question.hint?.correctAnswer !== undefined
+    ? question.hint.correctAnswer
+    : question.correctAnswer;
+
+  const answerFontSizes = currentAnswers?.map((answer) => ({
     mobile: calculateAnswerFontSizeMobile(answer),
     desktop: calculateAnswerFontSizeDesktop(answer)
   })) ?? [];
 
   return (
-    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
+    <div className="fixed inset-0 z-[60] flex bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 cursor-default modal-contained" style={{ paddingTop: modalTop, paddingBottom: '20px' }}>
       <style>{`
         @media (min-width: 768px) {
           [data-qm="true"] { font-size: ${questionFontSizeDesktop}rem !important; }
-          ${question.answers?.map((_, idx) => `[data-am-idx="${idx}"] { font-size: ${answerFontSizes[idx]?.desktop || 3.5}rem !important; }`).join(' ')}
-          ${question.answers?.map((_, idx) => `[data-am-idx-noimg="${idx}"] { font-size: ${answerFontSizes[idx]?.desktop || 3.5}rem !important; }`).join(' ')}
+          ${currentAnswers?.map((_, idx) => `[data-am-idx="${idx}"] { font-size: ${answerFontSizes[idx]?.desktop || 3.5}rem !important; }`).join(' ')}
+          ${currentAnswers?.map((_, idx) => `[data-am-idx-noimg="${idx}"] { font-size: ${answerFontSizes[idx]?.desktop || 3.5}rem !important; }`).join(' ')}
         }
       `}</style>
       <div
@@ -614,7 +671,7 @@ export const QuestionModal = memo(({
         {/* Question Section (2/3) */}
         <div className="flex-1 flex flex-col border-b border-gray-700 min-h-0">
           {/* Header - Round name, Theme name, Points and Timer */}
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 flex items-center justify-between">
+          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 flex items-center justify-between card-contained">
             <div className="flex items-center gap-3">
               {roundName && (
                 <>
@@ -626,10 +683,10 @@ export const QuestionModal = memo(({
               {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) && (
                 <div className="text-xl font-bold text-white flex items-center gap-2">
                   {timerPhase === 'reading' && (
-                    <span className="text-yellow-300">{readingTimerRemaining.toFixed(1)}s{isManuallyPaused && <span className="text-red-400 text-sm font-bold ml-2">[PAUSED]</span>}</span>
+                    <span className="text-yellow-300">{readingTimerRemaining.toFixed(1)}s</span>
                   )}
                   {timerPhase === 'response' && (
-                    <span className="text-green-300">{responseTimerRemaining.toFixed(1)}s{isManuallyPaused && <span className="text-red-400 text-sm font-bold ml-2">[PAUSED]</span>}</span>
+                    <span className="text-green-300">{responseTimerRemaining.toFixed(1)}s</span>
                   )}
                 </div>
               )}
@@ -638,22 +695,35 @@ export const QuestionModal = memo(({
           </div>
 
           {/* Timer bar - always visible but inactive when not timing */}
-          <div className="bg-gray-700 w-full overflow-hidden" style={{ height: '16px' }}>
-            {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) ? (
-              <div
-                className={`h-full transition-all duration-100 ease-linear ${getTimerColor()}`}
-                style={{ width: `${timerProgress}%` }}
-              />
-            ) : null}
+          <div className="relative">
+            {/* Pause indicator - centered on the timer bar */}
+            {isManuallyPaused && (
+              <div className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 z-10">
+                <div className="w-8 h-8 bg-white/90 rounded-full flex items-center justify-center shadow-lg">
+                  <div className="flex gap-1">
+                    <div className="w-1 h-3 bg-gray-800 rounded-sm" />
+                    <div className="w-1 h-3 bg-gray-800 rounded-sm" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="bg-gray-700 w-full overflow-hidden contain-layout" style={{ height: '16px' }}>
+              {timerPhase !== 'complete' && ((timerPhase === 'reading' && readingTimerRemaining > 0) || (timerPhase === 'response' && responseTimerRemaining > 0)) ? (
+                <div
+                  className={`h-full transition-all duration-100 ease-linear ${getTimerColor()}`}
+                  style={{ width: `${timerProgress}%` }}
+                />
+              ) : null}
+            </div>
           </div>
 
           {/* Question content */}
-          <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
+          <div className="flex-1 flex items-center justify-center p-6 overflow-hidden contain-layout contain-paint">
             <div className={`w-full h-full flex ${
-              (showAnswer ? hasAnswerMedia : hasQuestionMedia) ? 'items-center justify-start' : 'items-center justify-center'
+              (showAnswer ? hasAnswerMedia : (showHint && question.hint?.media ? true : hasQuestionMedia)) ? 'items-center justify-start' : 'items-center justify-center'
             }`}>
               {/* Media container on left - 50% width when media exists */}
-              {(showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
+              {(showAnswer ? hasAnswerMedia : (showHint && question.hint?.media ? true : hasQuestionMedia)) ? (
                 <div className="w-1/2 h-full flex items-center justify-center p-4">
                   {showAnswer && question.answerMedia ? (
                     // Answer media
@@ -685,6 +755,43 @@ export const QuestionModal = memo(({
                         <div className="w-full h-full flex items-center justify-center">
                           <iframe
                             src={question.answerMedia.url}
+                            className="w-full h-full rounded-lg shadow-xl"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen
+                            title="YouTube video"
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : showHint && question.hint?.media ? (
+                    // Hint media
+                    <>
+                      {question.hint.media.type === 'image' && (
+                        <img
+                          src={question.hint.media.url}
+                          alt="Hint media"
+                          className="w-full h-auto object-contain rounded-lg shadow-xl"
+                        />
+                      )}
+                      {question.hint.media.type === 'video' && (
+                        <video
+                          src={question.hint.media.url}
+                          controls
+                          className="w-full h-auto object-contain rounded-lg shadow-xl"
+                        />
+                      )}
+                      {question.hint.media.type === 'audio' && (
+                        <div className="w-full flex flex-col items-center justify-center gap-3 bg-gray-800 rounded-lg p-4">
+                          <div className="w-20 h-20 bg-gradient-to-br from-yellow-600 to-orange-600 rounded-lg flex items-center justify-center shadow-lg">
+                            <Music className="w-10 h-10 text-white" />
+                          </div>
+                          <audio src={question.hint.media.url} controls className="w-full" />
+                        </div>
+                      )}
+                      {question.hint.media.type === 'youtube' && (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <iframe
+                            src={question.hint.media.url}
                             className="w-full h-full rounded-lg shadow-xl"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             allowFullScreen
@@ -762,14 +869,14 @@ export const QuestionModal = memo(({
 
               {/* Right side: Question text container and answer options container */}
               {/* With image: 50% width each. Without image: 75% width total, centered */}
-              {(showAnswer ? hasAnswerMedia : hasQuestionMedia) ? (
+              {(showAnswer ? hasAnswerMedia : (showHint && question.hint?.media ? true : hasQuestionMedia)) ? (
                 <div className="w-1/2 h-full flex flex-col p-4">
                   {/* Question text container */}
                   <div className={`flex flex-col items-center justify-center p-4 ${
-                    question.answers && question.answers.length > 0 ? 'flex-[19]' : 'flex-[39]'
+                    currentAnswers && currentAnswers.length > 0 ? 'flex-[19]' : 'flex-[39]'
                   }`}>
                     <h2
-                      key={showAnswer ? 'answer' : 'question'}
+                      key={`${showAnswer ? 'answer' : showHint ? 'hint' : 'question'}`}
                       className="font-bold text-white leading-[1.1] text-center"
                       style={{ fontSize: `${questionFontSizeMobile}rem` }}
                       data-qm="true"
@@ -779,10 +886,10 @@ export const QuestionModal = memo(({
                   </div>
 
                   {/* Answer options container */}
-                  {question.answers && question.answers.length > 0 && (
-                    <div className="flex-[19] flex items-center justify-center p-4">
+                  {currentAnswers && currentAnswers.length > 0 && (
+                    <div className="flex-[19] flex items-center justify-center p-4 list-item-contained">
                       <div className="w-full h-full flex flex-wrap items-center justify-center gap-4">
-                        {question.answers.map((answer, idx) => (
+                        {currentAnswers.map((answer, idx) => (
                           <div
                             key={idx}
                             style={{
@@ -790,8 +897,8 @@ export const QuestionModal = memo(({
                               height: '45%',
                               fontSize: `${answerFontSizes[idx]?.mobile || 2}rem`
                             }}
-                            className={`rounded-xl border-4 flex items-center justify-center text-center font-semibold ${
-                              showAnswer && idx === question.correctAnswer
+                            className={`rounded-lg border-4 flex items-center justify-center text-center font-semibold ${
+                              ((showAnswer && idx === question.correctAnswer) || (showHint && idx === question.hint?.correctAnswer))
                                 ? 'bg-green-500/30 border-green-500 text-green-300'
                                 : 'bg-gray-800/50 border-gray-700 text-gray-400'
                             }`}
@@ -809,10 +916,10 @@ export const QuestionModal = memo(({
                 <div className="w-3/4 h-full flex flex-col items-center justify-center p-4">
                   {/* Question text container */}
                   <div className={`w-full flex flex-col items-center justify-center p-4 ${
-                    question.answers && question.answers.length > 0 ? 'flex-[19]' : 'flex-[39]'
+                    currentAnswers && currentAnswers.length > 0 ? 'flex-[19]' : 'flex-[39]'
                   }`}>
                     <h2
-                      key={showAnswer ? 'answer' : 'question'}
+                      key={`${showAnswer ? 'answer' : showHint ? 'hint' : 'question'}`}
                       className="font-bold text-white leading-[1.1] text-center"
                       style={{ fontSize: `${questionFontSizeMobile}rem` }}
                       data-qm="true"
@@ -822,10 +929,10 @@ export const QuestionModal = memo(({
                   </div>
 
                   {/* Answer options container */}
-                  {question.answers && question.answers.length > 0 && (
+                  {currentAnswers && currentAnswers.length > 0 && (
                     <div className="w-full flex-[19] flex items-center justify-center p-4">
                       <div className="w-full h-full flex flex-wrap items-center justify-center gap-4">
-                        {question.answers.map((answer, idx) => (
+                        {currentAnswers.map((answer, idx) => (
                           <div
                             key={idx}
                             style={{
@@ -833,8 +940,8 @@ export const QuestionModal = memo(({
                               height: '45%',
                               fontSize: `${answerFontSizes[idx]?.mobile || 2}rem`
                             }}
-                            className={`rounded-xl border-4 flex items-center justify-center text-center font-semibold ${
-                              showAnswer && idx === question.correctAnswer
+                            className={`rounded-lg border-4 flex items-center justify-center text-center font-semibold ${
+                              ((showAnswer && idx === question.correctAnswer) || (showHint && idx === question.hint?.correctAnswer))
                                 ? 'bg-green-500/30 border-green-500 text-green-300'
                                 : 'bg-gray-800/50 border-gray-700 text-gray-400'
                             }`}
@@ -866,7 +973,7 @@ export const QuestionModal = memo(({
                   }
                   // Immediately send buzzer state update to sync with demo screen
                   onBuzzerStateChange?.({
-                    active: !newState, // Active when not paused
+                    active: true, // Always active when question is open (regardless of pause)
                     timerPhase: timerPhase,
                     readingTimerRemaining: Math.max(0, readingTimerRemaining),
                     responseTimerRemaining: Math.max(0, responseTimerRemaining),
@@ -909,17 +1016,36 @@ export const QuestionModal = memo(({
 
           {/* Right: Control buttons */}
           <div className="flex items-center gap-3">
+            {/* Hint button - only show if question has hint and answer is not shown */}
+            {question.hint && !showAnswer && (
+              <button
+                onClick={() => setShowHint(!showHint)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors font-semibold ${
+                  showHint
+                    ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                    : 'bg-gray-600 hover:bg-gray-700 text-white'
+                }`}
+                title={showHint ? "Скрыть подсказку" : "Показать подсказку"}
+              >
+                <Lightbulb className="w-5 h-5" />
+                <span>Подсказка</span>
+              </button>
+            )}
+
             {/* Show Answer / Close button */}
             <button
               onClick={() => {
+                console.log('[QuestionModal] Show Answer button clicked, current showAnswer:', showAnswer);
                 if (showAnswer) {
+                  console.log('[QuestionModal] Closing question modal');
                   _onClose();
                 } else {
+                  console.log('[QuestionModal] Calling onShowAnswer callback');
                   onShowAnswer?.();
                 }
               }}
               className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors font-semibold"
-              title={showAnswer ? "Закрыть (Escape)" : "Показать ответ (Space)"}
+              title={showAnswer ? "Закрыть (Escape)" : "Ответ (Space)"}
             >
               {showAnswer ? (
                 <>
@@ -929,7 +1055,7 @@ export const QuestionModal = memo(({
               ) : (
                 <>
                   <SkipForward className="w-5 h-5" />
-                  <span>Показать ответ</span>
+                  <span>Ответ</span>
                 </>
               )}
             </button>
@@ -937,8 +1063,7 @@ export const QuestionModal = memo(({
             {/* Correct answer button (=) */}
             <button
               onClick={() => onScoreChange('correct')}
-              disabled={!buzzedTeamId && !answeringTeamId}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold"
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors font-semibold"
               title="Верно (=)"
             >
               <Check className="w-5 h-5" />
@@ -948,8 +1073,7 @@ export const QuestionModal = memo(({
             {/* Wrong answer button (-) */}
             <button
               onClick={() => onScoreChange('wrong')}
-              disabled={!buzzedTeamId && !answeringTeamId}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold"
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors font-semibold"
               title="Не верно (-)"
             >
               <X className="w-5 h-5" />
@@ -960,6 +1084,9 @@ export const QuestionModal = memo(({
       </div>
     </div>
   );
+}, {
+  strategy: 'selective',
+  compareKeys: ['question.id', 'theme.id', 'showAnswer', 'buzzedTeamId'],
+  enablePerfMonitoring: true,
+  componentName: 'QuestionModal'
 });
-
-QuestionModal.displayName = 'QuestionModal';

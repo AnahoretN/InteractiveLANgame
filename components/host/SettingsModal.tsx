@@ -60,13 +60,13 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
         </div>
 
         <div className="space-y-6">
-          {/* Simultaneous Press */}
+          {/* Simultaneous BUZZ */}
           <SettingRow
             icon={<Clock className="w-5 h-5 text-blue-400" />}
-            title="Simultaneous Press"
-            description="If players press the button within this time difference, it counts as simultaneous"
-            enabled={draftSettings.simultaneousPressEnabled}
-            onToggle={() => updateDraft({ simultaneousPressEnabled: !draftSettings.simultaneousPressEnabled })}
+            title="Simultaneous BUZZ"
+            description="If players press BUZZ within this time difference, it counts as simultaneous"
+            enabled={draftSettings.simultaneousBuzzEnabled}
+            onToggle={() => updateDraft({ simultaneousBuzzEnabled: !draftSettings.simultaneousBuzzEnabled })}
             colorClass="blue"
           >
             <div className="mt-4">
@@ -75,17 +75,17 @@ export const SettingsModal = memo(({ isOpen, onClose, settings, onSave, onClearC
                 min={SESSION_CONFIG.SIMULTANEOUS_PRESS_MIN}
                 max={SESSION_CONFIG.SIMULTANEOUS_PRESS_MAX}
                 step="0.05"
-                value={draftSettings.simultaneousPressThreshold}
+                value={draftSettings.simultaneousBuzzThreshold}
                 onChange={(e) => updateDraft({
-                  simultaneousPressThreshold: parseFloat(e.target.value)
+                  simultaneousBuzzThreshold: parseFloat(e.target.value)
                 })}
                 className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={!draftSettings.simultaneousPressEnabled}
+                disabled={!draftSettings.simultaneousBuzzEnabled}
               />
               <div className="flex justify-between text-xs mt-1">
-                <span className={draftSettings.simultaneousPressEnabled ? 'text-gray-500' : 'text-gray-600'}>{SESSION_CONFIG.SIMULTANEOUS_PRESS_MIN}s</span>
-                <span className={`font-medium ${draftSettings.simultaneousPressEnabled ? 'text-blue-400' : 'text-gray-600'}`}>{draftSettings.simultaneousPressThreshold.toFixed(2)}s</span>
-                <span className={draftSettings.simultaneousPressEnabled ? 'text-gray-500' : 'text-gray-600'}>{SESSION_CONFIG.SIMULTANEOUS_PRESS_MAX}s</span>
+                <span className={draftSettings.simultaneousBuzzEnabled ? 'text-gray-500' : 'text-gray-600'}>{SESSION_CONFIG.SIMULTANEOUS_PRESS_MIN}s</span>
+                <span className={`font-medium ${draftSettings.simultaneousBuzzEnabled ? 'text-blue-400' : 'text-gray-600'}`}>{draftSettings.simultaneousBuzzThreshold.toFixed(2)}s</span>
+                <span className={draftSettings.simultaneousBuzzEnabled ? 'text-gray-500' : 'text-gray-600'}>{SESSION_CONFIG.SIMULTANEOUS_PRESS_MAX}s</span>
               </div>
             </div>
           </SettingRow>

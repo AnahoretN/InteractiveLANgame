@@ -96,7 +96,7 @@ export const MobileLobby = memo(({
                       <button
                         key={team.id}
                         onClick={() => handleJoinTeam(team.id, team.name)}
-                        className="w-full bg-gray-800 hover:bg-gray-700 text-white p-4 rounded-xl border border-gray-700 hover:border-blue-500 transition-all flex items-center gap-4"
+                        className="w-full bg-gray-800 hover:bg-gray-700 text-white p-4 rounded-lg border border-gray-700 hover:border-blue-500 transition-all flex items-center gap-4"
                       >
                         <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center">
                           <User className="w-6 h-6 text-blue-400" />
@@ -113,7 +113,7 @@ export const MobileLobby = memo(({
                 {/* Create team button */}
                 <button
                   onClick={() => setShowCreateTeam(true)}
-                  className="w-full py-3 border-2 border-dashed border-gray-600 rounded-xl text-gray-400 hover:border-blue-500 hover:text-white transition-all flex items-center justify-center gap-2"
+                  className="w-full py-3 border-2 border-dashed border-gray-600 rounded-lg text-gray-400 hover:border-blue-500 hover:text-white transition-all flex items-center justify-center gap-2"
                 >
                   <span className="text-2xl">+</span>
                   <span>Создать команду</span>
@@ -124,7 +124,7 @@ export const MobileLobby = memo(({
               {showCreateTeam && (
                 <>
                   <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-                    <div className="bg-gray-900 rounded-xl p-6 max-w-sm w-full">
+                    <div className="bg-gray-900 rounded-lg p-6 max-w-sm w-full">
                       <h3 className="text-lg font-bold text-white mb-4">Новая команда</h3>
                       <input
                         type="text"
