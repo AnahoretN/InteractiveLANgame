@@ -7,7 +7,7 @@ import React, { memo } from 'react';
 import { TeamList } from '../TeamList';
 import type { Team } from '../../types';
 import type { Command } from '../../hooks/useHostStateManager';
-import type { ConnectedClient } from '../ListItems';
+import type { ConnectedClient } from '../OptimizedListItems';
 
 interface LobbyContentProps {
   teams: Team[];

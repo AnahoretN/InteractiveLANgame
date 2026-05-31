@@ -3,8 +3,8 @@
  * Современная замена для confirm() с использованием модального окна
  */
 
-import React from 'react';
-import { AlertCircle, Info, CheckCircle, X } from 'lucide-react';
+import React, { useMemo, useCallback } from 'react';
+import { AlertCircle, Info, CheckCircle } from 'lucide-react';
 import { BaseModal } from './BaseModal';
 
 export interface ConfirmDialogProps {
@@ -18,7 +18,7 @@ export interface ConfirmDialogProps {
   onCancel: () => void;
 }
 
-export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
+export const ConfirmDialog: React.FC<ConfirmDialogProps> = React.memo(({
   isOpen,
   title,
   message,
@@ -30,7 +30,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const getIcon = () => {
+  const icon = useMemo(() => {
     switch (type) {
       case 'danger':
         return <AlertCircle className="w-6 h-6 text-red-400" />;
@@ -41,9 +41,9 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       default:
         return <Info className="w-6 h-6 text-blue-400" />;
     }
-  };
+  }, [type]);
 
-  const getButtonClass = () => {
+  const buttonClass = useMemo(() => {
     switch (type) {
       case 'danger':
         return 'bg-red-600 hover:bg-red-500 text-white';
@@ -54,13 +54,21 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       default:
         return 'bg-blue-600 hover:bg-blue-500 text-white';
     }
-  };
+  }, [type]);
+
+  const handleCancel = useCallback(() => {
+    onCancel();
+  }, [onCancel]);
+
+  const handleConfirm = useCallback(() => {
+    onConfirm();
+  }, [onConfirm]);
 
   return (
-    <BaseModal isOpen={isOpen} onClose={onCancel}>
+    <BaseModal isOpen={isOpen} onClose={handleCancel}>
       <div className="flex items-start gap-4">
         <div className="flex-shrink-0 mt-1">
-          {getIcon()}
+          {icon}
         </div>
 
         <div className="flex-1">
@@ -73,14 +81,14 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
           <div className="flex gap-3 justify-end">
             <button
-              onClick={onCancel}
+              onClick={handleCancel}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
             >
               {cancelText}
             </button>
             <button
-              onClick={onConfirm}
-              className={`px-4 py-2 ${getButtonClass()} rounded-lg transition-colors`}
+              onClick={handleConfirm}
+              className={`px-4 py-2 ${buttonClass} rounded-lg transition-colors`}
             >
               {confirmText}
             </button>
@@ -89,6 +97,6 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       </div>
     </BaseModal>
   );
-};
+});
 
 ConfirmDialog.displayName = 'ConfirmDialog';

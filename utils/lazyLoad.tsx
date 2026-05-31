@@ -166,18 +166,7 @@ export const LazySuperGameAnswersModal = lazyWithCardSkeleton(
   )
 );
 
-// Lazy load GameSelectorModal
-export const LazyGameSelectorModal = lazyWithCardSkeleton(
-  () => import('../components/host/GameSelectorModal').then(m => ({ default: m.GameSelectorModal })),
-  () => (
-    <div className="p-6 bg-gray-900 rounded-lg space-y-4">
-      <SkeletonCard />
-      <SkeletonPackList count={5} />
-    </div>
-  )
-);
-
-// Lazy load OptimizedGameSelectorModal (recommended)
+// Lazy load OptimizedGameSelectorModal
 export const LazyOptimizedGameSelectorModal = lazyWithCardSkeleton(
   () => import('../components/host/OptimizedGameSelectorModal').then(m => ({ default: m.OptimizedGameSelectorModal })),
   () => (

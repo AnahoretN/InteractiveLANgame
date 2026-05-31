@@ -3,7 +3,7 @@
  * Displays team scores during gameplay
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Trophy } from 'lucide-react';
 import { memoComparisons } from '../../../utils/memoUtils.tsx';
 
@@ -20,16 +20,18 @@ interface ScorePanelProps {
 }
 
 export const ScorePanel = memoComparisons.withData(({ teams, currentTeamId }: ScorePanelProps) => {
-  // Sort teams by score (descending)
-  const sortedTeams = [...teams].sort((a, b) => b.score - a.score);
+  // Memoize sorted teams to avoid re-sorting on every render
+  const sortedTeams = useMemo(() => {
+    return [...teams].sort((a, b) => b.score - a.score);
+  }, [teams]);
 
   return (
-    <div className="bg-gray-900/80 backdrop-blur border-b border-gray-700 px-6 py-4">
+    <div className="bg-gray-900/80 backdrop-blur border-b border-gray-700 px-6 py-4 contain-layout">
       <div className="flex items-center gap-6 overflow-x-auto">
         {sortedTeams.map((team) => (
           <div
             key={team.teamId}
-            className={`flex items-center gap-3 px-4 py-2 rounded-lg transition-all ${
+            className={`flex items-center gap-3 px-4 py-2 rounded-lg transition-all card-contained layout-stable ${
               team.teamId === currentTeamId
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30 scale-105'
                 : 'bg-gray-800 text-gray-300'

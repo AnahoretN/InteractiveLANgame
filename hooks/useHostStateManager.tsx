@@ -10,7 +10,7 @@ import { P2PSMessage, BuzzEventMessage, Team, TeamsSyncMessage, CommandsListMess
 import type { P2PHostResult } from './useP2PHost';
 import type { SuperGameBet, SuperGameAnswer } from '../components/host/game/types';
 import { useBuzz } from './useBuzz';
-import type { ConnectedClient } from '../components/host/ListItems';
+import type { ConnectedClient } from '../components/host/OptimizedListItems';
 
 export interface Command {
   id: string;

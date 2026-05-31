@@ -3,7 +3,7 @@
  * Grid display for super game answers
  */
 
-import React from 'react';
+import React, { useCallback } from 'react';
 import type { SuperGameAnswer } from './types';
 import { memoComparisons } from '../../../utils/memoUtils.tsx';
 
@@ -13,13 +13,19 @@ interface AnswersGridProps {
 }
 
 export const AnswersGrid = memoComparisons.withData(({ answers, onReveal }: AnswersGridProps) => {
+  const handleReveal = useCallback((teamId: string, revealed: boolean) => {
+    if (!revealed) {
+      onReveal(teamId);
+    }
+  }, [onReveal]);
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 contain-layout">
       {answers.map((answer) => (
         <div
           key={answer.teamId}
-          onClick={() => !answer.revealed && onReveal(answer.teamId)}
-          className={`bg-gray-800 rounded-lg p-6 border-2 transition-all cursor-pointer ${
+          onClick={() => handleReveal(answer.teamId, answer.revealed)}
+          className={`bg-gray-800 rounded-lg p-6 border-2 transition-all cursor-pointer card-contained layout-stable ${
             answer.revealed
               ? 'border-white bg-white'
               : 'border-gray-700 hover:border-blue-500 hover:bg-gray-750'

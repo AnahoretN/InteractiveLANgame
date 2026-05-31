@@ -3,7 +3,7 @@
  * Современная замена для alert() с использованием модального окна
  */
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { AlertCircle, Info, CheckCircle, X } from 'lucide-react';
 import { BaseModal } from './BaseModal';
 
@@ -16,7 +16,7 @@ export interface AlertDialogProps {
   onClose: () => void;
 }
 
-export const AlertDialog: React.FC<AlertDialogProps> = ({
+export const AlertDialog: React.FC<AlertDialogProps> = React.memo(({
   isOpen,
   title,
   message,
@@ -26,7 +26,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const getIcon = () => {
+  const icon = useMemo(() => {
     switch (type) {
       case 'error':
         return <AlertCircle className="w-6 h-6 text-red-400" />;
@@ -37,9 +37,9 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
       default:
         return <Info className="w-6 h-6 text-blue-400" />;
     }
-  };
+  }, [type]);
 
-  const getBorderColor = () => {
+  const borderColor = useMemo(() => {
     switch (type) {
       case 'error':
         return 'border-red-500';
@@ -50,13 +50,17 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
       default:
         return 'border-blue-500';
     }
-  };
+  }, [type]);
+
+  const handleClose = useCallback(() => {
+    onClose();
+  }, [onClose]);
 
   return (
-    <BaseModal isOpen={isOpen} onClose={onClose}>
-      <div className={`flex items-start gap-4 p-4 border-l-4 ${getBorderColor()} bg-gray-800/50 rounded-r-lg`}>
+    <BaseModal isOpen={isOpen} onClose={handleClose}>
+      <div className={`flex items-start gap-4 p-4 border-l-4 ${borderColor} bg-gray-800/50 rounded-r-lg`}>
         <div className="flex-shrink-0 mt-1">
-          {getIcon()}
+          {icon}
         </div>
 
         <div className="flex-1">
@@ -69,7 +73,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
 
           <div className="flex justify-end">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
             >
               {buttonText}
@@ -78,7 +82,7 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
         </div>
 
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="flex-shrink-0 text-gray-400 hover:text-white transition-colors"
         >
           <X className="w-5 h-5" />
@@ -86,6 +90,6 @@ export const AlertDialog: React.FC<AlertDialogProps> = ({
       </div>
     </BaseModal>
   );
-};
+});
 
 AlertDialog.displayName = 'AlertDialog';

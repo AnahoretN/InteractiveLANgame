@@ -3,7 +3,7 @@
  * Displays betting interface for super game
  */
 
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import type { Team } from '../../../types';
 import type { SuperGameBet } from './types';
 import { withSmartMemo } from '../../../utils/memoUtils.tsx';
@@ -19,50 +19,60 @@ export const BettingPanel = withSmartMemo(({ teams, bets, maxBet, onPlaceBet }: 
   const [editingBet, setEditingBet] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState<string>('');
 
-  // Get bet for a team
-  const getTeamBet = (teamId: string) => {
-    return bets.find(b => b.teamId === teamId)?.bet || 0;
-  };
+  // Memoize team bets lookup
+  const teamBetsMap = useMemo(() => {
+    const map = new Map<string, number>();
+    bets.forEach(bet => map.set(bet.teamId, bet.bet));
+    return map;
+  }, [bets]);
 
-  // Handle bet submission
-  const handleSubmit = (teamId: string) => {
+  const getTeamBet = useCallback((teamId: string) => {
+    return teamBetsMap.get(teamId) || 0;
+  }, [teamBetsMap]);
+
+  const handleSubmit = useCallback((teamId: string) => {
     const amount = parseInt(betAmount) || 0;
     if (amount > 0 && (!maxBet || amount <= maxBet)) {
       onPlaceBet(teamId, amount);
       setEditingBet(null);
       setBetAmount('');
     }
-  };
+  }, [betAmount, maxBet, onPlaceBet]);
 
-  const startEditing = (teamId: string, currentBet: number) => {
+  const startEditing = useCallback((teamId: string, currentBet: number) => {
     setEditingBet(teamId);
     setBetAmount(currentBet.toString());
-  };
+  }, []);
 
-  const cancelEditing = () => {
+  const cancelEditing = useCallback(() => {
     setEditingBet(null);
     setBetAmount('');
-  };
+  }, []);
+
+  // Memoize set of teams with bets
+  const teamsWithBets = useMemo(() => {
+    return new Set(bets.map(b => b.teamId));
+  }, [bets]);
 
   return (
-    <div className="bg-gray-900/50 backdrop-blur rounded-lg p-6 border border-yellow-500/30">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-gray-900/50 backdrop-blur rounded-lg p-6 border border-yellow-500/30 contain-layout">
+      <div className="flex items-center justify-between mb-4 layout-stable">
         <h2 className="text-xl font-bold text-yellow-400">Ставки</h2>
         {maxBet > 0 && (
           <div className="text-gray-400">Макс: {maxBet}</div>
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 contain-layout">
         {teams.map((team) => {
           const currentBet = getTeamBet(team.id);
           const isEditing = editingBet === team.id;
-          const hasBet = bets.some(b => b.teamId === team.id);
+          const hasBet = teamsWithBets.has(team.id);
 
           return (
             <div
               key={team.id}
-              className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${
+              className={`bg-gray-800 rounded-lg p-4 border-2 transition-all card-contained layout-stable ${
                 hasBet ? 'border-green-500/30' : 'border-gray-700'
               }`}
             >

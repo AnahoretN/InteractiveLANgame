@@ -3,7 +3,7 @@
  * Displays a draggable QR code for connecting to the host session
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { X } from 'lucide-react';
 
@@ -11,12 +11,12 @@ export interface DraggableQRCodeProps {
   hostId: string;
   isVisible: boolean;
   onClose: () => void;
-  onPositionChange?: (position: { x: number; y: number }) => void;  // Callback for position changes
-  initialPosition?: { x: number; y: number };  // Initial position from sync
-  draggable?: boolean;  // Whether QR code can be dragged (default: true)
+  onPositionChange?: (position: { x: number; y: number }) => void;
+  initialPosition?: { x: number; y: number };
+  draggable?: boolean;
 }
 
-export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, initialPosition, draggable = true }: DraggableQRCodeProps) => {
+export const DraggableQRCode = memo(({ hostId, isVisible, onClose, onPositionChange, initialPosition, draggable = true }: DraggableQRCodeProps) => {
   const [position, setPosition] = useState(initialPosition || { x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
@@ -101,21 +101,23 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, 
 
   if (!isVisible) return null;
 
-  // Get session ID and signalling server from current URL
-  const currentUrlParams = new URLSearchParams(window.location.hash.split('?')[1]);
-  const sessionId = currentUrlParams.get('session') || '';
-  const signallingServer = currentUrlParams.get('signalling') || '';
+  // Memoize connection URL generation
+  const connectionUrl = useMemo(() => {
+    const currentUrlParams = new URLSearchParams(window.location.hash.split('?')[1]);
+    const sessionId = currentUrlParams.get('session') || '';
+    const signallingServer = currentUrlParams.get('signalling') || '';
 
-  // Generate connection URL for demo screen
-  // Format: http://localhost:3000#/screen?host=HOST_ID&session=SESSION_ID&signalling=IP
-  let connectionUrl: string;
-  if (signallingServer) {
-    // LAN mode - include signalling server parameter
-    connectionUrl = `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}&signalling=${encodeURIComponent(signallingServer)}`;
-  } else {
-    // Internet mode - no signalling parameter
-    connectionUrl = `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}`;
-  }
+    if (signallingServer) {
+      return `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}&signalling=${encodeURIComponent(signallingServer)}`;
+    } else {
+      return `${window.location.origin}#/screen?host=${encodeURIComponent(hostId)}&session=${encodeURIComponent(sessionId)}`;
+    }
+  }, [hostId]);
+
+  const handleClose = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onClose();
+  }, [onClose]);
 
   return (
     <div
@@ -136,10 +138,7 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, 
           <span className="text-white font-bold">Session Connection</span>
         </div>
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
+          onClick={handleClose}
           className="text-white hover:text-red-300 transition-colors p-1 hover:bg-white/10 rounded-lg"
         >
           <X size={20} />
@@ -171,4 +170,6 @@ export const DraggableQRCode = ({ hostId, isVisible, onClose, onPositionChange, 
       </div>
     </div>
   );
-};
+});
+
+DraggableQRCode.displayName = 'DraggableQRCode';
