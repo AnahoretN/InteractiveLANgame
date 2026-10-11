@@ -163,6 +163,7 @@ describe('OptimizedClientListItem', () => {
         client={client}
         isStale={() => false}
         hasBuzzed={true}
+        isBuzzing={true}
         isDragging={false}
         onDragStart={mockOnDragStart}
         onDragEnd={mockOnDragEnd}
@@ -171,8 +172,8 @@ describe('OptimizedClientListItem', () => {
       />
     );
 
-    const element = container.firstChild as HTMLElement;
-    expect(element.className).toContain('ring-2');
+    // Buzzing is shown as a white flash dot on the item
+    expect(container.querySelector('.animate-double-flash')).toBeInTheDocument();
   });
 
   it('should handle unnamed clients gracefully', () => {
@@ -217,8 +218,8 @@ describe('OptimizedClientListItem', () => {
       />
     );
 
-    const element = container.firstChild as HTMLElement;
-    expect(element.className).toContain('text-gray-400');
+    const nameSpan = screen.getByText('Test Client');
+    expect(nameSpan.className).toContain('text-gray-400');
   });
 });
 

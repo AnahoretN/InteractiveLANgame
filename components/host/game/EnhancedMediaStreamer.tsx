@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createMediaInfo, createMediaTransferMessage, needsMediaTransfer } from '../../../utils/mediaStream';
-import { backgroundMediaPreloader, type TransferProgress } from '../../../utils/backgroundMediaPreloader';
+import { BackgroundMediaPreloader, backgroundMediaPreloader, type TransferProgress } from '../../../utils/backgroundMediaPreloader';
 import type { MediaTransferMessage } from '../../../types';
 import { getMediaFile } from '../../../utils/mediaManager';
 
@@ -66,22 +66,19 @@ export const EnhancedMediaStreamer = ({
     );
 
     isInitializedRef.current = true;
-    console.log('[EnhancedMediaStreamer] Background preloader initialized');
   }, [onBroadcastMessage, hostId, onProgressUpdate]);
 
   // Extract and preload media from game pack
   useEffect(() => {
     if (!gamePack || !enablePreloading) return;
 
-    const mediaItems = backgroundMediaPreloader.constructor.extractMediaFromPack(gamePack);
+    const mediaItems = BackgroundMediaPreloader.extractMediaFromPack(gamePack);
 
     if (mediaItems.length === 0) {
-      console.log('[EnhancedMediaStreamer] No media items to preload');
       setPreloadStatus('completed');
       return;
     }
 
-    console.log(`[EnhancedMediaStreamer] Starting background preload of ${mediaItems.length} media items`);
     setPreloadStatus('loading');
 
     backgroundMediaPreloader.addMediaItems(mediaItems);
@@ -94,7 +91,6 @@ export const EnhancedMediaStreamer = ({
       if (completed === mediaItems.length) {
         setPreloadStatus('completed');
         clearInterval(checkInterval);
-        console.log('[EnhancedMediaStreamer] All media preloaded successfully');
       }
     }, 1000);
 
@@ -114,7 +110,6 @@ export const EnhancedMediaStreamer = ({
 
         // Check if already preloaded
         if (backgroundMediaPreloader.isMediaReady(mediaId)) {
-          console.log('[EnhancedMediaStreamer] Question media already preloaded:', mediaId);
         } else {
           // Transfer immediately with highest priority
           backgroundMediaPreloader.addMediaItem({
@@ -135,7 +130,6 @@ export const EnhancedMediaStreamer = ({
         const mediaId = `question_${question.id}_answer_media`;
 
         if (backgroundMediaPreloader.isMediaReady(mediaId)) {
-          console.log('[EnhancedMediaStreamer] Answer media already preloaded:', mediaId);
         } else {
           backgroundMediaPreloader.addMediaItem({
             mediaId,
@@ -164,7 +158,6 @@ export const EnhancedMediaStreamer = ({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      console.log('[EnhancedMediaStreamer] Cleaning up');
       backgroundMediaPreloader.clear();
     };
   }, []);

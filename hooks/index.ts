@@ -3,9 +3,7 @@
  */
 
 export { useSessionSettings } from './useSessionSettings';
-export { useTeams } from './useTeams';
 export { useBuzz } from './useBuzz';
-export { useTeamManager } from './useTeamManager';
 
 // Utility hooks
 export { useInterval } from './useInterval';
@@ -17,25 +15,11 @@ export { useP2PClient, ClientConnectionState } from './useP2PClient';
 
 // Host state management
 export { useHostStateManager } from './useHostStateManager';
-export { useP2PMessageHandlers } from './useP2PMessageHandlers';
 
 // Sync effects
 export { useSyncEffects } from './useSyncEffects';
 
-// Game state hooks
-export { useGamePlayState } from './useGamePlayState';
-export { useKeyboardNavigation } from './useKeyboardNavigation';
-
-// Phase 2 Refactoring - Extracted hooks
-// useGameTimer was removed - timer logic is now in GamePlay.tsx
-
-export { useScoreManager } from './useScoreManager';
-export type { TeamScore, ScoreChangeOptions, UseScoreManagerReturn } from './useScoreManager';
-
-export { useTeamStates } from './useTeamStates';
-export type { UseTeamStatesOptions, UseTeamStatesReturn } from './useTeamStates';
-
-// Team status manager (new system - replaces useTeamStates)
+// Team status manager (single source of truth for team card states)
 export { useTeamStatusManager, useTeamContextMenu } from './useTeamStatusManager';
 export type {
   TeamStatus,

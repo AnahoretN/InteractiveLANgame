@@ -69,7 +69,6 @@ class BackgroundMediaPreloader {
     this.onBroadcastMessage = onBroadcastMessage;
     this.hostId = hostId;
     this.onProgressUpdate = onProgressUpdate;
-    console.log('[BackgroundMediaPreloader] Initialized');
   }
 
   /**
@@ -77,7 +76,6 @@ class BackgroundMediaPreloader {
    */
   addMediaItems(items: MediaItem[]) {
     if (!this.config.enabled) {
-      console.log('[BackgroundMediaPreloader] Disabled, skipping media preload');
       return;
     }
 
@@ -87,7 +85,6 @@ class BackgroundMediaPreloader {
     );
 
     if (newItems.length === 0) {
-      console.log('[BackgroundMediaPreloader] No new media items to add');
       return;
     }
 
@@ -96,7 +93,6 @@ class BackgroundMediaPreloader {
     // Sort by priority (lower number = higher priority)
     this.mediaQueue.sort((a, b) => a.priority - b.priority);
 
-    console.log(`[BackgroundMediaPreloader] Added ${newItems.length} media items to queue. Total: ${this.mediaQueue.length}`);
 
     // Initialize progress tracking
     newItems.forEach(item => {
@@ -121,12 +117,10 @@ class BackgroundMediaPreloader {
 
     // Check if already processed
     if (this.completedTransfers.has(item.mediaId)) {
-      console.log(`[BackgroundMediaPreloader] Media ${item.mediaId} already transferred`);
       return;
     }
 
     if (immediate || item.priority <= this.config.priorityThreshold) {
-      console.log(`[BackgroundMediaPreloader] Immediate transfer requested for ${item.mediaId}`);
       this.transferMedia(item);
     } else {
       this.addMediaItems([item]);
@@ -139,11 +133,9 @@ class BackgroundMediaPreloader {
   private async processQueue() {
     if (this.isProcessing) return;
     if (this.activeTransfers.size >= this.config.maxConcurrentTransfers) {
-      console.log('[BackgroundMediaPreloader] Max concurrent transfers reached');
       return;
     }
     if (this.mediaQueue.length === 0) {
-      console.log('[BackgroundMediaPreloader] Queue is empty');
       return;
     }
 
@@ -177,7 +169,6 @@ class BackgroundMediaPreloader {
       this.notifyProgressUpdate();
     }
 
-    console.log(`[BackgroundMediaPreloader] Transferring media: ${item.mediaId}`);
 
     try {
       // Get file from IndexedDB if it's a local file
@@ -194,7 +185,6 @@ class BackgroundMediaPreloader {
       this.onBroadcastMessage(transferMessage);
       this.completeTransfer(item.mediaId);
 
-      console.log(`[BackgroundMediaPreloader] Successfully transferred: ${item.mediaId}`);
 
     } catch (error) {
       console.error(`[BackgroundMediaPreloader] Error transferring ${item.mediaId}:`, error);
@@ -268,7 +258,6 @@ class BackgroundMediaPreloader {
     this.transferProgress.clear();
     this.completedTransfers.clear();
     this.isProcessing = false;
-    console.log('[BackgroundMediaPreloader] Cleared all state');
   }
 
   /**
@@ -276,7 +265,6 @@ class BackgroundMediaPreloader {
    */
   pause() {
     this.config.enabled = false;
-    console.log('[BackgroundMediaPreloader] Paused');
   }
 
   /**
@@ -284,7 +272,6 @@ class BackgroundMediaPreloader {
    */
   resume() {
     this.config.enabled = true;
-    console.log('[BackgroundMediaPreloader] Resumed');
     this.processQueue();
   }
 

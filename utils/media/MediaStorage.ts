@@ -78,21 +78,10 @@ class MediaStorage {
         createdAt: Date.now()
       };
 
-      console.log('💾 Сохранение файла в IndexedDB:', {
-        mediaId,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size
-      });
 
       const request = objectStore.put(mediaRecord);
 
       request.onsuccess = () => {
-        console.log('✅ Медиа файл сохранен в IndexedDB:', {
-          fileName: file.name,
-          fileType: file.type,
-          mediaId
-        });
         resolve(mediaId);
       };
 
@@ -122,11 +111,6 @@ class MediaStorage {
               ? new File([file], record.fileName || file.name, { type: mimeType })
               : file;
 
-            console.log('✅ Медиа файл получен из IndexedDB:', {
-              fileName: record.fileName,
-              fileSize: record.fileSize,
-              fileType: record.fileType || mimeType
-            });
             resolve(finalFile);
           } else {
             resolve(null);
@@ -160,7 +144,6 @@ class MediaStorage {
             cursor.delete();
             cursor.continue();
           } else {
-            console.log('🗑️ Все медиа файлы пакета удалены:', packId);
             resolve();
           }
         };
@@ -256,7 +239,6 @@ class MediaStorage {
       const request = objectStore.clear();
 
       request.onsuccess = () => {
-        console.log('[MediaStorage] 🧹 All data cleared');
         resolve();
       };
       request.onerror = () => reject(request.error);

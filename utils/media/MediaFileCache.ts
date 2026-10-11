@@ -46,11 +46,9 @@ export class MediaFileCache {
     if (cached) {
       cached.lastAccess = Date.now();
       cached.accessCount++;
-      console.log('[MediaFileCache] ✅ Cache hit:', mediaId, `Accessed ${cached.accessCount} times`);
       return cached.file;
     }
 
-    console.log('[MediaFileCache] ❌ Cache miss:', mediaId);
     const file = await loadFn(mediaId);
 
     if (file) {
@@ -65,7 +63,6 @@ export class MediaFileCache {
    */
   put(mediaId: string, file: File): void {
     if (file.size > this.maxSize) {
-      console.log('[MediaFileCache] ⚠️ File too large for cache:', file.size);
       return;
     }
 
@@ -79,12 +76,10 @@ export class MediaFileCache {
 
       this.cache.delete(lruId);
       this.currentSize -= lru.file.size;
-      console.log('[MediaFileCache] 🗑️ Evicted from cache:', lruId, `Accessed ${lru.accessCount} times`);
     }
 
     this.cache.set(mediaId, { file, lastAccess: Date.now(), accessCount: 1 });
     this.currentSize += file.size;
-    console.log('[MediaFileCache] 💾 Cached:', mediaId, `Size: ${this.currentSize}/${this.maxSize} (${this.cache.size} files)`);
   }
 
   /**
@@ -95,7 +90,6 @@ export class MediaFileCache {
     if (cached) {
       this.currentSize -= cached.file.size;
       this.cache.delete(mediaId);
-      console.log('[MediaFileCache] 🗑️ Removed from cache:', mediaId);
     }
   }
 
@@ -105,7 +99,6 @@ export class MediaFileCache {
   clear(): void {
     this.cache.clear();
     this.currentSize = 0;
-    console.log('[MediaFileCache] 🧹 Cache cleared');
   }
 
   /**
@@ -122,7 +115,6 @@ export class MediaFileCache {
       loadFn(mediaId).then(file => {
         if (file) {
           this.put(mediaId, file);
-          console.log('[MediaFileCache] 🎯 Prefetched:', mediaId);
         }
         this.prefetchQueue.delete(mediaId);
       }).catch(error => {

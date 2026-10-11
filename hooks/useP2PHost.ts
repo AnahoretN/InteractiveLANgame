@@ -121,15 +121,18 @@ export const useP2PHost = (config: P2PConfig & {
   const connectionsRef = useRef<Map<string, DataConnection>>(new Map());
   const pendingConnectionsRef = useRef<Map<string, DataConnection>>(new Map());
 
+  // Keep the latest config in a ref so event handlers registered once (peer.on('connection'),
+  // conn.on('data'), ...) always invoke the current render's callbacks instead of closures
+  // captured at mount time (fixes stale-closure bugs in message handling).
+  const configRef = useRef(config);
+  configRef.current = config;
+
   // Connection pool for managing multiple clients efficiently
   const connectionPoolRef = useRef<P2PConnectionPool | null>(null);
 
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [connectedClients, setConnectedClients] = useState<string[]>([]);
-
-  // Sequence counter for ordered messaging
-  const sequenceCounterRef = useRef(0);
 
   // Connection rate limiter - prevent connection flood attacks
   const rateLimiterRef = useRef<ConnectionRateLimiter>(
@@ -173,7 +176,6 @@ export const useP2PHost = (config: P2PConfig & {
   useEffect(() => {
     const enablePool = config.enableConnectionPool ?? true;
 
-    console.log('[P2P Host] Connection pool useEffect triggered, enablePool:', enablePool);
 
     if (enablePool) {
       connectionPoolRef.current = new P2PConnectionPool({
@@ -185,11 +187,9 @@ export const useP2PHost = (config: P2PConfig & {
         debug: false
       });
 
-      console.log('[P2P Host] Connection pool initialized');
     }
 
     return () => {
-      console.log('[P2P Host] Connection pool cleanup - destroying pool');
       connectionPoolRef.current?.destroy();
       connectionPoolRef.current = null;
     };
@@ -198,7 +198,6 @@ export const useP2PHost = (config: P2PConfig & {
   // Initialize PeerJS
   useEffect(() => {
     const signallingServer = getSignallingServerUrl();
-    console.log('[P2P Host] Initializing with signalling server:', signallingServer);
 
     // Parse signalling server URL to extract host and port
     let peerConfig: any = { debug: 1 }; // INFO level
@@ -210,12 +209,6 @@ export const useP2PHost = (config: P2PConfig & {
         peerConfig.port = parseInt(url.port);
         peerConfig.secure = false; // WebSocket, not WebSocket Secure
         peerConfig.path = '/peerjs'; // Default PeerServer path
-        console.log('[P2P Host] Using custom signalling server:', {
-          host: peerConfig.host,
-          port: peerConfig.port,
-          secure: peerConfig.secure,
-          path: peerConfig.path
-        });
       } catch (e) {
         console.warn('[P2P Host] Failed to parse signalling server URL, using defaults:', signallingServer, e);
       }
@@ -226,17 +219,10 @@ export const useP2PHost = (config: P2PConfig & {
         peerConfig.port = parseInt(url.port) || 443;
         peerConfig.secure = true; // WebSocket Secure
         peerConfig.path = '/peerjs'; // Default PeerServer path
-        console.log('[P2P Host] Using secure signalling server:', {
-          host: peerConfig.host,
-          port: peerConfig.port,
-          secure: peerConfig.secure,
-          path: peerConfig.path
-        });
       } catch (e) {
         console.warn('[P2P Host] Failed to parse signalling server URL, using defaults:', signallingServer, e);
       }
     } else {
-      console.log('[P2P Host] Using default public PeerJS server');
     }
 
     const peer = new Peer(config.hostId, peerConfig);
@@ -250,7 +236,6 @@ export const useP2PHost = (config: P2PConfig & {
     });
 
     peer.on('connection', (conn) => {
-      console.log('[P2P Host] Incoming connection from:', conn.peer);
       handleIncomingConnection(conn);
     });
 
@@ -276,7 +261,7 @@ export const useP2PHost = (config: P2PConfig & {
       }
 
       setError(err as Error);
-      config.onError?.(err as Error);
+      configRef.current.onError?.(err as Error);
     });
 
     peer.on('disconnected', () => {
@@ -319,6 +304,14 @@ export const useP2PHost = (config: P2PConfig & {
     // Store in pending until handshake complete
     pendingConnectionsRef.current.set(clientId, conn);
 
+    // ICE state observability: 'failed' usually means WebRTC could not connect at all
+    // (typically missing TURN on networks with AP/client isolation) - see docs/NETWORKING.md
+    conn.on('iceStateChanged', (state) => {
+      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+        console.warn(`[P2P Host] ICE state '${state}' for client ${clientId} - connection degraded or dead`);
+      }
+    });
+
     // Set up data handler BEFORE connection is open
     conn.on('data', (data) => {
       try {
@@ -326,13 +319,16 @@ export const useP2PHost = (config: P2PConfig & {
 
         // Handle handshake
         if (message.type === 'HANDSHAKE') {
-          console.log('🤝 [P2P HOST] Processing HANDSHAKE from:', clientId);
           handleHandshake(conn, message as HandshakeMessage);
         } else if (message.type === 'PING') {
           handlePing(conn, message as PingMessage);
+          // Also forward to the app handler so client liveness (lastSeen) is driven
+          // by real heartbeat traffic - without this an idle-but-healthy client
+          // looks stale to the host's stale-client reaper.
+          configRef.current.onMessage?.(message, clientId);
         } else {
-          // Forward to app handler
-          config.onMessage?.(message, clientId);
+          // Forward to app handler (via ref - always the latest callback)
+          configRef.current.onMessage?.(message, clientId);
         }
       } catch (err) {
         console.error('[P2P Host] Error handling message:', err);
@@ -340,14 +336,13 @@ export const useP2PHost = (config: P2PConfig & {
     });
 
     conn.on('close', () => {
-      console.log('[P2P Host] Connection closed:', clientId);
       connectionsRef.current.delete(clientId);
       pendingConnectionsRef.current.delete(clientId);
       // Remove quality monitor for this client
       qualityMonitorsRef.current.delete(clientId);
       // Update connected clients list
       setConnectedClients(Array.from(connectionsRef.current.keys()));
-      config.onClientDisconnected?.(clientId);
+      configRef.current.onClientDisconnected?.(clientId);
     });
 
     conn.on('error', (err) => {
@@ -358,12 +353,11 @@ export const useP2PHost = (config: P2PConfig & {
       qualityMonitorsRef.current.delete(clientId);
       // Update connected clients list
       setConnectedClients(Array.from(connectionsRef.current.keys()));
-      config.onClientDisconnected?.(clientId);
+      configRef.current.onClientDisconnected?.(clientId);
     });
 
     // Send handshake response when ready
     conn.on('open', () => {
-      console.log('[P2P Host] Data connection open:', clientId);
       // Send handshake response immediately when connection opens
       const response: HandshakeResponseMessage = {
         id: generateUUID(),
@@ -416,27 +410,26 @@ export const useP2PHost = (config: P2PConfig & {
         teamId: currentTeamId,
         persistentClientId
       });
-      console.log('[P2P Host] Added client to connection pool:', clientIdReal);
     }
 
     // Create quality monitor for this client
     if (!qualityMonitorsRef.current.has(clientIdReal)) {
       const clientMonitor = getGlobalQualityMonitor();
       qualityMonitorsRef.current.set(clientIdReal, clientMonitor);
-      console.log('[P2P Host] 🔍 Created quality monitor for client:', clientIdReal);
     }
 
     // Update connected clients list
     setConnectedClients(Array.from(connectionsRef.current.keys()));
 
     // Notify app with persistent client ID and team ID for reconnection handling
-    config.onClientConnected?.(clientIdReal, {
+    // (via ref - always the latest callbacks, not the ones captured at mount)
+    configRef.current.onClientConnected?.(clientIdReal, {
       name: clientName,
       teamId: currentTeamId,
       persistentClientId: persistentClientId
     });
-    config.onPeerConnected?.(clientIdReal);
-  }, [config.hostId, config]);
+    configRef.current.onPeerConnected?.(clientIdReal);
+  }, [config.hostId]);
 
   // Handle ping
   const handlePing = useCallback((conn: DataConnection, message: PingMessage) => {
@@ -455,30 +448,16 @@ export const useP2PHost = (config: P2PConfig & {
   }, [config.hostId]);
 
   // Broadcast message to all connected clients (optimized with batching and connection pool)
-  const broadcast = useCallback((message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
+  const broadcast = useCallback((message: any) => {
     const fullMessage: P2PSMessage = {
       ...message,
       id: generateUUID(),
       timestamp: Date.now(),
-      senderId: config.hostId,
-      // Add sequence number if not already present (for ordered messaging)
-      sequence: message.sequence ?? sequenceCounterRef.current++
+      senderId: config.hostId
     } as P2PSMessage;
 
     // Log broadcast for STATE_SYNC messages
     if (fullMessage.type === 'STATE_SYNC') {
-      console.log('[P2P Host] Broadcasting STATE_SYNC:', {
-        messageId: fullMessage.id,
-        type: fullMessage.type,
-        category: fullMessage.category,
-        connectedClients: connectedClients.length,
-        hasConnectionPool: !!connectionPoolRef.current,
-        payload: {
-          isSessionActive: fullMessage.payload.isSessionActive,
-          clientsCount: fullMessage.payload.clients?.length || 0,
-          teamsCount: fullMessage.payload.teams?.length || 0
-        }
-      });
     }
 
     // Use connection pool if available, otherwise fall back to direct broadcast
@@ -492,7 +471,6 @@ export const useP2PHost = (config: P2PConfig & {
           if (conn && conn.open) {
             try {
               conn.send(fullMessage);
-              console.log('[P2P Host] Direct send succeeded for:', failedClientId);
             } catch (err) {
               console.error('[P2P Host] Direct send also failed for:', failedClientId, err);
             }
@@ -500,18 +478,12 @@ export const useP2PHost = (config: P2PConfig & {
         }
       }
       if (fullMessage.type === 'STATE_SYNC') {
-        console.log('[P2P Host] Broadcast result:', {
-          success: result.success,
-          sentTo: result.sentTo,
-          failedToSend: result.failedToSend
-        });
       }
     } else {
       // Use optimized message queue with batching
       const priority = fullMessage.category === 'event' ? 'high' : 'normal';
       messageQueueRef.current.send(fullMessage, undefined, priority);
       if (fullMessage.type === 'STATE_SYNC') {
-        console.log('[P2P Host] Queued STATE_SYNC via message queue');
       }
     }
 
@@ -519,7 +491,7 @@ export const useP2PHost = (config: P2PConfig & {
   }, [config.hostId, connectedClients]);
 
   // Send to specific client (optimized with batching and connection pool)
-  const sendToClient = useCallback((clientId: string, message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
+  const sendToClient = useCallback((clientId: string, message: any) => {
     // Try connection pool first if available
     if (connectionPoolRef.current) {
       const poolResult = connectionPoolRef.current.sendTo(clientId, message);
@@ -528,7 +500,6 @@ export const useP2PHost = (config: P2PConfig & {
         return true;
       }
       // Pool send failed - fall through to direct connection attempt
-      console.log('[P2P Host] Pool send failed, trying direct connection for:', clientId);
     }
 
     // Fall back to direct connection
@@ -542,9 +513,7 @@ export const useP2PHost = (config: P2PConfig & {
       ...message,
       id: generateUUID(),
       timestamp: Date.now(),
-      senderId: config.hostId,
-      // Add sequence number if not already present (for ordered messaging)
-      sequence: message.sequence ?? sequenceCounterRef.current++
+      senderId: config.hostId
     } as P2PSMessage;
 
     // Use optimized message queue with immediate sending for direct messages
@@ -554,7 +523,7 @@ export const useP2PHost = (config: P2PConfig & {
   }, [config.hostId]);
 
   // Send to all clients in a team (connection pool feature)
-  const sendToTeam = useCallback((teamId: string, message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
+  const sendToTeam = useCallback((teamId: string, message: any) => {
     if (!connectionPoolRef.current) {
       console.warn('[P2P Host] Connection pool not available, falling back to broadcast');
       broadcast(message);
@@ -565,8 +534,7 @@ export const useP2PHost = (config: P2PConfig & {
       ...message,
       id: generateUUID(),
       timestamp: Date.now(),
-      senderId: config.hostId,
-      sequence: message.sequence ?? sequenceCounterRef.current++
+      senderId: config.hostId
     } as P2PSMessage;
 
     return connectionPoolRef.current.sendToTeam(teamId, fullMessage);

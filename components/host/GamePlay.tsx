@@ -39,7 +39,6 @@ import { QuestionModal as ModalQuestionModal } from './game/modals';
 import { SuperGameQuestionModal, SuperGameAnswersModal } from './game/SuperGameModals';
 // DebugMediaStreamer removed - using syncMediaStreamer instead
 import { streamMediaFilesSynchronously, clearTransferredMediaCache } from '../../utils/syncMediaStreamer';
-import { useHostMessageSequencer } from '../../utils/hostMessageSequencer';
 // New team status management system
 import {
   useTeamStatusManager,
@@ -56,7 +55,7 @@ interface TeamScore {
 }
 
 // Re-export TeamScore from types for compatibility
-export type { TeamScore } from '../../../types';
+export type { TeamScore } from '../../types';
 
 interface GamePlayProps {
   pack: GamePack;
@@ -84,6 +83,7 @@ interface GamePlayProps {
   onUpdateActiveTeamIds?: (teamIds: Set<string>) => void;  // Callback to update active team IDs
   showQRCode?: boolean;  // QR code visibility state
   sessionSettings?: {  // Session settings for simultaneous buzz
+    collisionEnabled?: boolean;  // Master switch for the clash feature
     simultaneousBuzzEnabled?: boolean;
     simultaneousBuzzThreshold?: number;
   };
@@ -175,19 +175,24 @@ export const GamePlay = memo(({
   const buzzerActiveRef = useRef(false); // Track buzzer active state for sendBuzzerState
   const [highlightedQuestion, setHighlightedQuestion] = useState<string | null>(null);
 
-
-  // Sequence counter for ordered messaging
-  const sequenceCounterRef = useRef(0);
-
   // Refs for timer and cleanup
   const buzzerDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const responseWindowRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stateUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Fallback for when a connected demo screen fails to send TIMER_PHASE_SWITCH
+  // (dropped message, screen mid-reconnect) - without this the host hangs at
+  // reading=0 forever waiting for a signal that never arrives.
+  const phaseSwitchFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Ref for broadcast throttling (avoid excessive updates)
   const lastBroadcastRef = useRef<number>(0);
   const lastScreenChangeRef = useRef<number>(0);
+  // Trailing-edge throttle: a broadcast dropped by throttling is DEFERRED to the end of
+  // the window (coalesced) instead of being silently discarded, so score/status mutations
+  // that happen inside the throttle window still reach the demo screen.
+  const pendingBroadcastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const broadcastGameStateRef = useRef<(force?: boolean) => Promise<void> | void>(async () => {});
   const lastScrollBroadcastRef = useRef<number>(0);
   const broadcastThrottleMs = 100; // Minimum time between broadcasts
   const screenChangeBroadcastMs = 50; // Shorter throttle for screen changes
@@ -208,6 +213,13 @@ export const GamePlay = memo(({
   const currentPhaseRef = useRef<'reading' | 'response' | 'complete'>('reading');
   const readingRemainingRef = useRef<number>(0);
   const responseRemainingLocalRef = useRef<number>(0); // 'Local' to distinguish from responseTimerRemainingRef
+  // Monotonic counter bumped on every timer phase transition (and per question). It is
+  // stamped into TIMER_STATE / buzzerState snapshots so clients can discard stale or
+  // out-of-order timer messages (e.g. a media-delayed GAME_STATE_UPDATE arriving late).
+  const timerPhaseIdRef = useRef(0);
+  // Tracks the last phase seen from QuestionModal updates, so modal-driven phase changes
+  // bump timerPhaseIdRef exactly once
+  const prevModalPhaseForIdRef = useRef<string | undefined>(undefined);
   const handicapActiveRef = useRef<boolean>(false);
   const readingTimeRef = useRef<number>(0);
   const responseWindowLocalRef = useRef<number>(30);
@@ -229,7 +241,9 @@ export const GamePlay = memo(({
       // This will be called automatically when team states change
     },
     onAnsweringTeamChange: onAnsweringTeamChange,
-    simultaneousBuzzEnabled: sessionSettings?.simultaneousBuzzEnabled ?? true,
+    // The clash window requires BOTH collisionEnabled AND simultaneousBuzzEnabled
+    // (same semantics the HostView engine used before it was unified into the manager)
+    simultaneousBuzzEnabled: (sessionSettings?.collisionEnabled ?? false) && (sessionSettings?.simultaneousBuzzEnabled ?? true),
     simultaneousBuzzThreshold: sessionSettings?.simultaneousBuzzThreshold ?? 0.5,
   });
 
@@ -255,6 +269,10 @@ export const GamePlay = memo(({
     timerColor?: 'yellow' | 'green' | 'gray';
     timerBarColor?: string;
     timerTextColor?: string;
+    // Clock-anchored snapshot for client countdown extrapolation (see types.ts TIMER_STATE)
+    phaseId?: number;
+    hostNowMs?: number;
+    phaseEndsAtHostMs?: number;
   }>({
     active: false,
     timerPhase: 'inactive',
@@ -306,29 +324,18 @@ export const GamePlay = memo(({
   // Ref to track previous timer paused state for detecting transitions
   const previousTimerPausedRef = useRef(false);
 
-  // Stable session ID for message sequencer (created once to prevent infinite re-renders)
+  // Stable session ID (created once to prevent infinite re-renders)
   const stableSessionId = useMemo(() => `game-session-${Date.now()}`, []);
 
-  // Initialize host message sequencer for ordered messaging
-  const hostSequencer = useHostMessageSequencer({
-    sessionId: stableSessionId,
-    historySize: 1000,
-    debug: false // Set to true for debugging message sequencing
-  });
-
-  // Wrapper for onBroadcastMessage that adds sequence numbers
+  // Wrapper for onBroadcastMessage
+  // NOTE: message ordering is not enforced by sequence numbers - no consumer ever
+  // read them (the sequencer/queue layers were removed as dead code). Critical
+  // ordering (timer snapshots) is guarded by the phaseId stamp instead.
   const broadcastMessage = useCallback((message: any) => {
     if (!onBroadcastMessage) return;
-
-    // Add sequence number to the message
-    // IMPORTANT: Spread message FIRST to preserve type and other fields
     // Don't add id/timestamp/senderId here - useP2PHost will add them
-    const sequencedMessage = hostSequencer.prepareMessage({
-      ...message  // Just spread the message, let useP2PHost add service fields
-    });
-
-    onBroadcastMessage(sequencedMessage);
-  }, [onBroadcastMessage, hostSequencer]);
+    onBroadcastMessage({ ...message });
+  }, [onBroadcastMessage]);
 
   // Ref to track when QuestionModal is managing the timer (don't send updates from GamePlay)
   const questionModalActiveRef = useRef(false);
@@ -340,9 +347,7 @@ export const GamePlay = memo(({
   useEffect(() => {
     const restoreBlobUrls = async () => {
       if (pack) {
-        console.log('🔄 GamePlay - Restoring blob URLs for pack:', pack.name);
         await restorePackBlobUrlsFromStorage(pack);
-        console.log('✅ GamePlay - Blob URLs restored successfully');
       }
     };
 
@@ -394,7 +399,6 @@ export const GamePlay = memo(({
   // Function to broadcast current game state to ScreenView
   const broadcastGameState = useCallback(async (force: boolean = false) => {
     if (!broadcastMessage) {
-      console.log('[GamePlay] broadcastGameState called but onBroadcastMessage is null');
       return;
     }
 
@@ -404,13 +408,11 @@ export const GamePlay = memo(({
     // CRITICAL: Stream media files BEFORE broadcasting game state
     // This ensures media transfer messages arrive BEFORE game state updates
     if (currentActiveQuestion) {
-      console.log('[GamePlay] 🎬 Streaming media files before broadcast');
       await streamMediaFilesSynchronously(
         { question: currentActiveQuestion.question }, // Pass the actual question object
         broadcastMessage,
         '24724687-f15a-4c40-8dd3-dc3be3ae4737' // Use actual host ID
       );
-      console.log('[GamePlay] ✅ Media streaming completed');
     }
 
     // Throttle broadcasts to avoid excessive updates (max 1 per 100ms)
@@ -430,8 +432,16 @@ export const GamePlay = memo(({
                            force;
 
     if (!shouldBroadcast && timeSinceLastBroadcast > 0) {
-      console.log(`[GamePlay] Broadcast throttled - only ${timeSinceLastBroadcast}ms since last (min ${broadcastThrottleMs}ms)`);
-      return; // Skip this broadcast - too soon
+      // Throttled - DEFER (don't drop): schedule one coalesced broadcast at the end of
+      // the window so the latest state still reaches the demo screen.
+      if (!pendingBroadcastTimeoutRef.current) {
+        pendingBroadcastTimeoutRef.current = setTimeout(() => {
+          pendingBroadcastTimeoutRef.current = null;
+          lastBroadcastRef.current = Date.now();
+          broadcastGameStateRef.current(false);
+        }, broadcastThrottleMs - timeSinceLastBroadcast);
+      }
+      return;
     }
 
     lastBroadcastRef.current = now;
@@ -480,31 +490,15 @@ export const GamePlay = memo(({
     // Broadcast comprehensive game state for ScreenView
     // When activeQuestion exists, ensure currentScreen is 'board' for demo screen
     const broadcastScreen = currentActiveQuestion ? 'board' : currentScreen;
-    console.log('[GamePlay] Broadcasting screen:', broadcastScreen, '(original:', currentScreen, ')');
-    console.log('[GamePlay] Broadcasting with activeQuestion:', !!currentActiveQuestion);
     if (currentActiveQuestion) {
-      console.log('[GamePlay] Broadcasting activeQuestion details:', {
-        questionId: currentActiveQuestion.question.id,
-        text: currentActiveQuestion.question.text?.slice(0, 30),
-        hasMedia: !!currentActiveQuestion.question.media,
-        hasAnswerMedia: !!currentActiveQuestion.question.answerMedia,
-        points: currentActiveQuestion.points,
-        themeName: currentActiveQuestion.theme.name
-      });
     }
-    console.log('[GamePlay] Broadcasting with showAnswer:', showAnswer);
     // Only log warning when this is unexpected (not during normal screen changes)
     if (!currentActiveQuestion && force && currentScreen !== 'cover' && currentScreen !== 'themes') {
       console.warn('[GamePlay] ⚠️ Forced broadcast without activeQuestion');
     }
 
-    // Increment sequence counter for this message
-    sequenceCounterRef.current++;
-    const currentSequence = sequenceCounterRef.current;
-
     const broadcastPayload = {
       type: 'GAME_STATE_UPDATE',
-      sequence: currentSequence, // Add sequence number for ordering
       state: {
         currentScreen: broadcastScreen,
         currentRoundIndex,
@@ -526,14 +520,7 @@ export const GamePlay = memo(({
           } : undefined
         } : null,
         showAnswer,
-        showHint,
-        // Debug logging
-        _debug: {
-          showAnswer,
-          showHint,
-          questionId: currentActiveQuestion?.question.id,
-          timestamp: Date.now()
-        }
+        showHint
       },
       currentQuestion: currentActiveQuestion ? {
         id: currentActiveQuestion.question.id,
@@ -578,6 +565,10 @@ export const GamePlay = memo(({
               isPaused: current?.isPaused || false,
               readingTimeTotal: current?.readingTimeTotal ?? 5,
               responseTimeTotal: currentRound?.responseWindow ?? 30,
+              // Clock-anchored snapshot passthrough (may be absent on legacy state)
+              phaseId: current?.phaseId,
+              hostNowMs: current?.hostNowMs,
+              phaseEndsAtHostMs: current?.phaseEndsAtHostMs,
               timerColor: current?.timerPhase === 'reading' ? 'yellow' : current?.timerPhase === 'response' ? 'green' : 'gray',
               timerBarColor: current?.timerPhase === 'reading' ? 'bg-yellow-500' : current?.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500',
               timerTextColor: current?.timerPhase === 'reading' ? 'text-yellow-300' : current?.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300'
@@ -608,12 +599,6 @@ export const GamePlay = memo(({
         boardData: boardData,
         // Add pack cover for cover screen
         packCover: (() => {
-          console.log('[GamePlay] Broadcasting pack cover:', {
-            hasCover: !!pack.cover,
-            coverType: pack.cover?.type,
-            coverValue: pack.cover?.value?.slice(0, 60) || 'none',
-            packName: pack.name
-          });
           return pack.cover;
         })(),
         packName: pack.name,
@@ -668,57 +653,33 @@ export const GamePlay = memo(({
       };
 
     // Log broadcast with showAnswer info
-    console.log('[GamePlay] 📡 Broadcasting GAME_STATE_UPDATE:', {
-      showAnswer: broadcastPayload.state.showAnswer,
-      showHint: broadcastPayload.state.showHint,
-      hasActiveQuestion: !!currentActiveQuestion,
-      questionId: currentActiveQuestion?.question.id,
-      screen: broadcastScreen,
-      teamStates: broadcastPayload.teamStates,
-      teamScoresCount: broadcastPayload.teamScores?.length || 0,
-      teamScores: broadcastPayload.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score }))
-    });
 
     broadcastMessage(broadcastPayload);
 
-    console.log('[GamePlay] Broadcast sent successfully - teamStates:', {
-      teamStates: broadcastPayload.teamStates,
-      hasTeamStates: !!broadcastPayload.teamStates,
-      teamStatesKeys: broadcastPayload.teamStates ? Object.keys(broadcastPayload.teamStates) : []
-    });
-    console.log('[GamePlay] Broadcast sent successfully', {
-      buzzerPhase: buzzerStateRef.current?.timerPhase,
-      isPaused: buzzerStateRef.current?.isPaused,
-      activeQuestion: !!activeQuestion,
-      timeSinceLastBroadcast: `${timeSinceLastBroadcast}ms`,
-      teamStates: (() => {
-        const states: Record<string, string[]> = {
-          inactive: [],
-          active: [],
-          answering: [],
-          penalty: [],
-          clash: [],
-          first_clash: [],
-          simple_clash: [],
-        };
-        for (const [teamId, state] of teamStatusManager.teamStates.entries()) {
-          if (state.status === 'clash') {
-            states.clash.push(teamId);
-            if (state.clashSubStatus) {
-              states[state.clashSubStatus].push(teamId);
-            }
-          } else {
-            states[state.status].push(teamId);
-          }
-        }
-        return states;
-      })()
-    });
   }, [currentScreen, currentRoundIndex, showAnswer, teamScores, answeringTeamId, currentRound, broadcastMessage, pack, selectedSuperThemeId, disabledSuperThemeIds, superGameBets, superGameAnswers, selectedSuperAnswerTeam, teamStatusManager, showQRCode, themesScrollPosition, highlightedQuestion]); // Removed activeQuestion - now using ref to avoid stale closures
+
+  // Keep the ref used by the trailing-edge throttle pointing at the latest callback
+  broadcastGameStateRef.current = broadcastGameState;
+
+  // Clear any pending trailing-edge broadcast on unmount
+  useEffect(() => {
+    return () => {
+      if (pendingBroadcastTimeoutRef.current) {
+        clearTimeout(pendingBroadcastTimeoutRef.current);
+        pendingBroadcastTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   // Function to switch from reading to response phase (called from demo screen TIMER_PHASE_SWITCH message)
   // This is a stable callback that uses refs to access current values
   const switchToResponsePhase = useCallback(() => {
+    // Cancel the TIMER_PHASE_SWITCH fallback - a switch is happening now
+    if (phaseSwitchFallbackRef.current) {
+      clearTimeout(phaseSwitchFallbackRef.current);
+      phaseSwitchFallbackRef.current = null;
+    }
+
     const currentPhase = buzzerStateRef.current?.timerPhase;
 
     // QuestionModal may have already changed the phase to 'response' before this signal arrives
@@ -726,12 +687,10 @@ export const GamePlay = memo(({
     const phaseAlreadyChanged = currentPhase === 'response';
 
     if (phaseAlreadyChanged) {
-      console.log('[GamePlay] ⚡ switchToResponsePhase: Phase already response, activating teams only');
       // Just activate teams - phase and timers are already set by QuestionModal
       buzzerActiveRef.current = true;
       setBuzzerActiveState(true);
       setBuzzerActiveState(true); // Sync state for centralized useEffect
-      console.log('[GamePlay] 🟢 Activating all teams (phase already response)');
       // Use requestAnimationFrame to ensure React state update has propagated before broadcasting
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -743,11 +702,9 @@ export const GamePlay = memo(({
 
     // Only do full phase switch if we're in reading phase
     if (currentPhase !== 'reading') {
-      console.log('[GamePlay] switchToResponsePhase: Not in reading phase, ignoring switch request. Current phase:', currentPhase);
       return;
     }
 
-    console.log('[GamePlay] ⚡ switchToResponsePhase: Switching to response phase (from demo screen signal)');
 
     // Get round settings for handicap calculation
     const handicapEnabled = currentRound?.handicapEnabled ?? false;
@@ -771,7 +728,7 @@ export const GamePlay = memo(({
     const responseRemaining = responseWindow;
     responseTimerRemainingRef.current = responseRemaining;
 
-    const needsHandicap = handicapEnabled && handicapDelay > 0 && leadingTeam;
+    const needsHandicap = handicapEnabled && handicapDelay > 0 && !!leadingTeam;
 
     // Update buzzer state to response phase
     buzzerStateRef.current = {
@@ -799,36 +756,37 @@ export const GamePlay = memo(({
 
     if (needsHandicap && handicapDelay > 0) {
       // Start with handicap active - leader team is inactive
-      console.log('[GamePlay] 🟡 Handicap active - leader team must wait', handicapDelay, 'seconds');
-      buzzerActiveRef.current = false;
+      // Keep buzzerActive true so non-leader teams can buzz - only leader is blocked
+      buzzerActiveRef.current = true;
 
       setTimeout(() => {
-        // Handicap ended - activate all teams
-        buzzerActiveRef.current = true;
-        setBuzzerActiveState(true); // Also update state
-        console.log('[GamePlay] 🟢 Activating all teams (after handicap ends)');
-        // Centralized useEffect will auto-activate teams when handicap becomes false
-        // Use requestAnimationFrame to ensure React state update has propagated before broadcasting
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            broadcastGameState(true);
-          });
-        });
-
+        // Handicap ended - activate all teams including leader
         // Update buzzer state without handicap
         buzzerStateRef.current = {
           ...buzzerStateRef.current,
           handicapActive: false,
           handicapTeamId: undefined
         };
-        setBuzzerHandicapActive(false); // Sync state to trigger team activation
+        setBuzzerHandicapActive(false); // Sync state
         onBuzzerStateChangeRef.current(buzzerStateRef.current);
+
+        // Explicitly activate leader team now that handicap is over
+        teamStatusManager.updateGameState({
+          isResponseTimerActive: true,
+          handicapTeamId: null // No longer blocking any team
+        });
+
+        // Use requestAnimationFrame to ensure React state update has propagated before broadcasting
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            broadcastGameState(true);
+          });
+        });
       }, handicapDelay * 1000);
     } else {
       // No handicap - activate all teams immediately
       buzzerActiveRef.current = true;
       setBuzzerActiveState(true); // Also update state
-      console.log('[GamePlay] 🟢 Activating all teams (green timer starts)');
       // Centralized useEffect will auto-activate teams
       // Use requestAnimationFrame to ensure React state update has propagated before broadcasting
       requestAnimationFrame(() => {
@@ -903,7 +861,6 @@ export const GamePlay = memo(({
       onBuzzerStateChangeRef.current(buzzerStateRef.current);
     }, totalResponseTime);
 
-    console.log('[GamePlay] ✅ switchToResponsePhase completed');
   }, [currentRound, teamScores, onClearBuzzes, onBuzzTriggered, teamStatusManager, broadcastGameState]);
 
   // Store the function in ref for external access (backward compatibility)
@@ -911,12 +868,6 @@ export const GamePlay = memo(({
 
   // Debug: Log when showAnswer changes
   useEffect(() => {
-    console.log('[GamePlay] 🔄 showAnswer changed:', {
-      showAnswer,
-      hasActiveQuestion: !!activeQuestion,
-      questionId: activeQuestion?.question.id,
-      timestamp: Date.now()
-    });
   }, [showAnswer, activeQuestion]);
 
   // Handle team score change from context menu - broadcast to all devices
@@ -970,15 +921,7 @@ export const GamePlay = memo(({
     // Handle each new buzz through teamStatusManager
     for (const teamId of newBuzzes) {
       const teamStatus = teamStatusManager.getTeamStatus(teamId);
-      console.log('[GamePlay] 🎯 Handling BUZZ through teamStatusManager:', {
-        teamId: teamId.slice(0, 12),
-        teamStatus,
-        isResponseTimerActive: teamStatusManager.isResponseTimerActive(),
-        simultaneousBuzzEnabled: sessionSettings?.simultaneousBuzzEnabled,
-        simultaneousThreshold: sessionSettings?.simultaneousBuzzThreshold
-      });
       const result = teamStatusManager.handleTeamBuzz(teamId);
-      console.log('[GamePlay] 🎯 BUZZ handle result:', result);
     }
 
     // Update ref for next comparison
@@ -997,7 +940,6 @@ export const GamePlay = memo(({
     readingTimeTotal?: number;
     responseTimeTotal?: number;
   }) => {
-    console.log('[GamePlay] QuestionModal buzzer state change:', state);
 
     // Update buzzerStateRef with new state from QuestionModal
     if (buzzerStateRef.current) {
@@ -1005,9 +947,15 @@ export const GamePlay = memo(({
       buzzerStateRef.current.timerPhase = state.timerPhase;
       buzzerStateRef.current.readingTimerRemaining = state.readingTimerRemaining;
       buzzerStateRef.current.responseTimerRemaining = state.responseTimerRemaining;
-      buzzerStateRef.current.handicapActive = state.handicapActive;
-      buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
       buzzerStateRef.current.isPaused = state.isPaused;
+
+      // IMPORTANT: Only update handicap state from QuestionModal if switching to reading phase
+      // When switching to response phase, handicap is managed by GamePlay's switchToResponsePhase
+      if (state.timerPhase === 'reading' || state.timerPhase === 'inactive' || state.timerPhase === 'complete') {
+        buzzerStateRef.current.handicapActive = state.handicapActive;
+        buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
+      }
+      // For response phase, preserve existing handicap state from GamePlay
 
       // IMPORTANT: Use totals from QuestionModal if provided, otherwise calculate locally
       // QuestionModal calculates these based on actual question text and settings
@@ -1046,13 +994,24 @@ export const GamePlay = memo(({
       buzzerStateRef.current.responseTimerRemaining = state.responseTimerRemaining;
       buzzerStateRef.current.active = state.active;
       buzzerStateRef.current.timerPhase = state.timerPhase;
-      buzzerStateRef.current.handicapActive = state.handicapActive;
-      buzzerStateRef.current.handicapTeamId = state.handicapTeamId;
+      // handicapActive and handicapTeamId are already handled above (lines 1016-1020)
+      // Don't overwrite them here - they should only be updated for reading/inactive/complete phases
 
       // Update colors based on timer phase (host is authoritative)
       buzzerStateRef.current.timerColor = state.timerPhase === 'reading' ? 'yellow' : state.timerPhase === 'response' ? 'green' : 'gray';
       buzzerStateRef.current.timerBarColor = state.timerPhase === 'reading' ? 'bg-yellow-500' : state.timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500';
       buzzerStateRef.current.timerTextColor = state.timerPhase === 'reading' ? 'text-yellow-300' : state.timerPhase === 'response' ? 'text-green-300' : 'text-gray-300';
+
+      // Clock-anchored snapshot + phase-id stamp so clients can extrapolate the
+      // countdown and discard stale snapshots. Bump phaseId when the phase changes.
+      if (state.timerPhase !== prevModalPhaseForIdRef.current) {
+        timerPhaseIdRef.current++;
+        prevModalPhaseForIdRef.current = state.timerPhase;
+      }
+      buzzerStateRef.current.phaseId = timerPhaseIdRef.current;
+      buzzerStateRef.current.hostNowMs = Date.now();
+      buzzerStateRef.current.phaseEndsAtHostMs = Date.now() +
+        Math.max(0, state.timerPhase === 'reading' ? state.readingTimerRemaining : state.responseTimerRemaining) * 1000;
 
       // Sync state values to trigger useEffect for team activation
       setBuzzerPhase(state.timerPhase || 'inactive');
@@ -1070,7 +1029,6 @@ export const GamePlay = memo(({
 
   // Handle timer pause state changes from QuestionModal (manual pause button)
   const handleTimerPauseChange = useCallback((isPaused: boolean) => {
-    console.log('[GamePlay] Timer pause state changed:', isPaused);
     // Use setTimeout to avoid setState during render of another component
     setTimeout(() => {
       setTimerPaused(isPaused);
@@ -1113,16 +1071,9 @@ export const GamePlay = memo(({
         // Sync buzzerStateRef.isPaused with new state
         buzzerStateRef.current.isPaused = timerPaused;
 
-        console.log('[GamePlay] Syncing pause state:', {
-          isPaused: timerPaused,
-          previousPaused,
-          timerPhase: buzzerStateRef.current.timerPhase,
-          fullState: buzzerStateRef.current
-        });
 
         // PAUSE: Save current team states and deactivate all teams
         if (!previousPaused && timerPaused) {
-          console.log('[GamePlay] 💾 PAUSE - Saving team states and deactivating all teams');
           // Save current team states before deactivating
           teamStatesBeforePauseRef.current = new Map();
           teamStatusManager.teamStates.forEach((state, teamId) => {
@@ -1132,10 +1083,9 @@ export const GamePlay = memo(({
               hasAttempted: state.hasAttempted
             });
           });
-          console.log('[GamePlay] 💾 Saved team states:', Array.from(teamStatesBeforePauseRef.current.entries()).map(([id, s]) => `${id.slice(0, 8)}:${s.status}`));
 
           // Deactivate all teams directly using setMultipleTeamStatuses
-          const inactiveStates = new Map<TeamStatus>();
+          const inactiveStates = new Map<string, TeamStatus>();
           teamStatusManager.teamStates.forEach((_, teamId) => {
             inactiveStates.set(teamId, TeamStatus.INACTIVE);
           });
@@ -1144,9 +1094,7 @@ export const GamePlay = memo(({
 
         // RESUME: Restore team states from before pause
         if (previousPaused && !timerPaused && teamStatesBeforePauseRef.current) {
-          console.log('[GamePlay] ♻️ RESUME - Restoring team states from before pause');
           const savedStates = Array.from(teamStatesBeforePauseRef.current.entries()).map(([id, s]) => `${id.slice(0, 8)}:${s.status}`);
-          console.log('[GamePlay] ♻️ Restoring team states:', savedStates);
 
           // Restore each team's state
           teamStatesBeforePauseRef.current.forEach((savedState, teamId) => {
@@ -1175,24 +1123,20 @@ export const GamePlay = memo(({
   useEffect(() => {
     const isCurrentlyActive = teamStatusManager.isResponseTimerActive();
 
-    // Activate teams when: response phase AND timer active AND no handicap
-    const shouldBeActive = buzzerPhase === 'response' && buzzerActive === true && buzzerHandicapActive !== true;
+    // Activate teams when: response phase AND timer active
+    // Note: handicapTeamId is passed separately to skip only the leader team
+    const shouldBeActive = buzzerPhase === 'response' && buzzerActive === true;
 
     if (shouldBeActive && !isCurrentlyActive) {
-      console.log('[GamePlay] 🔄 Auto-ACTIVATING teams (response phase, timer active, no handicap)');
-      teamStatusManager.updateGameState({ isResponseTimerActive: true });
-    } else if (!shouldBeActive && isCurrentlyActive) {
-      console.log('[GamePlay] 🔄 Auto-DEACTIVATING teams', {
-        buzzerPhase,
-        buzzerActive,
-        buzzerHandicapActive,
-        reason: buzzerPhase !== 'response' ? 'not in response phase' :
-                buzzerActive !== true ? 'timer inactive' :
-                buzzerHandicapActive === true ? 'handicap active' : 'unknown'
+      const handicapTeamId = buzzerStateRef.current.handicapTeamId;
+      teamStatusManager.updateGameState({
+        isResponseTimerActive: true,
+        handicapTeamId: handicapTeamId || null
       });
+    } else if (!shouldBeActive && isCurrentlyActive) {
       teamStatusManager.updateGameState({ isResponseTimerActive: false });
     }
-  }, [buzzerPhase, buzzerActive, buzzerHandicapActive, teamStatusManager]);
+  }, [buzzerPhase, buzzerActive, teamStatusManager]);
 
   // Broadcast current screen to demo screen when screen changes (without triggering full state update cycle)
   // REMOVED: Now handled by main broadcastGameState which includes currentScreen in dependencies
@@ -1285,7 +1229,6 @@ export const GamePlay = memo(({
   // Handle state sync request from client - rebroadcast current state when trigger changes
   useEffect(() => {
     if (stateSyncTrigger !== undefined && stateSyncTrigger > 0) {
-      console.log('[GamePlay] State sync requested, broadcasting current state');
       broadcastGameState(true); // Force broadcast with teams
       broadcastSuperGameState();
     }
@@ -1330,16 +1273,7 @@ export const GamePlay = memo(({
   // Broadcast game state when CRITICAL values change
   // UI-only values like themesScrollPosition and highlightedQuestion are handled separately
   useEffect(() => {
-    console.log('[GamePlay] 🔄 Critical state changed, broadcasting:', {
-      currentRoundIndex,
-      hasActiveQuestion: !!activeQuestion,
-      questionId: activeQuestion?.question?.id,
-      showAnswer,
-      showHint,
-      answeringTeamId
-    });
     broadcastGameState(true); // Force broadcast only for critical changes
-    console.log('[GamePlay] Broadcast triggered by critical state change');
   }, [
     currentRoundIndex,
     activeQuestion,
@@ -1350,7 +1284,6 @@ export const GamePlay = memo(({
 
   // Light broadcasts for UI state changes (highlights only - scroll has separate 35ms throttle)
   useEffect(() => {
-    console.log('[GamePlay] 🔄 UI state changed (highlight), scheduling light broadcast');
     broadcastGameState(false); // Normal broadcast for UI changes
   }, [
     highlightedQuestion
@@ -1365,7 +1298,6 @@ export const GamePlay = memo(({
   // Immediate broadcast on screen changes (bypass throttling)
   useEffect(() => {
     if (currentScreen) {
-      console.log('[GamePlay] Screen changed to:', currentScreen, '- broadcasting immediately');
       lastScreenChangeRef.current = Date.now(); // Mark as screen change to bypass throttling
       broadcastGameState();
     }
@@ -1383,10 +1315,8 @@ export const GamePlay = memo(({
       lastScrollBroadcastRef.current = now;
 
       if (broadcastMessage) {
-        console.log('[GamePlay] 📜 Sending scroll position to demo screen:', themesScrollPosition);
         broadcastMessage({
           type: 'GAME_STATE_UPDATE',
-          sequence: sequenceCounterRef.current++,
           state: {
             currentScreen,
           },
@@ -1399,7 +1329,6 @@ export const GamePlay = memo(({
 
   // Initial broadcast when component mounts to ensure teamScores are sent immediately
   useEffect(() => {
-    console.log('[GamePlay] Initial broadcast on mount');
     lastScreenChangeRef.current = Date.now(); // Mark as screen change to bypass throttling
     broadcastGameState();
   }, []); // Empty deps - run only on mount
@@ -1537,7 +1466,6 @@ export const GamePlay = memo(({
           })();
 
           // useEffect will handle broadcast automatically
-          console.log('[GamePlay] Screen changing to:', nextScreen);
           return nextScreen;
         });
       }
@@ -1706,7 +1634,6 @@ export const GamePlay = memo(({
         setShowAnswer(true);
         setBuzzerActiveState(false);
         buzzerActiveRef.current = false;
-        processingWrongAnswerRef.current = false;
         const newState = {
           active: false,
           timerPhase: 'inactive' as const,
@@ -1730,11 +1657,9 @@ export const GamePlay = memo(({
 
         // CRITICAL: Immediately broadcast state to demo screen when showing answer
         // This ensures instant sync between host and demo screen
-        console.log('[GamePlay] 📡 Showing answer - broadcasting immediately to demo screen');
         broadcastGameState(true); // Force broadcast for instant sync
 
         // Deactivate all teams when answer is shown (explicit call, centralized useEffect will also handle)
-        console.log('[GamePlay] ⚫ Deactivating all teams (answer shown)');
         teamStatusManager.updateGameState({ isResponseTimerActive: false });
       }
 
@@ -1793,12 +1718,6 @@ export const GamePlay = memo(({
 
   // Activate buzzers when question opens - with periodic state updates
   useEffect(() => {
-    console.log('[GamePlay] 🚀 Timer useEffect running:', {
-      activeQuestion: !!activeQuestion,
-      showAnswer,
-      currentRound: currentRound?.name,
-      teamsCount: stabilizedTeams.length
-    });
     if (activeQuestion && !showAnswer) {
       // Get round timer settings
       const readingTimePerLetter = currentRound?.readingTimePerLetter ?? 0.05;
@@ -1829,6 +1748,20 @@ export const GamePlay = memo(({
       let responseRemaining = responseWindow;
       let handicapActive = false;
 
+      // DEADLINE-BASED timing: remaining time is always computed from wall-clock
+      // deadlines, NOT by subtracting a fixed amount per interval tick. Fixed decrements
+      // run slow whenever setInterval fires late (GC, busy host, throttled tab), which is
+      // a main source of timer drift between host and clients. Pausing shifts the
+      // deadlines forward by the paused duration, so both the countdown and the hard-cap
+      // backstop stay correct.
+      let readingDeadline = Date.now() + readingTime * 1000;
+      let responseDeadline = Date.now() + (readingTime + responseWindow) * 1000;
+      let pauseStartedAt: number | null = null;
+
+      // New question - bump the phase id so clients discard timer snapshots from the
+      // previous question that may still be in flight
+      timerPhaseIdRef.current++;
+
       // Initialize refs with initial values (so sendBuzzerState can access them)
       currentPhaseRef.current = currentPhase;
       readingRemainingRef.current = readingRemaining;
@@ -1845,19 +1778,31 @@ export const GamePlay = memo(({
         const isHandicapActiveForTeam = handicapActiveRef.current && leadingTeam?.teamId;
         // Timer is active only if buzzer is active AND in a running phase
         const isActive = buzzerActiveRef.current && (currentPhaseRef.current === 'reading' || currentPhaseRef.current === 'response');
+
+        // Preserve existing handicapTeamId if handicap is already active
+        // Only update it if handicap is being newly activated or if it's currently undefined
+        const currentHandicapTeamId = buzzerStateRef.current?.handicapTeamId;
+        const newHandicapTeamId = isHandicapActiveForTeam ? leadingTeam?.teamId : undefined;
+        const shouldPreserveHandicapTeamId = handicapActiveRef.current && currentHandicapTeamId && !newHandicapTeamId;
+
         const state = {
           active: isActive,
           timerPhase: currentPhaseRef.current,
           readingTimerRemaining: Math.max(0, readingRemainingRef.current),
           responseTimerRemaining: Math.max(0, responseRemainingLocalRef.current),
           handicapActive: handicapActiveRef.current,
-          handicapTeamId: isHandicapActiveForTeam ? leadingTeam?.teamId : undefined,
+          handicapTeamId: shouldPreserveHandicapTeamId ? currentHandicapTeamId : newHandicapTeamId,
           isPaused: timerPausedRef.current, // Use ref to get current value
           // Add total times for demo screen display
           readingTimeTotal: readingTimeRef.current,
           responseTimeTotal: responseWindowLocalRef.current,
+          // Clock-anchored snapshot: clients extrapolate the countdown from this
+          // instead of running their own duration computation (fixes drift)
+          phaseId: timerPhaseIdRef.current,
+          hostNowMs: Date.now(),
+          phaseEndsAtHostMs: Date.now() + Math.max(0, currentPhaseRef.current === 'reading' ? readingRemainingRef.current : responseRemainingLocalRef.current) * 1000,
           // Add colors (host is authoritative)
-          timerColor: currentPhaseRef.current === 'reading' ? 'yellow' : currentPhaseRef.current === 'response' ? 'green' : 'gray',
+          timerColor: (currentPhaseRef.current === 'reading' ? 'yellow' : currentPhaseRef.current === 'response' ? 'green' : 'gray') as 'yellow' | 'green' | 'gray',
           timerBarColor: currentPhaseRef.current === 'reading' ? 'bg-yellow-500' : currentPhaseRef.current === 'response' ? 'bg-green-500' : 'bg-gray-500',
           timerTextColor: currentPhaseRef.current === 'reading' ? 'text-yellow-300' : currentPhaseRef.current === 'response' ? 'text-green-300' : 'text-gray-300'
         };
@@ -1885,17 +1830,18 @@ export const GamePlay = memo(({
       // Function to switch from reading to response phase (called from demo screen signal)
       const switchToResponsePhase = () => {
         if (currentPhase !== 'reading') {
-          console.log('[GamePlay] Not in reading phase, ignoring switch request');
           return;
         }
 
-        console.log('[GamePlay] ⚡ Switching to response phase (from demo screen signal)');
 
         // Clear reading timer
         readingRemaining = 0;
         readingRemainingRef.current = readingRemaining; // Sync ref for sendBuzzerState
         currentPhase = 'response';
         currentPhaseRef.current = currentPhase; // Sync ref for sendBuzzerState
+        timerPhaseIdRef.current++; // Phase transition - bump for stale-message guard
+        // Anchor the response deadline to now (the response window starts now)
+        responseDeadline = Date.now() + responseRemaining * 1000;
 
         // Clear early buzzes from reading phase
         onClearBuzzes?.();
@@ -1916,9 +1862,14 @@ export const GamePlay = memo(({
           setTimeout(() => {
             handicapActive = false;
             handicapActiveRef.current = handicapActive; // Sync ref for sendBuzzerState
+            // CRITICAL: Clear handicapTeamId to allow leader team to activate
+            buzzerStateRef.current.handicapActive = false;
+            buzzerStateRef.current.handicapTeamId = undefined;
+            // Tell the team status manager too - with the handicap lifted it will
+            // (re)activate the previously skipped leader team via reconciliation
+            teamStatusManager.updateGameState({ isResponseTimerActive: true, handicapTeamId: null });
             setBuzzerActiveState(true);
             buzzerActiveRef.current = true;
-            console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
             // Centralized useEffect will auto-activate teams when handicap becomes false
             setTimeout(() => broadcastGameState(true), 0);
             sendBuzzerState(); // This will sync state and trigger useEffect
@@ -1926,7 +1877,6 @@ export const GamePlay = memo(({
         } else {
           setBuzzerActiveState(true);
           buzzerActiveRef.current = true;
-          console.log('[GamePlay] 🟡 Activating all teams (green timer starts)');
           // Centralized useEffect will auto-activate teams
           setTimeout(() => broadcastGameState(true), 0);
           sendBuzzerState(); // This will sync state and trigger useEffect
@@ -1938,7 +1888,7 @@ export const GamePlay = memo(({
 
       // Initial state
       const initiallyActive = currentPhase === 'response';
-      const needsHandicap = handicapEnabled && handicapDelay > 0 && leadingTeam && initiallyActive;
+      const needsHandicap = handicapEnabled && handicapDelay > 0 && !!leadingTeam && initiallyActive;
 
       if (needsHandicap) {
         handicapActive = true;
@@ -1947,13 +1897,6 @@ export const GamePlay = memo(({
       setBuzzerActiveState(initiallyActive && !handicapActive);
       buzzerActiveRef.current = initiallyActive && !handicapActive;
 
-      console.log('[GamePlay] Timer initialized - Initial state:', {
-        currentPhase,
-        readingTime,
-        responseWindow,
-        timerPaused: timerPausedRef.current,
-        initialBuzzerState: buzzerStateRef.current
-      });
 
       sendBuzzerState();
 
@@ -1961,10 +1904,16 @@ export const GamePlay = memo(({
       if (needsHandicap && handicapDelay > 0) {
         setTimeout(() => {
           handicapActive = false;
+          handicapActiveRef.current = handicapActive;
+          // CRITICAL: Clear handicapTeamId to allow leader team to activate
+          buzzerStateRef.current.handicapActive = false;
+          buzzerStateRef.current.handicapTeamId = undefined;
+          // Tell the team status manager too - with the handicap lifted it will
+          // (re)activate the previously skipped leader team via reconciliation
+          teamStatusManager.updateGameState({ isResponseTimerActive: true, handicapTeamId: null });
           setBuzzerActiveState(true);
           buzzerActiveRef.current = true;
           // Activate all teams when green timer starts (after handicap ends)
-          console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
           // Centralized useEffect will auto-activate teams when handicap becomes false
           // CRITICAL: Broadcast team state changes to demo screen
           setTimeout(() => broadcastGameState(true), 0);
@@ -1972,19 +1921,56 @@ export const GamePlay = memo(({
         }, handicapDelay * 1000);
       } else if (initiallyActive && !needsHandicap) {
         // Starting directly in response phase without handicap - activate teams immediately
-        console.log('[GamePlay] 🟡 Activating all teams (starting in response phase)');
         // Centralized useEffect will auto-activate teams
         // CRITICAL: Broadcast team state changes to demo screen
         setTimeout(() => broadcastGameState(true), 0);
       }
 
+      // Hard-cap backstop: guarantees the engine stops even if the interval dies.
+      // Deadline-based and re-armed when resuming from pause, so a long pause no longer
+      // causes the backstop to kill the engine while clients keep counting.
+      const armBackstop = () => {
+        if (buzzerDelayRef.current) clearTimeout(buzzerDelayRef.current);
+        const remainingMs = responseDeadline - Date.now();
+        if (remainingMs > 0) {
+          buzzerDelayRef.current = setTimeout(() => {
+            if (stateUpdateRef.current) {
+              clearInterval(stateUpdateRef.current);
+              stateUpdateRef.current = null;
+            }
+            if (syncIntervalRef.current) {
+              clearInterval(syncIntervalRef.current);
+              syncIntervalRef.current = null;
+            }
+            setBuzzerActiveState(false);
+            buzzerActiveRef.current = false;
+            // Deactivate all teams when time expires
+            // Centralized useEffect will auto-deactivate teams
+            sendBuzzerState(); // Syncs state and triggers useEffect
+          }, remainingMs);
+        }
+      };
+      armBackstop();
+
       // Periodic state update (every 100ms)
       stateUpdateRef.current = setInterval(() => {
+        // Pause bookkeeping: on resume, shift both deadlines forward by the paused
+        // duration so the countdown and hard-cap backstop stay correct.
+        if (timerPausedRef.current) {
+          if (pauseStartedAt === null) pauseStartedAt = Date.now();
+        } else if (pauseStartedAt !== null) {
+          const pausedMs = Date.now() - pauseStartedAt;
+          pauseStartedAt = null;
+          readingDeadline += pausedMs;
+          responseDeadline += pausedMs;
+          armBackstop();
+        }
+
         // Always send buzzer state updates to demo screen, even when paused
         // This ensures demo screen stays synchronized with host state
         if (!timerPausedRef.current) {
           if (currentPhase === 'reading') {
-            readingRemaining -= 0.1;
+            readingRemaining = Math.max(0, (readingDeadline - Date.now()) / 1000);
             readingRemainingRef.current = readingRemaining; // Sync ref for sendBuzzerState
           if (readingRemaining <= 0) {
             readingRemaining = 0;
@@ -1995,6 +1981,9 @@ export const GamePlay = memo(({
             if (!demoScreenConnected) {
               currentPhase = 'response';
               currentPhaseRef.current = currentPhase; // Sync ref for sendBuzzerState
+              timerPhaseIdRef.current++; // Phase transition - bump for stale-message guard
+              // Anchor the response deadline to now (the response window starts now)
+              responseDeadline = Date.now() + responseRemaining * 1000;
 
             // Clear early buzzes from reading phase - they don't count
             onClearBuzzes?.();
@@ -2015,10 +2004,15 @@ export const GamePlay = memo(({
               setTimeout(() => {
                 handicapActive = false;
                 handicapActiveRef.current = handicapActive; // Sync ref for sendBuzzerState
+                // CRITICAL: Clear handicapTeamId to allow leader team to activate
+                buzzerStateRef.current.handicapActive = false;
+                buzzerStateRef.current.handicapTeamId = undefined;
+                // Tell the team status manager too - with the handicap lifted it will
+                // (re)activate the previously skipped leader team via reconciliation
+                teamStatusManager.updateGameState({ isResponseTimerActive: true, handicapTeamId: null });
                 setBuzzerActiveState(true);
                 buzzerActiveRef.current = true;
                 // Activate all teams when green timer starts (after handicap ends)
-                console.log('[GamePlay] 🟡 Activating all teams (after handicap ends)');
                 // Centralized useEffect will auto-activate teams when handicap becomes false
                 // CRITICAL: Broadcast team state changes to demo screen
                 setTimeout(() => broadcastGameState(true), 0);
@@ -2028,17 +2022,29 @@ export const GamePlay = memo(({
               setBuzzerActiveState(true);
               buzzerActiveRef.current = true;
               // Activate all teams when green timer starts
-              console.log('[GamePlay] 🟡 Activating all teams (green timer starts)');
               // Centralized useEffect will auto-activate teams
               // CRITICAL: Broadcast team state changes to demo screen
               setTimeout(() => broadcastGameState(true), 0);
               sendBuzzerState(); // This will sync state and trigger useEffect
             }
+            } else {
+              // Demo screen is connected - it drives the phase switch via
+              // TIMER_PHASE_SWITCH. Guard against a lost message: if the signal
+              // doesn't arrive within the grace period, transition locally anyway.
+              if (!phaseSwitchFallbackRef.current) {
+                phaseSwitchFallbackRef.current = setTimeout(() => {
+                  phaseSwitchFallbackRef.current = null;
+                  if (currentPhaseRef.current === 'reading' && !timerPausedRef.current) {
+                    console.log('[GamePlay] ⏱ TIMER_PHASE_SWITCH not received in time - falling back to local phase switch');
+                    switchToResponsePhaseRef.current?.();
+                  }
+                }, 1500);
+              }
             } // End of if (!demoScreenConnected)
           } // End of if (readingRemaining <= 0)
         } // ← Закрытие if (currentPhase === 'reading')
         } else if (currentPhase === 'response') {
-          responseRemaining -= 0.1;
+          responseRemaining = Math.max(0, (responseDeadline - Date.now()) / 1000);
           // Update ref with current value for immediate access in handleScoreChange
           responseTimerRemainingRef.current = responseRemaining;
           responseRemainingLocalRef.current = responseRemaining; // Sync ref for sendBuzzerState
@@ -2047,12 +2053,21 @@ export const GamePlay = memo(({
             responseRemainingLocalRef.current = responseRemaining; // Sync ref for sendBuzzerState
             currentPhase = 'complete';
             currentPhaseRef.current = currentPhase; // Sync ref for sendBuzzerState
+            timerPhaseIdRef.current++; // Phase transition - bump for stale-message guard
             setBuzzerActiveState(false);
             buzzerActiveRef.current = false;
             // Deactivate all teams when time expires
-            console.log('[GamePlay] ⚫ Deactivating all teams (timer expired)');
             // Centralized useEffect will auto-deactivate teams
             sendBuzzerState(); // Send final state when timer expires (syncs state and triggers useEffect)
+            // Timer is done - stop the engine (the backstop below is just a safety net)
+            if (stateUpdateRef.current) {
+              clearInterval(stateUpdateRef.current);
+              stateUpdateRef.current = null;
+            }
+            if (syncIntervalRef.current) {
+              clearInterval(syncIntervalRef.current);
+              syncIntervalRef.current = null;
+            }
           }
         } // ← Закрытие if (!timerPausedRef.current)
 
@@ -2072,35 +2087,19 @@ export const GamePlay = memo(({
         }
       }, 5000);
 
-      // Set cleanup for when timers would naturally end
-      const totalResponseTime = responseWindow > 0 ? (readingTime + responseWindow) * 1000 : 0;
-      if (totalResponseTime > 0) {
-        buzzerDelayRef.current = setTimeout(() => {
-          if (stateUpdateRef.current) {
-            clearInterval(stateUpdateRef.current);
-            stateUpdateRef.current = null;
-          }
-          if (syncIntervalRef.current) {
-            clearInterval(syncIntervalRef.current);
-            syncIntervalRef.current = null;
-          }
-          setBuzzerActiveState(false);
-          buzzerActiveRef.current = false;
-          // Deactivate all teams when time expires
-          console.log('[GamePlay] ⚫ Deactivating all teams (timer expired in cleanup)');
-          // Centralized useEffect will auto-deactivate teams
-          sendBuzzerState(); // Syncs state and triggers useEffect
-        }, totalResponseTime);
-      }
+      // Set cleanup for when timers would naturally end - handled by armBackstop above
     }
 
     return () => {
-      console.log('[GamePlay] 🧹 Timer useEffect cleanup called');
       if (buzzerDelayRef.current) clearTimeout(buzzerDelayRef.current);
       if (responseWindowRef.current) clearTimeout(responseWindowRef.current);
       if (stateUpdateRef.current) clearInterval(stateUpdateRef.current);
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
       syncIntervalRef.current = null;
+      if (phaseSwitchFallbackRef.current) {
+        clearTimeout(phaseSwitchFallbackRef.current);
+        phaseSwitchFallbackRef.current = null;
+      }
 
       // Only deactivate buzzer if question is closed or showAnswer is true
       // Don't deactivate if useEffect is just being recreated due to prop changes
@@ -2123,7 +2122,6 @@ export const GamePlay = memo(({
           timerTextColor: 'text-gray-300'
         });
       } else {
-        console.log('[GamePlay] 🔄 Skipping buzzer deactivation in cleanup - question still active');
       }
     };
   }, [activeQuestion, showAnswer, currentRound, stabilizedTeams, demoScreenConnected]);
@@ -2131,7 +2129,6 @@ export const GamePlay = memo(({
   // Handle external signal to switch to response phase (from demo screen)
   useEffect(() => {
     if (switchToResponsePhaseSignal !== null && switchToResponsePhaseSignal !== lastProcessedSignalRef.current) {
-      console.log('[GamePlay] 📨 Received switchToResponsePhaseSignal:', switchToResponsePhaseSignal);
       lastProcessedSignalRef.current = switchToResponsePhaseSignal;
       switchToResponsePhase();
       // Reset the signal after processing to prevent multiple triggers
@@ -2141,12 +2138,6 @@ export const GamePlay = memo(({
 
   // Close question modal
   const closeQuestion = useCallback(() => {
-    console.log('[GamePlay] 🔼 closeQuestion called', {
-      hasActiveQuestion: !!activeQuestion,
-      questionId: activeQuestion?.question.id,
-      showAnswer,
-      timestamp: Date.now()
-    });
 
     if (activeQuestion) {
       // Mark question as answered
@@ -2164,7 +2155,6 @@ export const GamePlay = memo(({
     setBuzzerActiveState(false);
     buzzerActiveRef.current = false;
 
-    console.log('[GamePlay] 🔼 closeQuestion: state updated, broadcasting should trigger');
 
     // Send buzzer state update to inform demo screen that timer is now inactive
     if (buzzerStateRef.current) {
@@ -2231,7 +2221,6 @@ export const GamePlay = memo(({
 
   // Stable callback for showing answer to prevent infinite re-renders
   const handleShowAnswer = useCallback(() => {
-    console.log('[GamePlay] handleShowAnswer called, setting showAnswer to true');
     setShowAnswer(true);
     setBuzzerActiveState(false);
     buzzerActiveRef.current = false;
@@ -2258,10 +2247,8 @@ export const GamePlay = memo(({
     onBuzzerStateChange(newState);
 
     // Deactivate all teams when answer is shown (explicit call, centralized useEffect will also handle)
-    console.log('[GamePlay] ⚫ Deactivating all teams (answer shown via button)');
     teamStatusManager.updateGameState({ isResponseTimerActive: false });
     // CRITICAL: Immediately broadcast state to demo screen when showing answer
-    console.log('[GamePlay] 📡 Showing answer - broadcasting immediately to demo screen');
     broadcastGameState(true); // Force broadcast for instant sync
   }, [broadcastGameState, onBuzzerStateChange]);
 
@@ -2285,14 +2272,6 @@ export const GamePlay = memo(({
       id: id.slice(0, 12),
       status: state.status
     }));
-    console.log('[GamePlay] handleScoreChange called:', {
-      change,
-      points,
-      answeringTeamId,
-      targetTeamId,
-      getAnsweringTeamResult: currentTeamStatusManager.getAnsweringTeam()?.slice(0, 12),
-      allTeamStates: allStates
-    });
 
     // Apply score change - NO CONDITIONS except having a target team
     if (targetTeamId) {
@@ -2301,7 +2280,6 @@ export const GamePlay = memo(({
           const updated = prev.map((team: TeamScore) => {
             if (team.teamId === targetTeamId) {
               const newScore = team.score - points;
-              console.log(`[GamePlay] ❌ Deducting ${points} points from team ${team.teamName}: ${team.score} -> ${newScore}`);
               return { ...team, score: newScore };
             }
             return team;
@@ -2317,7 +2295,6 @@ export const GamePlay = memo(({
           const updated = prev.map((team: TeamScore) => {
             if (team.teamId === targetTeamId) {
               const newScore = team.score + points;
-              console.log(`[GamePlay] ✅ Adding ${points} points to team ${team.teamName}: ${team.score} -> ${newScore}`);
               return { ...team, score: newScore };
             }
             return team;
@@ -2330,11 +2307,9 @@ export const GamePlay = memo(({
         currentTeamStatusManager.handleCorrectAnswer();
 
         // Deactivate all teams on correct answer
-        console.log('[GamePlay] ⚫ Deactivating all teams (correct answer)');
         currentTeamStatusManager.updateGameState({ isResponseTimerActive: false });
 
         // Auto-show answer when correct answer is given
-        console.log('[GamePlay] ✅ Correct answer - auto-showing answer');
         setShowAnswer(true);
 
         // Turn off buzzer on correct answer
@@ -2376,7 +2351,6 @@ export const GamePlay = memo(({
       const restoredUrl = await restoreBlobFromStorage(question.media.localFile.mediaId);
       if (restoredUrl) {
         question.media.url = restoredUrl;
-        console.log('✅ Question media blob URL restored:', question.media.localFile.mediaId);
       }
     }
 
@@ -2384,25 +2358,12 @@ export const GamePlay = memo(({
       const restoredUrl = await restoreBlobFromStorage(question.answerMedia.localFile.mediaId);
       if (restoredUrl) {
         question.answerMedia.url = restoredUrl;
-        console.log('✅ Answer media blob URL restored:', question.answerMedia.localFile.mediaId);
       }
     }
 
-    console.log('🎯 GamePlay - Opening question:', {
-      questionId: question.id,
-      questionText: question.text?.slice(0, 50),
-      theme: theme.name,
-      points: points,
-      mediaData: question.media,
-      mediaUrl: question.media?.url,
-      mediaType: question.media?.type,
-      timerPaused: timerPaused,
-      timerPausedRef: timerPausedRef.current
-    });
 
     // Reset team states when opening a new question
     // Use flushSync to ensure state is synchronously updated before continuing
-    console.log('[GamePlay] 🔒 Resetting team states for new question');
     flushSync(() => {
       teamStatusManager.resetForNewQuestion();
     });
@@ -2416,12 +2377,6 @@ export const GamePlay = memo(({
     const hasMedia = !!(question.media && question.media.url && question.media.url.trim() !== '');
     const initialPauseState = hasMedia;
 
-    console.log('[GamePlay] Opening question with initial pause state:', {
-      hasMedia,
-      initialPauseState,
-      questionId: question.id,
-      mediaUrl: question.media?.url
-    });
     // Highlight the question for 1 second, then open modal
     setHighlightedQuestion(key);
     setTimeout(() => {
@@ -2435,17 +2390,6 @@ export const GamePlay = memo(({
       flushSync(() => {
         setActiveQuestion(newActiveQuestion);
         lastActiveQuestionRef.current = newActiveQuestion; // Update ref immediately
-        console.log('[GamePlay] ✅ Updated lastActiveQuestionRef:', {
-          question: newActiveQuestion.question?.text?.slice(0, 30),
-          theme: newActiveQuestion.theme.name,
-          questionId: newActiveQuestion.question?.id,
-          hasMedia: !!newActiveQuestion.question?.media,
-          hasAnswerMedia: !!newActiveQuestion.question?.answerMedia,
-          mediaUrl: newActiveQuestion.question?.media?.url,
-          mediaType: newActiveQuestion.question?.media?.type,
-          hasLocalFile: !!newActiveQuestion.question?.media?.localFile,
-          localFileId: newActiveQuestion.question?.media?.localFile?.mediaId
-        });
         questionModalActiveRef.current = true; // QuestionModal open, will manage timer values
         setShowAnswer(false);
         setShowHint(false); // Reset hint state when opening new question
@@ -2459,7 +2403,6 @@ export const GamePlay = memo(({
       });
 
       // Now broadcast immediately after state is guaranteed to be updated
-      console.log('[GamePlay] Broadcasting new question after flushSync');
 
       // Initialize buzzerStateRef for new question BEFORE broadcast
       if (buzzerStateRef.current) {
@@ -2486,17 +2429,9 @@ export const GamePlay = memo(({
           timerTextColor: newReadingTime > 0 ? 'text-yellow-300' : 'text-green-300'
         };
 
-        console.log('[GamePlay] ✅ Initialized buzzerStateRef for new question:', {
-          isPaused: initialPauseState,
-          timerPhase: buzzerStateRef.current.timerPhase,
-          readingTime: newReadingTime,
-          responseTimeTotal: currentRound?.responseWindow || 30,
-          hasMedia
-        });
 
         // CRITICAL: Send initial buzzer state to demo screen immediately
         // This ensures demo screen starts with correct pause state
-        console.log('[GamePlay] 📡 Sending initial buzzer state to demo screen:', buzzerStateRef.current);
         onBuzzerStateChange(buzzerStateRef.current);
 
         // CRITICAL: Also broadcast game state to ensure demo screen has complete state
@@ -2526,12 +2461,6 @@ export const GamePlay = memo(({
 
           // Debug logging for buzz effect
           if (isBuzzed) {
-            console.log('[GamePlay] 🟢 Team buzzed:', {
-              teamName: team.teamName,
-              teamId: team.teamId.slice(0, 12),
-              teamStatus,
-              isInactiveBuzz: isBuzzed && teamStatus === TeamStatus.INACTIVE
-            });
           }
 
           // Check if team has placed bet in super game

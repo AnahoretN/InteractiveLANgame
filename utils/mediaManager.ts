@@ -45,11 +45,10 @@ export type {
 } from './media';
 
 // Import specific classes and utilities for backward compatibility
-import { MediaFileCache as NewMediaFileCache } from './media';
+import { MediaFileCache as NewMediaFileCache, generateMediaId } from './media';
 import { BlobUrlTracker as NewBlobUrlTracker } from './media';
 import { mediaStorage as newMediaStorage } from './media';
 import { bulkLoadMediaFiles as newBulkLoadMediaFiles } from './media';
-import { getGlobalCache } from './media';
 
 // Global cache instance (maintained for backward compatibility)
 const mediaFileCache = new NewMediaFileCache();
@@ -96,7 +95,6 @@ export async function restoreBlobFromStorage(mediaId: string): Promise<string | 
     }
 
     const blobUrl = URL.createObjectURL(file);
-    console.log('✅ Blob URL восстановлен из IndexedDB:', file.name);
     return blobUrl;
   } catch (error) {
     console.error('❌ Ошибка восстановления из IndexedDB:', error);
@@ -108,7 +106,6 @@ export async function restoreBlobFromStorage(mediaId: string): Promise<string | 
  * Restore pack blob URLs from storage
  */
 export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<void> {
-  console.log('🔄 Восстановление blob URL из IndexedDB для пака:', pack.name);
 
   let restoredCount = 0;
   let skippedCount = 0;
@@ -179,7 +176,6 @@ export async function restorePackBlobUrlsFromStorage(pack: GamePack): Promise<vo
     }
   }
 
-  console.log(`✅ Восстановление завершено: ${restoredCount} восстановлено, ${skippedCount} пропущено`);
 }
 
 /**
@@ -207,11 +203,6 @@ export async function createBlobUrlWithStorage(
     mediaId: mediaId
   };
 
-  console.log('🔗 Создан blob URL с сохранением в IndexedDB:', {
-    fileName: file.name,
-    mediaId: mediaId,
-    blobUrl: blobUrl.slice(0, 50) + '...'
-  });
 
   return { blobUrl, mediaId, localFileInfo };
 }
@@ -257,5 +248,3 @@ export function getEnhancedCacheStats() {
   return mediaFileCache.getStats();
 }
 
-// Re-export bulk load with proper type
-export { bulkLoadMediaFiles };

@@ -59,6 +59,7 @@ export interface LocalFileInfo {
   fileType: string;      // MIME тип файла
   lastModified: number;  // Время последней модификации
   mediaId?: string;      // ID для восстановления из IndexedDB
+  base64?: string;       // Содержимое файла в base64 (для передачи на демо-экран)
 }
 
 export interface QuestionHint {

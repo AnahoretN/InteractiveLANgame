@@ -178,7 +178,7 @@ OptimizedSimpleClientItem.displayName = 'OptimizedSimpleClientItem';
 interface VirtualizedClientListProps {
   clients: ConnectedClient[];
   isStale: (lastSeen: number) => boolean;
-  buzzedClients: Set<string>;
+  buzzedClients: { has(id: string): boolean; size?: number };
   buzzingClientIds: Set<string>;
   draggedClientId: string | null;
   onDragStart: (id: string) => void;
@@ -233,7 +233,7 @@ VirtualizedClientList.displayName = 'VirtualizedClientList';
 interface VirtualizedSimpleClientListProps {
   clients: ConnectedClient[];
   isStale: (lastSeen: number) => boolean;
-  buzzedClients: Set<string>;
+  buzzedClients: { has(id: string): boolean; size?: number };
   buzzingClientIds: Set<string>;
   onRemove: (id: string) => void;
   getHealthBgColor: (score: number) => string;
@@ -286,7 +286,7 @@ interface TeamListItemProps {
   onDelete: () => void;
   onEditingNameChange: (name: string) => void;
   onEditingIdSet: (id: string | null) => void;
-  buzzedClients: Set<string>;
+  buzzedClients: { has(id: string): boolean; size?: number };
   buzzingClientIds: Set<string>;
   isStale: (lastSeen: number) => boolean;
   draggedClientId: string | null;
@@ -426,7 +426,7 @@ interface NoTeamSectionProps {
   isDraggingOver: boolean;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: () => void;
-  buzzedClients: Set<string>;
+  buzzedClients: { has(id: string): boolean; size?: number };
   buzzingClientIds: Set<string>;
   isStale: (lastSeen: number) => boolean;
   draggedClientId: string | null;
@@ -500,7 +500,7 @@ interface VirtualizedTeamListProps {
   onDelete: () => void;
   onEditingNameChange: (name: string) => void;
   onEditingIdSet: (id: string | null) => void;
-  buzzedClients: Set<string>;
+  buzzedClients: { has(id: string): boolean; size?: number };
   buzzingClientIds: Set<string>;
   isStale: (lastSeen: number) => boolean;
   draggedClientId: string | null;

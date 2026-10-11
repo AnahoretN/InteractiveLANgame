@@ -13,14 +13,12 @@ import { saveMediaFile, generateMediaId } from './mediaManager';
  * Сохраняет пакет как ZIP архив с медиа файлами
  */
 export async function savePackAsZip(pack: GamePack): Promise<void> {
-  console.log('📦 Создание ZIP архива для пака:', pack.name);
 
   const zip = new JSZip();
 
   // 1. Сохраняем JSON данные пака
   const packJson = JSON.stringify(pack, null, 2);
   zip.file('pack.json', packJson);
-  console.log('📄 pack.json добавлен в архив');
 
   // 2. Собираем все blob URL и их пути в архиве
   const blobUrls = new Map<string, { blob: Blob; path: string; originalUrl: string }>();
@@ -28,18 +26,15 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
   // Функция для обработки медиа элемента
   const processMedia = async (mediaUrl: string | undefined, mediaPath: string) => {
     if (!mediaUrl || !mediaUrl.startsWith('blob:')) {
-      console.log(`⏭️ Пропуск: ${mediaPath} (не blob URL: ${mediaUrl?.slice(0, 30)}...)`);
       return;
     }
 
     // Проверяем, не обрабатывали ли мы уже этот blob
     if (blobUrls.has(mediaUrl)) {
-      console.log(`⏭️ Пропуск: ${mediaPath} (уже обработан)`);
       return;
     }
 
     try {
-      console.log(`🔍 Обработка медиа: ${mediaPath} (${mediaUrl.slice(0, 50)}...)`);
 
       // Получаем blob из URL
       const response = await fetch(mediaUrl);
@@ -49,10 +44,6 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
 
       const blob = await response.blob();
 
-      console.log(`✅ Blob получен: ${mediaPath}`, {
-        size: blob.size,
-        type: blob.type
-      });
 
       // Определяем расширение файла
       const extension = getExtensionFromMimeType(blob.type);
@@ -63,7 +54,6 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
 
       blobUrls.set(mediaUrl, { blob, path: filePath, originalUrl: mediaUrl });
 
-      console.log(`📁 Файл добавлен в очередь: ${filePath}`);
     } catch (error) {
       console.error(`❌ Ошибка получения blob для ${mediaPath}:`, error);
     }
@@ -71,7 +61,6 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
 
   // Обходим все медиа элементы в паке
   const processAllMedia = async () => {
-    console.log('🔍 Сканирование пакета на наличие медиа файлов...');
 
     let processedCount = 0;
     let skippedCount = 0;
@@ -110,14 +99,12 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
       }
     }
 
-    console.log(`📊 Статистика сканирования: ${processedCount} blob URL, ${skippedCount} пропущено`);
   };
 
   // Ждем загрузки всех blobs
   await processAllMedia();
 
   // 3. Добавляем медиа файлы в архив
-  console.log(`📁 Добавление ${blobUrls.size} файлов в архив...`);
 
   for (const [originalUrl, { blob, path }] of blobUrls) {
     zip.file(path, blob);
@@ -125,7 +112,6 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
     // Сохраняем информацию о файле в метаданных
     updateMediaUrlInPack(pack, originalUrl, path);
 
-    console.log(`✅ Файл добавлен в архив: ${path} (${blob.size} bytes)`);
   }
 
   // 4. Создаем README с инструкциями
@@ -145,22 +131,18 @@ export async function savePackAsZip(pack: GamePack): Promise<void> {
   zip.file('README.md', readme);
 
   // 5. Генерируем ZIP архив
-  console.log('🗜️ Генерация ZIP архива...');
   const zipBlob = await zip.generateAsync({ type: 'blob' });
 
   // 6. Сохраняем архив
   const fileName = `${pack.name.replace(/[^a-z0-9]/gi, '_')}.zip`;
   saveAs(zipBlob, fileName);
 
-  console.log('✅ ZIP архив сохранен:', fileName);
-  console.log(`📊 Итоговая статистика: ${blobUrls.size} медиа файлов в архиве`);
 }
 
 /**
  * Загружает пакет из ZIP архива
  */
 export async function loadPackFromZip(file: File): Promise<GamePack> {
-  console.log('📂 Загрузка пакета из ZIP архива:', file.name);
 
   const zip = await JSZip.loadAsync(file);
 
@@ -179,23 +161,14 @@ export async function loadPackFromZip(file: File): Promise<GamePack> {
     pack.id = `zip_${file.name}_${Date.now()}`;
   }
 
-  console.log('📦 JSON пакет загружен:', pack.name, 'ID:', pack.id);
-  console.log('🖼️ Pack cover в JSON:', {
-    hasCover: !!pack.cover,
-    coverType: pack.cover?.type,
-    coverValue: pack.cover?.value?.slice(0, 60) || 'не установлен'
-  });
 
   // Логируем все media URL в паке для отладки
-  console.log('🔍 Сканирование media URL в загруженном паке:');
   for (const round of pack.rounds || []) {
     for (const theme of round.themes || []) {
       for (const question of theme.questions || []) {
         if (question.media?.url) {
-          console.log(`  Question ${question.id}: ${question.media.url?.slice(0, 60)}... (type: ${question.media.type})`);
         }
         if (question.answerMedia?.url) {
-          console.log(`  Answer ${question.id}: ${question.answerMedia.url?.slice(0, 60)}... (type: ${question.answerMedia.type})`);
         }
       }
     }
@@ -214,7 +187,6 @@ export async function loadPackFromZip(file: File): Promise<GamePack> {
       }
     });
 
-    console.log(`📁 Найдено ${mediaFiles.length} медиа файлов`);
 
     // Создаем маппинг новых blob URL
     const newBlobUrls = new Map<string, { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo }>();
@@ -270,13 +242,6 @@ export async function loadPackFromZip(file: File): Promise<GamePack> {
         // Сохраняем для последующего обновления
         newBlobUrls.set(relativePath, { blobUrl, mediaId, localFileInfo });
 
-        console.log('🔗 Создан blob URL из архива с сохранением в IndexedDB:', {
-          path: relativePath,
-          size: blob.size,
-          type: mimeType,
-          mediaId: mediaId,
-          blobUrl: blobUrl.slice(0, 50) + '...'
-        });
 
         mediaFilesCount++;
       } catch (error) {
@@ -288,7 +253,6 @@ export async function loadPackFromZip(file: File): Promise<GamePack> {
     updateAllMediaUrlsInPack(pack, newBlobUrls);
   }
 
-  console.log(`✅ Пакет загружен: ${mediaFilesCount} медиа файлов восстановлено и сохранено в IndexedDB`);
 
   return pack;
 }
@@ -374,7 +338,6 @@ function updateAllMediaUrlsInPack(
   pack: GamePack,
   newBlobUrls: Map<string, { blobUrl: string; mediaId: string; localFileInfo: LocalFileInfo }>
 ): void {
-  console.log('🔄 Обновление media URL в паке...');
 
   let updatedCount = 0;
 
@@ -392,7 +355,6 @@ function updateAllMediaUrlsInPack(
     const packCoverMatch = fileName.match(/^pack_cover(_\d+)?\.bin$/);
     if (packCoverMatch) {
       packCoverData = { blobUrl, mediaId, localFileInfo };
-      console.log(`📋 Файл ${fileName} -> pack cover`);
       continue;
     }
 
@@ -401,7 +363,6 @@ function updateAllMediaUrlsInPack(
     if (roundCoverMatch) {
       const roundNumber = parseInt(roundCoverMatch[1], 10);
       roundCoverMap.set(roundNumber, { blobUrl, mediaId, localFileInfo });
-      console.log(`📋 Файл ${fileName} -> round ${roundNumber} cover`);
       continue;
     }
 
@@ -412,7 +373,6 @@ function updateAllMediaUrlsInPack(
     const answerMatch = fileName.match(/answer_([a-f0-9_]{36})/);
 
     if (!questionMatch && !answerMatch) {
-      console.log(`⚠️ Не удалось извлечь question ID из файла: ${fileName}`);
       continue;
     }
 
@@ -420,7 +380,6 @@ function updateAllMediaUrlsInPack(
     const questionId = (questionMatch?.[1] || answerMatch?.[1]!)!.replace(/_/g, '-');
     const mediaType = questionMatch ? 'question' : 'answer';
 
-    console.log(`📋 Извлечён ID из файла ${fileName}: ${questionId} (${mediaType})`);
 
     // Определяем тип медиа по расширению файла или по MIME типу из localFileInfo
     let extension = fileName.split('.').pop()?.toLowerCase();
@@ -433,16 +392,13 @@ function updateAllMediaUrlsInPack(
       else if (mimeType.startsWith('audio/')) extension = 'mp3';
     }
 
-    console.log(`🔍 Файл ${fileName} имеет расширение: ${extension}, MIME: ${localFileInfo.fileType}`);
 
     // ПРИОРИТЕТ ПРЕФИКСА: если файл начинается с question_, это question media
     // если начинается с answer_, это answer media
     if (mediaType === 'question') {
       questionMediaMap.set(questionId, { blobUrl, mediaId, localFileInfo });
-      console.log(`📋 Файл ${fileName} -> question media для вопроса ${questionId}`);
     } else {
       answerMediaMap.set(questionId, { blobUrl, mediaId, localFileInfo });
-      console.log(`📋 Файл ${fileName} -> answer media для вопроса ${questionId}`);
     }
   }
 
@@ -461,15 +417,12 @@ function updateAllMediaUrlsInPack(
 
     // Если это media:// путь, заменяем его на blob URL
     if (currentUrl.startsWith('media://')) {
-      console.log(`🔍 Найден media:// путь для вопроса ${questionId}: ${currentUrl}`);
 
       if (mediaMap.has(questionId)) {
         const mediaData = mediaMap.get(questionId)!;
-        console.log(`✅ Замена media:// на blob URL для вопроса ${questionId}`);
         updatedCount++;
         return mediaData.blobUrl;
       } else {
-        console.log(`⚠️ Не найден blob URL для вопроса ${questionId}`);
       }
     }
 
@@ -496,14 +449,10 @@ function updateAllMediaUrlsInPack(
                               (question.media.url.startsWith('blob:') && question.media.url !== mediaData.blobUrl);
 
           if (shouldUpdate) {
-            console.log(`🔄 Обновление question media для ${question.id}:`);
-            console.log(`   Старый URL: ${question.media.url?.slice(0, 50) || 'пусто'}...`);
-            console.log(`   Новый URL: ${mediaData.blobUrl.slice(0, 50)}...`);
 
             question.media.url = mediaData.blobUrl;
             question.media.localFile = mediaData.localFileInfo;
             updatedCount++;
-            console.log(`✅ Обновлено question media для ${question.id}`);
           }
         }
 
@@ -523,14 +472,10 @@ function updateAllMediaUrlsInPack(
                               (question.answerMedia.url.startsWith('blob:') && question.answerMedia.url !== mediaData.blobUrl);
 
           if (shouldUpdate) {
-            console.log(`🔄 Обновление answer media для ${question.id}:`);
-            console.log(`   Старый URL: ${question.answerMedia.url?.slice(0, 50) || 'пусто'}...`);
-            console.log(`   Новый URL: ${mediaData.blobUrl.slice(0, 50)}...`);
 
             question.answerMedia.url = mediaData.blobUrl;
             question.answerMedia.localFile = mediaData.localFileInfo;
             updatedCount++;
-            console.log(`✅ Обновлено answer media для ${question.id}`);
           }
         }
       }
@@ -544,9 +489,6 @@ function updateAllMediaUrlsInPack(
                         (pack.cover.value.startsWith('blob:') && pack.cover.value !== packCoverData.blobUrl);
 
     if (shouldUpdate) {
-      console.log('🔄 Обновление pack cover:');
-      console.log(`   Старый URL: ${pack.cover?.value?.slice(0, 50) || 'пусто'}...`);
-      console.log(`   Новый URL: ${packCoverData.blobUrl.slice(0, 50)}...`);
 
       if (!pack.cover) {
         pack.cover = { type: 'file', value: '' };
@@ -554,11 +496,8 @@ function updateAllMediaUrlsInPack(
       pack.cover.value = packCoverData.blobUrl;
       pack.cover.localFile = packCoverData.localFileInfo;
       updatedCount++;
-      console.log('✅ Обновлено pack cover');
     }
   } else {
-    console.log('⚠️ Pack cover не найден в ZIP архиве');
-    console.log(`   Pack cover в JSON: ${pack.cover?.value?.slice(0, 50) || 'не установлен'}...`);
   }
 
   // Обновляем round covers
@@ -571,9 +510,6 @@ function updateAllMediaUrlsInPack(
                           (round.cover.value.startsWith('blob:') && round.cover.value !== coverData.blobUrl);
 
       if (shouldUpdate) {
-        console.log(`🔄 Обновление round ${round.number} cover:`);
-        console.log(`   Старый URL: ${round.cover?.value?.slice(0, 50) || 'пусто'}...`);
-        console.log(`   Новый URL: ${coverData.blobUrl.slice(0, 50)}...`);
 
         if (!round.cover) {
           round.cover = { type: 'file', value: '' };
@@ -581,12 +517,10 @@ function updateAllMediaUrlsInPack(
         round.cover.value = coverData.blobUrl;
         round.cover.localFile = coverData.localFileInfo;
         updatedCount++;
-        console.log(`✅ Обновлено round ${round.number} cover`);
       }
     }
   }
 
-  console.log(`✅ Обновление завершено: ${updatedCount} media URL обновлено`);
 }
 
 /**

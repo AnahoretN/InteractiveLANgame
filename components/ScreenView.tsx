@@ -3,15 +3,15 @@ import { QRCodeSVG } from 'qrcode.react';
 import { Users, X, Loader2, Smartphone, Monitor } from 'lucide-react';
 import { Team, P2PSMessage, MessageCategory, P2PMessage } from '../types';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
+import { useHashParams } from '../hooks/useURLParams';
 import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
 import { useDemoScreenMedia } from '../hooks/useDemoScreenMedia';
 import { MediaSystemDebugger } from '../utils/mediaSystemDebugger';
 import { demoScreenMediaHandler } from '../utils/demoScreenMediaHandler';
 import { DraggableQRCode } from './shared/DraggableQRCode';
-import { TimerDisplay, TimerBar } from './shared/TimerDisplay';
 import { calculateQuestionFontSize, calculateAnswerFontSizeMobile, calculateAnswerFontSizeDesktop } from './host/game/fontUtils';
-// New team status types - extend to include clash status locally
-import { TeamStatus as BaseTeamStatus, TeamState as BaseTeamState } from '../hooks/useTeamStatusManager';
+// New team status types + shared card CSS map (single source of truth, matches host cards)
+import { getTeamCardClassesForStatus } from '../hooks/useTeamStatusManager';
 
 // Extended TeamStatus for demo screen (includes clash)
 type ExtendedTeamStatus = 'inactive' | 'active' | 'answering' | 'penalty' | 'clash';
@@ -53,15 +53,12 @@ export const ScreenView: React.FC = () => {
   const demoScreenMedia = useDemoScreenMedia();
 
   // Function to process a single message
-  const processMessage = useCallback((message: P2PSMessage) => {
+  // Loosely typed - see the note on MessageHandler in types.ts
+  const processMessage = useCallback((message: any) => {
     switch (message.type) {
       case 'STATE_SYNC':
         // Always process STATE_SYNC to update lobby state
         if (message.payload) {
-          console.log('[ScreenView] STATE_SYNC received:', {
-            isSessionActive: message.payload.isSessionActive,
-            hasPayload: !!message.payload
-          });
           setGameState(prevState => {
             const payload = message.payload;
             const currentTeams = prevState?.teams || [];
@@ -77,12 +74,6 @@ export const ScreenView: React.FC = () => {
             const sessionStateChanged = currentSessionActive !== payloadSessionActive;
             const shouldUpdateTeams = sessionStateChanged || (payloadTeams.length > 0 && payloadTeams.length >= currentTeams.length);
 
-            console.log('[ScreenView] Updating gameState:', {
-              currentSessionActive,
-              payloadSessionActive,
-              sessionStateChanged,
-              willUpdateTo: payloadSessionActive
-            });
 
             return {
               ...prevState,
@@ -153,7 +144,6 @@ export const ScreenView: React.FC = () => {
       case 'COMMANDS_LIST':
         // Handle commands list from host
         const commands = message.payload.commands || [];
-        console.log('[ScreenView] Commands list received:', commands.length, 'teams');
         // Convert commands to teams format for display
         const teamsFromCommands = commands.map((cmd: { id: string; name: string }) => ({
           id: cmd.id,
@@ -193,7 +183,6 @@ export const ScreenView: React.FC = () => {
           }));
         }
         break;
-      // TIMER_STATE is ignored - demo screen calculates timer locally
       case 'QR_CODE_STATE':
         setQrCodeState({
           isVisible: message.payload.showQRCode || false,
@@ -209,20 +198,28 @@ export const ScreenView: React.FC = () => {
         // Handle all media messages via demo screen media hook
         demoScreenMedia.processMediaMessage(message);
         break;
+      case 'TIMER_STATE':
+        // Host is the timer source of truth: adopt phase, remaining time, totals and
+        // pause state from the snapshot (phaseId-guarded against stale messages)
+        {
+        const timerPayload = message.payload;
+        // Compact log only for discrete actions (config/pause/resume/stop) - skip
+        // the frequent drift-correction updates to keep the console readable
+        if (timerPayload?.action) {
+          console.log('[ScreenView] TIMER_STATE:', timerPayload.action, 'isPaused:', timerPayload.isPaused);
+        }
+        if (timerPayload) {
+          adoptHostTimerSnapshot(timerPayload);
+        }
+        }
+        break;
       case 'BUZZ_EVENT':
         // Handle buzz event for visual feedback on demo screen
-        console.log('[ScreenView] BUZZ_EVENT received:', message.payload);
+        {
         const buzzClientId = message.payload.clientId;
         const clientsList = gameState.clients?.map((c: any) => ({ id: c.id, peerId: c.peerId, name: c.name, teamId: c.teamId })) || [];
-        console.log('[ScreenView] Current clients in gameState:', clientsList);
-        console.log('[ScreenView] Looking for clientId:', buzzClientId, 'in buzzing check');
-        // Log each client for debugging
-        clientsList.forEach((c: any) => {
-          console.log('[ScreenView] Client:', c.name, 'id:', c.id, 'peerId:', c.peerId, 'matches id:', c.id === buzzClientId, 'matches peerId:', c.peerId === buzzClientId);
-        });
         // Check both id and peerId for match
         const matchedClient = clientsList.find((c: any) => c.id === buzzClientId || c.peerId === buzzClientId);
-        console.log('[ScreenView] Match found:', !!matchedClient, matchedClient ? `client: ${matchedClient.name}` : '');
         // Add to buzzing clients for visual flash effect (use the matched client's id or the buzzClientId)
         const clientIdToAdd = matchedClient?.id || buzzClientId;
         setBuzingClientIds(prev => new Set(prev).add(clientIdToAdd));
@@ -248,29 +245,36 @@ export const ScreenView: React.FC = () => {
             });
           }, 500);
         }
+        }
         break;
       default:
     }
   }, [demoScreenMedia]); // Demo screen media dependency
 
   // Host info from URL
+  // Host info from URL - REACTIVE to hashchange: navigating the same tab to a new
+  // session's QR link must not keep connecting to the previous session's host
+  const urlParams = useHashParams();
   const urlHostId = useMemo(() => {
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    return params.get('host') || storage.get(STORAGE_KEYS.LAST_HOST) || null;
-  }, []);
+    const hostParam = urlParams.get('host');
+    if (hostParam) {
+      storage.set(STORAGE_KEYS.LAST_HOST, hostParam);
+      return hostParam;
+    }
+    return storage.get(STORAGE_KEYS.LAST_HOST) || null;
+  }, [urlParams]);
 
-  // Get signalling server URL
+  // Get signalling server URL (reactive to hashchange)
   const signallingUrl = useMemo(() => {
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    const lanServer = params.get('signalling');
+    const lanServer = urlParams.get('signalling');
     if (lanServer) {
       return `ws://${lanServer}:9000`;
     }
     return undefined;
-  }, []);
+  }, [urlParams]);
 
   // Screen ID
-  const [clientId] = useState<string>(() => {
+  const [clientId, setClientId] = useState<string>(() => {
     const saved = storage.get(STORAGE_KEYS.SCREEN_ID);
     if (saved) return saved;
     const newId = 'screen_' + Math.random().toString(36).substring(2, 10);
@@ -293,6 +297,9 @@ export const ScreenView: React.FC = () => {
 
   // Track which teams are currently buzzing (for shrink/lighten effect on inactive teams)
   const [buzzedTeamIds, setBuzzedTeamIds] = useState<Set<string>>(new Set());
+  // Tracks the last rendered card state per team (for change logging) - replaces the
+  // previous window-stored hack
+  const previousCardStatesRef = useRef<Map<string, string>>(new Map());
 
   // QR Code state from host
   const [qrCodeState, setQrCodeState] = useState<{
@@ -419,9 +426,12 @@ export const ScreenView: React.FC = () => {
   const timerBarRef = useRef<HTMLDivElement>(null);
   const timerPauseIndicatorRef = useRef<HTMLDivElement>(null);
 
-  // Local timer state - demo screen runs timer independently, NOT syncing with host
+  // Local timer state - the demo screen renders a smooth local countdown, but the
+  // countdown is ANCHORED to host snapshots (phase durations + clock deadlines from
+  // TIMER_STATE / buzzerState). The host is the single source of truth for phase
+  // durations; the screen only extrapolates between snapshots.
   const localTimerStateRef = useRef({
-    phase: 'inactive' as 'reading' | 'response' | 'inactive',
+    phase: 'inactive' as 'reading' | 'response' | 'inactive' | 'complete',
     readingRemaining: 0,
     responseRemaining: 0,
     readingTotal: 0,
@@ -432,8 +442,84 @@ export const ScreenView: React.FC = () => {
     currentQuestionId: null as string | null, // Track current question to detect changes
     // Timer settings - will be calculated from question text
     readingTimePerLetter: 0.05, // Default value
-    responseWindow: 30 // Default value
+    responseWindow: 30, // Default value
+    // Host snapshot anchoring:
+    phaseId: 0, // Monotonic id from the host; snapshots with an older id are discarded
+    localPhaseEndsAt: null as number | null // Local-clock deadline of the current phase
   });
+
+  // Adopt a host timer snapshot (from TIMER_STATE or the buzzerState of a game-state
+  // broadcast). Guarded by phaseId so stale/out-of-order snapshots are ignored.
+  const adoptHostTimerSnapshot = useCallback((snapshot: {
+    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
+    readingTimerRemaining?: number;
+    responseTimerRemaining?: number;
+    readingTimeTotal?: number;
+    responseTimeTotal?: number;
+    isPaused?: boolean;
+    phaseId?: number;
+    hostNowMs?: number;
+    phaseEndsAtHostMs?: number;
+  }) => {
+    if (!snapshot) return;
+
+    const local = localTimerStateRef.current;
+
+    // Stale-message guard: ignore snapshots from an older timer generation.
+    // Equal ids are accepted so drift-correction snapshots keep applying.
+    if (snapshot.phaseId !== undefined && snapshot.phaseId < local.phaseId) {
+      return;
+    }
+    if (snapshot.phaseId !== undefined) {
+      local.phaseId = snapshot.phaseId;
+    }
+
+    const nextPhase = snapshot.timerPhase;
+
+    // Don't let a same-generation 'reading' snapshot undo a phase switch we already
+    // performed locally and signaled to the host - the host's confirmation will carry
+    // a newer phaseId and will be accepted.
+    if (nextPhase === 'reading' && local.phase === 'response' && local.hasSwitchedPhase &&
+        snapshot.phaseId !== undefined && snapshot.phaseId === local.phaseId) {
+      return;
+    }
+
+    if (nextPhase) {
+      // A host-announced phase change resets the local phase-switch bookkeeping
+      if (nextPhase !== local.phase) {
+        local.phase = nextPhase === 'complete' ? 'response' : nextPhase;
+        local.hasSwitchedPhase = nextPhase !== 'reading';
+        local.phaseSwitchedLocally = false;
+      }
+    }
+
+    if (snapshot.readingTimeTotal !== undefined && snapshot.readingTimeTotal > 0) {
+      local.readingTotal = snapshot.readingTimeTotal;
+    }
+    if (snapshot.responseTimeTotal !== undefined && snapshot.responseTimeTotal > 0) {
+      local.responseTotal = snapshot.responseTimeTotal;
+    }
+
+    local.isPaused = snapshot.isPaused ?? local.isPaused;
+
+    // Adopt the remaining value of the CURRENT phase and anchor a local deadline.
+    const currentRemaining = local.phase === 'reading'
+      ? snapshot.readingTimerRemaining
+      : snapshot.responseTimerRemaining;
+
+    if (currentRemaining !== undefined && local.phase !== 'inactive') {
+      if (local.phase === 'reading') {
+        local.readingRemaining = currentRemaining;
+      } else {
+        local.responseRemaining = currentRemaining;
+      }
+      // Latency compensation: host sent (deadline - hostNow) = remaining; anchor the
+      // same remaining to OUR receive time so the countdown continues smoothly.
+      local.localPhaseEndsAt = Date.now() + currentRemaining * 1000;
+    } else if (local.phase === 'inactive') {
+      local.localPhaseEndsAt = null;
+    }
+  }, []);
 
   // Ref to track when question opens for timer initialization
   const lastQuestionIdRef = useRef<string | null>(null);
@@ -581,15 +667,108 @@ export const ScreenView: React.FC = () => {
     onError: (error) => {
       console.error('[ScreenView] P2P error:', error);
       setConnectionStatus('error');
+      // Clear the stored host ID ONLY when the host is genuinely unreachable
+      // (e.g. 'peer-unavailable' after a host restart with a new ID). Transient
+      // network/signalling errors must keep LAST_HOST so auto-reconnect can work.
+      const err = error as Error & { type?: string };
+      const hostUnreachable =
+        err?.type === 'peer-unavailable' ||
+        (typeof err?.message === 'string' && err.message.includes('peer-unavailable'));
+      if (hostUnreachable) {
+        storage.remove(STORAGE_KEYS.LAST_HOST);
+        console.warn('[ScreenView] Host unreachable - cleared stored LAST_HOST');
+      }
     },
   });
 
-  // Auto-connect when we have host ID
+  // NEW-SESSION DETECTION: the URL's session id is the session's identity. If it
+  // differs from the previous connection's session, this is a session we have never
+  // been connected to - start clean (fresh screen identity, no stale game state).
+  const sessionParam = urlParams.get('session');
+  const lastSessionRef = useRef<string | null>(storage.get<string>(STORAGE_KEYS.LAST_SESSION_ID) || null);
   useEffect(() => {
-    if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting) {
-      console.log('[ScreenView] Connecting to host...');
-      p2pClient.connect();
+    if (!sessionParam) return;
+    if (lastSessionRef.current && lastSessionRef.current !== sessionParam) {
+      console.log('[ScreenView] New session detected - starting with a clean state');
+      const newId = 'screen_' + Math.random().toString(36).substring(2, 10);
+      storage.set(STORAGE_KEYS.SCREEN_ID, newId);
+      setClientId(newId);
+      // Drop everything the previous session left on screen
+      setDetailedGameState(prev => ({
+        ...prev,
+        currentScreen: 'cover',
+        activeQuestion: null,
+        showAnswer: false,
+        showHint: false,
+        teamStates: {},
+        teamScores: [],
+        boardData: null,
+        allThemes: [],
+        currentRound: null,
+        superGameBets: [],
+        superGameAnswers: []
+      }));
+      setGameState(prev => ({
+        ...prev,
+        isSessionActive: false,
+        teams: [],
+        clients: []
+      }));
+      // Re-handshake with the fresh identity (the auto-connect effect reconnects)
+      if (p2pClient.isConnected || p2pClient.isConnecting) {
+        console.log('[ScreenView] New session - reconnecting with a clean identity');
+        p2pClient.disconnect();
+      }
     }
+    lastSessionRef.current = sessionParam;
+    storage.set(STORAGE_KEYS.LAST_SESSION_ID, sessionParam);
+  }, [sessionParam]);
+
+  // If the host changed (new session opened in the same tab), drop the old connection;
+  // the auto-connect effect below then reconnects to the new host
+  const prevHostRef = useRef(urlHostId);
+  useEffect(() => {
+    if (prevHostRef.current !== urlHostId) {
+      prevHostRef.current = urlHostId;
+      if (p2pClient.isConnected || p2pClient.isConnecting) {
+        console.log('[ScreenView] Host changed - dropping previous session connection');
+        p2pClient.disconnect();
+      }
+    }
+  }, [urlHostId, p2pClient]);
+
+  // Auto-connect with exponential backoff when we have a host ID.
+  // Backoff prevents a hot reconnect loop (battery drain + signalling hammering)
+  // when the host is down for an extended period.
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (p2pClient.isConnected) {
+      reconnectAttemptsRef.current = 0;
+      return;
+    }
+    if (!urlHostId || p2pClient.isConnecting) {
+      return;
+    }
+
+    const attempt = reconnectAttemptsRef.current;
+    // First attempt immediate, then exponential backoff capped at 30s with jitter
+    const delay = attempt === 0 ? 0 : Math.min(30000, 1000 * Math.pow(2, attempt)) + Math.random() * 500;
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      reconnectAttemptsRef.current++;
+      console.log('[ScreenView] Connecting to host (attempt', reconnectAttemptsRef.current, ')...');
+      p2pClient.connect();
+    }, delay);
+
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
   }, [urlHostId, p2pClient]);
 
   // Track connection changes for reconnection detection
@@ -598,36 +777,16 @@ export const ScreenView: React.FC = () => {
   useEffect(() => {
     if (connectionStatus !== previousConnectionStatusRef.current) {
       console.log('[ScreenView] Connection:', connectionStatus);
-
-      // When transitioning to connected, request full state sync from host
-      if (connectionStatus === 'connected' && previousConnectionStatusRef.current !== 'connected') {
-        // Request initial state sync from host
-        p2pClient.send({
-          id: `sync_${Date.now()}`,
-          category: MessageCategory.SYNC,
-          timestamp: Date.now(),
-          senderId: clientId,
-          type: 'STATE_SYNC_REQUEST',
-          payload: {}
-        });
-      }
-
+      // NOTE: the STATE_SYNC_REQUEST itself is sent by the dedicated effect below
+      // (fires once per connection) - do not send it here as well, that caused
+      // duplicate requests and double state-sync replies on every reconnect.
       previousConnectionStatusRef.current = connectionStatus;
     }
-  }, [connectionStatus, p2pClient.isConnected, p2pClient.send, clientId]);
+  }, [connectionStatus]);
 
   // Handle game state updates with media restoration
   const handleGameStateUpdate = useCallback(async (state: any, fullPayload?: any) => {
     // Debug: Log incoming fullPayload to see if teamStates and teamScores are present
-    console.log('[ScreenView] 📥 handleGameStateUpdate called with:', {
-      hasFullPayload: !!fullPayload,
-      hasTeamStatesInPayload: !!fullPayload?.teamStates,
-      hasTeamScoresInPayload: !!fullPayload?.teamScores,
-      teamScoresCount: fullPayload?.teamScores?.length || 0,
-      teamScoresValue: fullPayload?.teamScores,
-      stateKeys: Object.keys(state || {}),
-      payloadKeys: fullPayload ? Object.keys(fullPayload) : []
-    });
 
     // Transform currentQuestion to activeQuestion format for compatibility
     if (state.currentQuestion && !state.activeQuestion) {
@@ -648,25 +807,12 @@ export const ScreenView: React.FC = () => {
           correctAnswer: state.currentQuestion.hint.correctAnswer
         } : undefined
       };
-      console.log('[ScreenView] Transformed activeQuestion:', {
-        questionId: state.activeQuestion.questionId,
-        text: state.activeQuestion.text?.slice(0, 30),
-        hasMedia: !!state.activeQuestion.media,
-        hasAnswerMedia: !!state.activeQuestion.answerMedia,
-        hasHint: !!state.activeQuestion.hint
-      });
     }
 
     // Debug active question media
     if (state.activeQuestion) {
       MediaSystemDebugger.debugActiveQuestionMedia(state.activeQuestion);
     } else if (state.currentQuestion) {
-      console.log('[ScreenView] Using currentQuestion instead of activeQuestion:', {
-        id: state.currentQuestion.id,
-        text: state.currentQuestion.text?.slice(0, 30),
-        hasMedia: !!state.currentQuestion.media,
-        hasAnswerMedia: !!state.currentQuestion.answerMedia
-      });
     }
 
     // NOTE: Media cache processing moved to after finalActiveQuestion determination
@@ -706,58 +852,71 @@ export const ScreenView: React.FC = () => {
       // Log question changes for debugging (only when actually changed)
       if (shouldUpdateQuestion) {
         if (newQuestion?.questionId) {
-          console.log('[ScreenView] ⚠️ Question updated:', {
-            oldId: oldQuestion?.questionId,
-            newId: newQuestion.questionId,
-            oldText: oldQuestion?.text?.slice(0, 30),
-            newText: newQuestion.text?.slice(0, 30),
-            oldTheme: oldQuestion?.themeName,
-            newTheme: newQuestion.themeName,
-            showAnswer: state.showAnswer
-          });
 
-          // Initialize local timer when question opens
-          const hasMedia = newQuestion.media?.type === 'audio' ||
-                          newQuestion.media?.type === 'video' ||
-                          newQuestion.media?.type === 'youtube';
+          // Initialize local timer when question opens.
+          // PRIMARY source: the host's buzzerState snapshot in this broadcast - the host
+          // is the authority for phase durations (this removes the duplicated text-length
+          // computation that could disagree with the host, e.g. on media detection).
+          // FALLBACK: recompute from question text when no snapshot arrived yet.
+          const hostSnapshot = state.buzzerState;
+          const hostTotalsUsable = !!hostSnapshot &&
+            (hostSnapshot.readingTimeTotal ?? 0) > 0 &&
+            (hostSnapshot.responseTimeTotal ?? 0) > 0;
 
-          // Get timer settings from currentRound (same as host uses)
-          const readingTimePerLetter = detailedGameState.currentRound?.readingTimePerLetter ?? 0.05;
-          const responseWindow = detailedGameState.currentRound?.responseWindow ?? 30;
+          let readingTotal: number;
+          let responseTotal: number;
+          let initialPhase: 'reading' | 'response';
 
-          const questionTextLetters = (newQuestion.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
-          const readingTime = readingTimePerLetter > 0
-            ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
-            : 0;
-          const calculatedReadingTime = Math.max(readingTime, 1.0);
+          if (hostTotalsUsable) {
+            readingTotal = hostSnapshot.readingTimeTotal;
+            responseTotal = hostSnapshot.responseTimeTotal;
+            initialPhase = hostSnapshot.timerPhase === 'response' ? 'response'
+              : readingTotal > 0 ? 'reading' : 'response';
+          } else {
+            const hasMedia = newQuestion.media?.type === 'audio' ||
+                            newQuestion.media?.type === 'video' ||
+                            newQuestion.media?.type === 'youtube';
+
+            // Get timer settings from currentRound (same as host uses)
+            const readingTimePerLetter = detailedGameState.currentRound?.readingTimePerLetter ?? 0.05;
+            const responseWindow = detailedGameState.currentRound?.responseWindow ?? 30;
+
+            const questionTextLetters = (newQuestion.text || '').replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').length;
+            const readingTime = readingTimePerLetter > 0
+              ? (hasMedia ? questionTextLetters * readingTimePerLetter * 0.5 : questionTextLetters * readingTimePerLetter)
+              : 0;
+            readingTotal = Math.max(readingTime, 1.0);
+            responseTotal = responseWindow;
+            initialPhase = readingTotal > 0 ? 'reading' : 'response';
+          }
 
           localTimerStateRef.current = {
-            phase: calculatedReadingTime > 0 ? 'reading' : 'response',
-            readingRemaining: calculatedReadingTime,
-            responseRemaining: responseWindow,
-            readingTotal: calculatedReadingTime,
-            responseTotal: responseWindow,
-            isPaused: false, // Timer starts running immediately
-            hasSwitchedPhase: false,
+            phase: initialPhase,
+            readingRemaining: initialPhase === 'reading' ? readingTotal : 0,
+            responseRemaining: initialPhase === 'response' ? responseTotal : 0,
+            readingTotal,
+            responseTotal,
+            isPaused: hostTotalsUsable ? (hostSnapshot.isPaused ?? false) : false,
+            hasSwitchedPhase: initialPhase !== 'reading',
             phaseSwitchedLocally: false,
             currentQuestionId: newQuestion.questionId || null,
-            readingTimePerLetter,
-            responseWindow
+            readingTimePerLetter: detailedGameState.currentRound?.readingTimePerLetter ?? 0.05,
+            responseWindow: detailedGameState.currentRound?.responseWindow ?? 30,
+            // Fresh question - accept whatever generation the host is in
+            phaseId: hostTotalsUsable ? (hostSnapshot.phaseId ?? 0) : 0,
+            localPhaseEndsAt: Date.now() +
+              (initialPhase === 'reading' ? readingTotal : responseTotal) * 1000
           };
+
+          if (hostTotalsUsable && hostSnapshot.phaseId !== undefined) {
+            localTimerStateRef.current.phaseId = hostSnapshot.phaseId;
+          }
 
           lastQuestionIdRef.current = newQuestion.questionId || null;
 
-          console.log('[ScreenView] 🕐 Local timer initialized:', {
-            questionId: newQuestion.questionId,
-            readingTime: calculatedReadingTime,
-            responseTime: responseWindow,
-            phase: calculatedReadingTime > 0 ? 'reading' : 'response',
-            hasMedia
-          });
         } else if (newQuestion === null && oldQuestion) {
-          console.log('[ScreenView] ✅ Question CLOSED (was:', oldQuestion.questionId, ')');
           // Clear media cache when question closes to prevent stale media
-          demoScreenMedia.clearQuestionMedia(oldQuestion.questionId || oldQuestion.id || '');
+          demoScreenMedia.clearQuestionMedia(oldQuestion.questionId || (oldQuestion as any).id || '');
 
           // Reset local timer when question closes
           localTimerStateRef.current = {
@@ -771,23 +930,22 @@ export const ScreenView: React.FC = () => {
             phaseSwitchedLocally: false,
             currentQuestionId: null,
             readingTimePerLetter: 0.05,
-            responseWindow: 30
+            responseWindow: 30,
+            phaseId: localTimerStateRef.current.phaseId,
+            localPhaseEndsAt: null
           };
           lastQuestionIdRef.current = null;
         }
       } else {
-        console.log('[ScreenView] ♻️ Question preserved (no change):', {
-          currentId: oldQuestion?.questionId,
-          showAnswer: state.showAnswer,
-          reason: !newQuestion ? 'no new question' :
-                  !oldQuestion ? 'no old question' :
-                  oldQuestion.questionId === newQuestion.questionId ? 'same question ID' :
-                  'other fields unchanged'
-        });
       }
 
-      // buzzerState from host is ignored - demo screen uses local timer
-      const finalBuzzerState = prevState.buzzerState || {
+      // Adopt the buzzerState snapshot (phaseId-guarded): the host is the timer source
+      // of truth, this continuously corrects local countdown drift. Out-of-order
+      // broadcasts (e.g. delayed by media streaming) are discarded by the phaseId guard.
+      if (state.buzzerState) {
+        adoptHostTimerSnapshot(state.buzzerState);
+      }
+      const finalBuzzerState = state.buzzerState || prevState.buzzerState || {
         active: false,
         timerPhase: 'inactive',
         readingTimerRemaining: 0,
@@ -872,7 +1030,7 @@ export const ScreenView: React.FC = () => {
             const perTeamStates: Record<string, TeamState> = {};
 
             // Get all team IDs from teamScores
-            const allTeamIds = new Set((state.teamScores || prevState.teamScores || []).map((t: any) => t.id));
+            const allTeamIds = new Set<string>((state.teamScores || prevState.teamScores || []).map((t: any) => t.id));
 
             // Process each status group
             Object.entries(groupedStates).forEach(([status, teamIds]) => {
@@ -917,47 +1075,22 @@ export const ScreenView: React.FC = () => {
 
       // Log when showAnswer changes
       if (state.showAnswer !== undefined && state.showAnswer !== prevState.showAnswer) {
-        console.log('[ScreenView] 📝 showAnswer changed:', {
-          from: prevState.showAnswer,
-          to: state.showAnswer,
-          questionId: state.activeQuestion?.questionId
-        });
       }
 
       // Log updated state for debugging
-      console.log('[ScreenView] Updated detailedGameState:', {
-        currentScreen: updatedState.currentScreen,
-        showAnswer: updatedState.showAnswer,
-        activeQuestion: !!updatedState.activeQuestion,
-        questionText: updatedState.activeQuestion?.text?.slice(0, 30),
-        hasPackCover: !!updatedState.packCover,
-        packCoverValue: updatedState.packCover?.value?.slice(0, 60) || 'none',
-        packName: updatedState.packName,
-        allThemesCount: updatedState.allThemes?.length || 0,
-        hasBoardData: !!updatedState.boardData
-      });
 
       return updatedState;
     });
 
-    console.log('[ScreenView] 📊 Team scores update:', {
-      fromPayload: fullPayload?.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score })),
-      fromState: state.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score })),
-      currentPreserved: detailedGameState.teamScores?.map(t => ({ id: t.id.slice(0, 12), name: t.name, score: t.score }))
-    });
-    console.log('[ScreenView] Team states updated:', fullPayload?.teamStates);
 
     // Enhanced logging for team card states
     if (state.teamStates) {
-      console.log('[ScreenView] 🎨 Team Card States Summary (new system):');
-      Object.entries(state.teamStates).forEach(([teamId, teamState]) => {
+      Object.entries(state.teamStates).forEach(([teamId, teamState]: [string, any]) => {
         const clashInfo = teamState.clashSubStatus ? ` [clash: ${teamState.clashSubStatus}]` : '';
-        console.log(`  Team ${teamId}: ${teamState.status}${clashInfo} (attempted: ${teamState.hasAttempted})`);
       });
-      console.log(`  🎯 Answering Team: ${state.answeringTeamId || 'none'}`);
     }
-    // Note: buzzerState from host is ignored - demo screen uses local timer
-  }, [demoScreenMedia]);
+    // Note: timer values are adopted from buzzerState above (phaseId-guarded)
+  }, [demoScreenMedia, adoptHostTimerSnapshot]);
 
   // Sync themes scroll position with host
   useEffect(() => {
@@ -968,9 +1101,7 @@ export const ScreenView: React.FC = () => {
 
   // Reset currentScreen when session ends (transition back to lobby)
   useEffect(() => {
-    console.log('[ScreenView] gameState.isSessionActive changed:', gameState?.isSessionActive);
     if (!gameState?.isSessionActive && detailedGameState.currentScreen && detailedGameState.currentScreen !== 'lobby') {
-      console.log('[ScreenView] Session ended, resetting currentScreen to show lobby');
       setDetailedGameState(prevState => ({
         ...prevState,
         currentScreen: undefined
@@ -978,9 +1109,11 @@ export const ScreenView: React.FC = () => {
     }
   }, [gameState?.isSessionActive]);
 
-  // Local timer countdown - demo screen runs timer independently, NOT syncing with host
-  // When reading timer finishes locally, demo screen switches to response phase
-  // and sends TIMER_PHASE_SWITCH to host
+  // Local timer countdown renderer - smoothly extrapolates between host snapshots.
+  // When anchored (localPhaseEndsAt set), remaining time is computed from the
+  // wall-clock deadline (immune to interval jitter); otherwise falls back to
+  // delta-time accumulation. When the reading timer finishes locally, the demo
+  // screen switches to response phase and sends TIMER_PHASE_SWITCH to the host.
   useEffect(() => {
     let lastLocalUpdateTime = Date.now();
 
@@ -994,7 +1127,10 @@ export const ScreenView: React.FC = () => {
       // Update local timer if not paused and in active phase
       if (!localState.isPaused && localState.phase !== 'inactive' && localState.phase !== 'complete') {
         if (localState.phase === 'reading') {
-          localState.readingRemaining = Math.max(0, localState.readingRemaining - deltaTime);
+          // Deadline-based when anchored; delta-time fallback otherwise
+          localState.readingRemaining = localState.localPhaseEndsAt !== null
+            ? Math.max(0, (localState.localPhaseEndsAt - now) / 1000)
+            : Math.max(0, localState.readingRemaining - deltaTime);
 
           // Check if reading timer finished locally - switch to response phase
           // Only send signal if question is still active on host (not closed, answer not shown)
@@ -1006,8 +1142,9 @@ export const ScreenView: React.FC = () => {
             localState.phase = 'response';
             localState.hasSwitchedPhase = true;
             localState.phaseSwitchedLocally = true;
+            // Anchor the response countdown to the wall clock
+            localState.localPhaseEndsAt = Date.now() + localState.responseRemaining * 1000;
 
-            console.log('[ScreenView] 🟡 Reading timer finished, switching to 🟢 response phase');
 
             // Send TIMER_PHASE_SWITCH to host
             if (p2pClient.isConnected) {
@@ -1029,16 +1166,18 @@ export const ScreenView: React.FC = () => {
             localState.readingRemaining = 0;
             localState.phase = 'response';
             localState.hasSwitchedPhase = true;
-            console.log('[ScreenView] 🟡 Reading timer finished but question not active - skipping host signal');
+            // Anchor the response countdown to the wall clock
+            localState.localPhaseEndsAt = Date.now() + localState.responseRemaining * 1000;
           }
         } else if (localState.phase === 'response') {
-          localState.responseRemaining = Math.max(0, localState.responseRemaining - deltaTime);
+          localState.responseRemaining = localState.localPhaseEndsAt !== null
+            ? Math.max(0, (localState.localPhaseEndsAt - now) / 1000)
+            : Math.max(0, localState.responseRemaining - deltaTime);
 
           // Check if response timer finished
           if (localState.responseRemaining <= 0) {
             localState.responseRemaining = 0;
             localState.phase = 'complete';
-            console.log('[ScreenView] ⏱️ Response timer finished');
           }
         }
       }
@@ -1169,13 +1308,6 @@ export const ScreenView: React.FC = () => {
     // Render based on current screen
     switch (currentScreen) {
       case 'cover':
-        console.log('[ScreenView] Rendering cover screen:', {
-          hasPackCover: !!detailedGameState.packCover,
-          coverType: detailedGameState.packCover?.type,
-          coverValue: detailedGameState.packCover?.value?.slice(0, 60) || 'none',
-          coverUrl: detailedGameState.packCover?.url?.slice(0, 60) || 'none',
-          packName: detailedGameState.packName
-        });
         return (
           <div className="fixed inset-0 flex items-center justify-center bg-gray-950 cursor-default">
             <div className="text-center animate-in fade-in zoom-in duration-500 flex flex-col items-center justify-center">
@@ -1188,8 +1320,7 @@ export const ScreenView: React.FC = () => {
                       className="h-full w-auto object-cover rounded-2xl shadow-2xl cursor-default"
                       onError={(e) => {
                         console.error('[ScreenView] Pack cover image error:', {
-                          src: detailedGameState.packCover.value,
-                          error: e.currentTarget.error
+                          src: detailedGameState.packCover.value
                         });
                       }}
                     />
@@ -1201,7 +1332,7 @@ export const ScreenView: React.FC = () => {
                       onError={(e) => {
                         console.error('[ScreenView] Pack cover image error:', {
                           src: detailedGameState.packCover.url,
-                          error: e.currentTarget.error
+                          error: 'image failed to load'
                         });
                       }}
                     />
@@ -1562,14 +1693,12 @@ export const ScreenView: React.FC = () => {
                           onError={(e) => {
                             console.error('[ScreenView] Video error:', {
                               url: detailedGameState.activeQuestion.media.url,
-                              error: e.currentTarget.error
+                              error: 'image failed to load'
                             });
                           }}
                           onLoadStart={() => {
-                            console.log('[ScreenView] Video loading started:', detailedGameState.activeQuestion.media.url);
                           }}
                           onCanPlay={() => {
-                            console.log('[ScreenView] Video can play:', detailedGameState.activeQuestion.media.url);
                           }}
                         />
                       )}
@@ -1581,14 +1710,12 @@ export const ScreenView: React.FC = () => {
                           onError={(e) => {
                             console.error('[ScreenView] Audio error:', {
                               url: detailedGameState.activeQuestion.media.url,
-                              error: e.currentTarget.error
+                              error: 'image failed to load'
                             });
                           }}
                           onLoadStart={() => {
-                            console.log('[ScreenView] Audio loading started:', detailedGameState.activeQuestion.media.url);
                           }}
                           onCanPlay={() => {
-                            console.log('[ScreenView] Audio can play:', detailedGameState.activeQuestion.media.url);
                           }}
                         />
                       )}
@@ -1666,7 +1793,7 @@ export const ScreenView: React.FC = () => {
                     return (
                       <div className={`grid gap-3 h-full ${gridCols}`}>
                         {teams.map((team) => {
-                          const answer = detailedGameState.superGameAnswers?.find(a => a.teamId === team.id);
+                          const answer = detailedGameState.superGameAnswers?.find((a: any) => a.teamId === team.id) as any;
                           const bet = detailedGameState.superGameBets?.find(b => b.teamId === team.id);
                           const isCorrect = answer?.isCorrect ?? false;
                           const isWrong = answer?.isWrong ?? false;
@@ -1791,31 +1918,83 @@ export const ScreenView: React.FC = () => {
   }, [detailedGameState, themesScrollRef]); // Dependencies for renderGameScreen
 
   if (connectionStatus === 'connecting') {
+    // If no host ID is available, show instructions instead of spinning
+    if (!urlHostId) {
+      return (
+        <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
+          <div className="text-center max-w-md px-6">
+            <Monitor className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+            <p className="text-xl font-medium text-gray-300 mb-2">Нет ID хоста</p>
+            <p className="text-gray-400 text-sm mb-6">
+              Отсканируйте QR-код на экране хоста или введите URL вручную
+            </p>
+            <div className="bg-gray-800 rounded-lg p-4 text-left text-sm text-gray-400 space-y-2">
+              <p className="font-medium text-gray-300">Формат URL:</p>
+              <code className="block bg-gray-900 p-2 rounded text-xs text-blue-400">
+                #/screen?host=HOST_ID&signalling=IP
+              </code>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
         <div className="text-center">
           <Loader2 className="w-16 h-16 text-blue-500 animate-spin mx-auto mb-4" />
           <p className="text-xl font-medium text-gray-400">Подключение к хосту...</p>
-          <p className="text-gray-500 text-sm mt-2">Host ID: {urlHostId || '---'}</p>
+          <p className="text-gray-500 text-sm mt-2">Host ID: {urlHostId}</p>
         </div>
       </div>
     );
   }
 
   if (connectionStatus === 'error') {
+    const handleClearAndReload = () => {
+      // Clear all stored connection data
+      storage.remove(STORAGE_KEYS.LAST_HOST);
+      storage.remove(STORAGE_KEYS.SCREEN_ID);
+      // Reload to get fresh state
+      window.location.href = window.location.pathname + '#/screen';
+      window.location.reload();
+    };
+
     return (
       <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
-        <div className="text-center">
+        <div className="text-center max-w-md px-6">
           <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
             <X className="w-8 h-8 text-red-400" />
           </div>
-          <p className="text-xl font-medium text-red-400">Ошибка подключения</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors"
-          >
-            Попробовать снова
-          </button>
+          <p className="text-xl font-medium text-red-400 mb-2">Ошибка подключения</p>
+          <p className="text-gray-400 text-sm mb-6">
+            Не удалось подключиться к хосту. Это может произойти, если:
+          </p>
+          <ul className="text-left text-gray-400 text-sm space-y-2 mb-6">
+            <li className="flex items-start gap-2">
+              <span className="text-red-400">•</span>
+              <span>Хост с указанным ID недоступен или перезапущен</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-red-400">•</span>
+              <span>Сеть недоступна или signalling сервер не работает</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-red-400">•</span>
+              <span>URL устарел (требуется новый QR-код)</span>
+            </li>
+          </ul>
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={handleClearAndReload}
+              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors"
+            >
+              Очистить и подключиться заново
+            </button>
+            <p className="text-gray-500 text-xs">
+              Если проблема не решается, отсканируйте QR-код на экране хоста снова
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -1937,11 +2116,7 @@ export const ScreenView: React.FC = () => {
                 <>
                   {/* Player Panel - Always visible on top layer */}
                   {detailedGameState.teamScores && detailedGameState.teamScores.length > 0 && (
-                      <div
-                        key={`player-panel-${
-                          JSON.stringify(detailedGameState.teamStates || {})
-                        }`}
-                        className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
+                      <div className="fixed top-0 left-0 right-0 z-[100] h-auto px-1 bg-gray-900/50 flex items-center justify-center gap-1 py-1">
                         {detailedGameState.teamScores.map((team: { id: string; name: string; score: number }) => {
                           // Get team status from new system
                           const teamState = detailedGameState.teamStates?.[team.id];
@@ -1951,30 +2126,8 @@ export const ScreenView: React.FC = () => {
                           const hasPlacedBet = detailedGameState.currentScreen === 'placeBets' && detailedGameState.superGameBets?.find(b => b.teamId === team.id)?.ready;
                           const hasSubmittedAnswer = detailedGameState.currentScreen === 'superQuestion' && detailedGameState.superGameAnswers?.find(a => a.teamId === team.id)?.answer;
 
-                          // Helper to get CSS classes for team status
-                          const getCardClassesForStatus = (status: TeamStatus, clashSubStatus?: 'first_clash' | 'simple_clash'): string => {
-                            switch (status) {
-                              case 'inactive':
-                                return 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]';
-                              case 'active':
-                                return 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]';
-                              case 'answering':
-                                return 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105';
-                              case 'penalty':
-                                return 'bg-red-500/30 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.5)]';
-                              case 'clash':
-                                // Clash cards have special animation - yellow to green transition
-                                // Different styling for first_clash vs simple_clash
-                                if (clashSubStatus === 'first_clash') {
-                                  return 'clash-card bg-yellow-500/40 border-yellow-300 shadow-[0_0_25px_rgba(234,179,8,0.7)]';
-                                }
-                                return 'clash-card bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)]';
-                              default:
-                                return 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)]';
-                            }
-                          };
-
-                          // Determine final card state and classes
+                          // Determine final card state and classes (shared CSS map from
+                          // useTeamStatusManager - same mapping the host uses)
                           let cardState: string;
                           let cardClasses: string;
 
@@ -1989,7 +2142,7 @@ export const ScreenView: React.FC = () => {
                             cardClasses = 'bg-green-500/30 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.5)] scale-105';
                           } else {
                             cardState = teamStatus;
-                            cardClasses = getCardClassesForStatus(teamStatus, clashSubStatus);
+                            cardClasses = getTeamCardClassesForStatus(teamStatus, clashSubStatus);
 
                             // Apply shrink/lighten effect for inactive team when buzzing
                             if (isTeamBuzzing && teamStatus === 'inactive') {
@@ -1997,30 +2150,17 @@ export const ScreenView: React.FC = () => {
                             }
                           }
 
-                          // Store previous state to detect changes
-                          const prevStateKey = `team-state-${team.id}`;
-                          const previousState = (window as any)[prevStateKey];
-                          const stateChanged = previousState !== cardState;
-
-                          // Update stored state
-                          (window as any)[prevStateKey] = cardState;
-
-                          // Log when state changes
-                          if (stateChanged) {
+                          // Log card state changes (kept concise for field debugging)
+                          const prevCardState = previousCardStatesRef.current.get(team.id);
+                          if (prevCardState !== cardState) {
+                            previousCardStatesRef.current.set(team.id, cardState);
                             const clashInfo = clashSubStatus ? ` [clash: ${clashSubStatus}]` : '';
-                            console.log(`[ScreenView] 🎨 Team "${team.name}" card state changed: "${previousState}" → "${cardState}${clashInfo}"`);
-                            console.log(`  Details:`, {
-                              teamId: team.id,
-                              teamStatus,
-                              clashSubStatus,
-                              hasPlacedBet,
-                              hasSubmittedAnswer
-                            });
+                            console.log(`[ScreenView] 🎨 Team "${team.name}" card state changed: "${prevCardState}" → "${cardState}${clashInfo}"`);
                           }
 
                           return (
                             <div
-                              key={`${team.id}-${cardState}`}
+                              key={team.id}
                               className={`px-6 py-2 rounded-lg border-2 transition-all relative ${cardClasses}`}
                             >
                               <div className="text-center">
@@ -2156,14 +2296,12 @@ export const ScreenView: React.FC = () => {
                                               onError={(e) => {
                                                 console.error('[ScreenView] Answer video error:', {
                                                   url: detailedGameState.activeQuestion.answerMedia.url,
-                                                  error: e.currentTarget.error
+                                                  error: 'image failed to load'
                                                 });
                                               }}
                                               onLoadStart={() => {
-                                                console.log('[ScreenView] Answer video loading started:', detailedGameState.activeQuestion.answerMedia.url);
                                               }}
                                               onCanPlay={() => {
-                                                console.log('[ScreenView] Answer video can play:', detailedGameState.activeQuestion.answerMedia.url);
                                               }}
                                             />
                                           )}
@@ -2183,14 +2321,12 @@ export const ScreenView: React.FC = () => {
                                                 onError={(e) => {
                                                   console.error('[ScreenView] Answer audio error:', {
                                                     url: detailedGameState.activeQuestion.answerMedia.url,
-                                                    error: e.currentTarget.error
+                                                    error: 'image failed to load'
                                                   });
                                                 }}
                                                 onLoadStart={() => {
-                                                  console.log('[ScreenView] Answer audio loading started:', detailedGameState.activeQuestion.answerMedia.url);
                                                 }}
                                                 onCanPlay={() => {
-                                                  console.log('[ScreenView] Answer audio can play:', detailedGameState.activeQuestion.answerMedia.url);
                                                 }}
                                               />
                                             </div>
@@ -2225,14 +2361,12 @@ export const ScreenView: React.FC = () => {
                                               onError={(e) => {
                                                 console.error('[ScreenView] Hint video error:', {
                                                   url: hintMediaUrl,
-                                                  error: e.currentTarget.error
+                                                  error: 'image failed to load'
                                                 });
                                               }}
                                               onLoadStart={() => {
-                                                console.log('[ScreenView] Hint video loading started:', hintMediaUrl);
                                               }}
                                               onCanPlay={() => {
-                                                console.log('[ScreenView] Hint video can play:', hintMediaUrl);
                                               }}
                                             />
                                           )}
@@ -2252,14 +2386,12 @@ export const ScreenView: React.FC = () => {
                                                 onError={(e) => {
                                                   console.error('[ScreenView] Hint audio error:', {
                                                     url: hintMediaUrl,
-                                                    error: e.currentTarget.error
+                                                    error: 'image failed to load'
                                                   });
                                                 }}
                                                 onLoadStart={() => {
-                                                  console.log('[ScreenView] Hint audio loading started:', hintMediaUrl);
                                                 }}
                                                 onCanPlay={() => {
-                                                  console.log('[ScreenView] Hint audio can play:', hintMediaUrl);
                                                 }}
                                               />
                                             </div>

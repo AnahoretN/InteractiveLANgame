@@ -3,9 +3,9 @@
  * Тесты для компонента подтверждения действий
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { ConfirmDialog } from '../components/shared/ConfirmDialog';
+import { ConfirmDialog } from './ConfirmDialog';
 
 describe('ConfirmDialog', () => {
   const defaultProps = {

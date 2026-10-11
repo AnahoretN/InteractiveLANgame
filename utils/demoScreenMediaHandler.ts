@@ -27,7 +27,6 @@ class DemoScreenMediaHandler {
 
   initialize(onProgressUpdate?: (updates: MediaDownloadProgress[]) => void) {
     this.onProgressUpdate = onProgressUpdate;
-    console.log('[DemoScreenMediaHandler] Initialized');
 
     // Initialize global cache if not exists
     if (!window.mediaTransferCache) {
@@ -54,7 +53,6 @@ class DemoScreenMediaHandler {
    */
   private async handleMediaTransfer(message: any) {
     const { payload } = message;
-    console.log('[DemoScreenMediaHandler] Media transfer received:', payload.mediaId);
 
     const progress: MediaDownloadProgress = {
       mediaId: payload.mediaId,
@@ -98,7 +96,6 @@ class DemoScreenMediaHandler {
 
           // Save to IndexedDB using the mediaId as both packId and mediaId
           await saveMediaFile(payload.mediaId, payload.mediaId, file);
-          console.log('[DemoScreenMediaHandler] Media file saved to IndexedDB:', payload.mediaId);
         } catch (idbError) {
           console.warn('[DemoScreenMediaHandler] Could not save to IndexedDB:', idbError);
           // Continue anyway - we have the blob URL in memory
@@ -112,7 +109,6 @@ class DemoScreenMediaHandler {
           isYouTube: false
         });
 
-        console.log('[DemoScreenMediaHandler] Local file processed:', payload.mediaId);
       } catch (error) {
         console.error('[DemoScreenMediaHandler] Error processing local file:', error);
         progress.status = 'error';
@@ -190,7 +186,6 @@ class DemoScreenMediaHandler {
   clear() {
     this.downloadProgress.clear();
     this.mediaCache.clear();
-    console.log('[DemoScreenMediaHandler] Cleared all cache');
   }
 
   /**
@@ -199,6 +194,7 @@ class DemoScreenMediaHandler {
   getMediaStats(): {
     total: number;
     completed: number;
+    downloading: number;
     transferring: number;
     errors: number;
     completionRate: number;
@@ -214,7 +210,8 @@ class DemoScreenMediaHandler {
     return {
       total,
       completed,
-      downloading,
+      downloading: transferring,
+      transferring,
       errors,
       completionRate
     };

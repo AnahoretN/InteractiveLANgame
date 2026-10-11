@@ -276,12 +276,6 @@ function parsePackFromText(content: string): GamePack {
 
     // Debug logging for media parsing
     if (q.mediaUrl) {
-      console.log('🔍 ParsePack - Question has media URL:', {
-        questionText: q.text?.slice(0, 30),
-        mediaUrl: q.mediaUrl?.slice(0, 100),
-        detectedMediaType: q.mediaType,
-        willSaveMedia: !!(q.mediaUrl && q.mediaType)
-      });
     }
 
     if (q.mediaUrl && q.mediaType) {
@@ -289,15 +283,7 @@ function parsePackFromText(content: string): GamePack {
       const mediaUrl = q.mediaType === 'youtube' ? convertYouTubeToEmbed(q.mediaUrl) : q.mediaUrl;
       question.media = { type: q.mediaType, url: mediaUrl };
 
-      console.log('✅ ParsePack - Media saved:', {
-        type: q.mediaType,
-        originalUrl: q.mediaUrl?.slice(0, 50),
-        finalUrl: mediaUrl?.slice(0, 50)
-      });
     } else if (q.mediaUrl && !q.mediaType) {
-      console.log('⚠️ ParsePack - Media URL found but no type! Media will be lost:', {
-        mediaUrl: q.mediaUrl?.slice(0, 100)
-      });
     }
     if (q.answers) {
       question.answers = q.answers;
@@ -491,37 +477,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
     if (initialPack) {
       isSyncingFromProps.current = true;
 
-      console.log('🔄 PackEditor - Syncing with initialPack:', {
-        packName: initialPack.name,
-        roundsCount: initialPack.rounds?.length || 0,
-        totalQuestions: initialPack.rounds?.reduce((sum, r) =>
-          sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
-        questionsWithMedia: initialPack.rounds?.reduce((sum, r) =>
-          sum + r.themes.reduce((tSum, t) =>
-            tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
-        sampleQuestions: initialPack.rounds?.slice(0, 2).map(r => ({
-          roundName: r.name,
-          themes: r.themes.slice(0, 1).map(t => ({
-            themeName: t.name,
-            questions: t.questions.slice(0, 2).map(q => ({
-              text: q.text?.slice(0, 30),
-              mediaType: q.media?.type,
-              mediaUrl: q.media?.url?.slice(0, 50)
-            }))
-          }))
-        })),
-        fullMediaBreakdown: initialPack.rounds?.map(r => ({
-          roundName: r.name,
-          themes: r.themes.map(t => ({
-            themeName: t.name,
-            questions: t.questions.map(q => ({
-              text: q.text?.slice(0, 30),
-              mediaType: q.media?.type,
-              mediaUrl: q.media?.url?.slice(0, 50)
-            }))
-          }))
-        }))
-      });
 
       setPackName(initialPack.name);
       setPackCoverType(initialPack.cover ? initialPack.cover.type : 'none');
@@ -552,24 +507,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       updatedAt: Date.now(),
     };
 
-    console.log('📢 PackEditor - Notifying parent of pack changes:', {
-      packId: currentPack.id,
-      packName: currentPack.name,
-      questionsWithMedia: currentPack.rounds?.reduce((sum, r) =>
-        sum + r.themes.reduce((tSum, t) =>
-        tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
-      mediaBreakdown: currentPack.rounds?.slice(0, 1).map(r => ({
-        roundName: r.name,
-        themes: r.themes.slice(0, 1).map(t => ({
-          themeName: t.name,
-          questions: t.questions.slice(0, 2).map(q => ({
-            text: q.text?.slice(0, 30),
-            mediaType: q.media?.type,
-            mediaUrl: q.media?.url?.slice(0, 50)
-          }))
-        }))
-      }))
-    });
 
     onPackChange(currentPack);
   }, [packName, packCoverType, packCoverValue, rounds, initialPack, onPackChange]);
@@ -591,23 +528,15 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
     const file = e.target.files?.[0];
     if (!file) return;
 
-    console.log('📂 Starting to load pack file:', file.name);
 
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         // Проверяем, является ли файл ZIP архивом
         if (isZipFile(file)) {
-          console.log('📦 Обнаружен ZIP архив, загружаем...');
           try {
             const pack = await loadPackFromZip(file);
 
-            console.log('📦 Pack loaded successfully from ZIP:', {
-              packName: pack.name,
-              roundsCount: pack.rounds?.length || 0,
-              totalQuestions: pack.rounds?.reduce((sum, r) =>
-                sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0
-            });
 
             setPackName(pack.name || 'Loaded Pack');
             setPackCoverType(pack.cover ? pack.cover.type : 'none');
@@ -647,33 +576,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         }
 
         // Debug: Check if YouTube links were parsed correctly
-        console.log('📦 Pack loaded successfully:', {
-          packName: pack.name,
-          sourceFormat: file.name.endsWith('.json') ? 'JSON' : 'Text',
-          roundsCount: pack.rounds?.length || 0,
-          totalQuestions: pack.rounds?.reduce((sum, r) =>
-            sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0) || 0,
-          questionsWithMedia: pack.rounds?.reduce((sum, r) =>
-            sum + r.themes.reduce((tSum, t) =>
-              tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0) || 0,
-          questionsWithLocalFiles: pack.rounds?.reduce((sum, r) =>
-            sum + r.themes.reduce((tSum, t) =>
-              tSum + t.questions.filter(q => q.media?.localFile).length, 0), 0) || 0,
-          mediaBreakdown: pack.rounds?.map(r => ({
-            roundName: r.name,
-            themes: r.themes.map(t => ({
-              themeName: t.name,
-              questions: t.questions.map(q => ({
-                hasMedia: !!q.media,
-                mediaType: q.media?.type,
-                mediaUrlPreview: q.media?.url?.slice(0, 80),
-                hasLocalFile: !!q.media?.localFile,
-                localFileName: q.media?.localFile?.fileName
-              }))
-            }))
-          })),
-          sampleQuestion: pack.rounds?.[0]?.themes?.[0]?.questions?.[0]
-        });
 
         // Восстанавливаем blob URL для локальных файлов
         await restorePackBlobUrlsFromStorage(pack);
@@ -712,14 +614,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       updatedAt: Date.now(),
     };
 
-    console.log('💾 Сохранение пака как ZIP архива:', {
-      packName: pack.name,
-      roundsCount: pack.rounds.length,
-      totalQuestions: pack.rounds.reduce((sum, r) => sum + r.themes.reduce((tSum, t) => tSum + t.questions.length, 0), 0),
-      questionsWithMedia: pack.rounds.reduce((sum, r) =>
-        sum + r.themes.reduce((tSum, t) =>
-          tSum + t.questions.filter(q => q.media && q.media.url).length, 0), 0),
-    });
 
     // Проверяем, есть ли blob URL (локальные файлы)
     const hasBlobUrls = (
@@ -737,7 +631,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
 
     if (hasBlobUrls) {
       // Используем ZIP формат для пакетов с локальными файлами
-      console.log('📦 Используем ZIP формат (пак содержит локальные файлы)');
       try {
         await savePackAsZip(pack);
       } catch (error) {
@@ -751,7 +644,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
       }
     } else {
       // Используем текстовый формат для пакетов с внешними URL
-      console.log('📄 Используем текстовый формат (пак без локальных файлов)');
       const dataStr = packToTextFormat(pack);
       const fileName = `${pack.name.replace(/[^a-z0-9]/gi, '_')}.txt`;
       const dataBlob = new Blob([dataStr], { type: 'text/plain' });
@@ -817,13 +709,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
   const handleAddQuestion = useCallback((data: Partial<Question>) => {
     if (!selectedTheme || !selectedRound) return;
 
-    console.log('📝 Pack Editor - Saving Question:', {
-      editingQuestionId: editingQuestion?.id,
-      data: data,
-      mediaData: data.media,
-      selectedTheme: selectedTheme.name,
-      selectedRound: selectedRound.name
-    });
 
     if (editingQuestion) {
       setRounds(prev => prev.map(r => r.id === selectedRound.id
@@ -837,10 +722,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         : r
       ));
 
-      console.log('📝 Pack Editor - Updated existing question:', {
-        questionId: editingQuestion.id,
-        newMediaData: data.media
-      });
 
       setEditingQuestion(undefined);
     } else {
@@ -854,10 +735,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
         ...data,
       };
 
-      console.log('📝 Pack Editor - Created new question:', {
-        questionId: newQuestion.id,
-        mediaData: newQuestion.media
-      });
       setRounds(prev => prev.map(r => r.id === selectedRound.id
         ? {
             ...r,
@@ -1144,7 +1021,6 @@ export const PackEditor = memo(({ isOpen, onClose, onSavePack, onPackChange, ini
               setTimeout(() => notifyPackChange(), 0);
             }}
             onLocalFile={(file, blobUrl) => {
-              console.log('💾 Pack cover file selected (ZIP system will handle):', file.name);
               // ZIP система обработает сохранение при сохранении пака
             }}
             accept="image/*"

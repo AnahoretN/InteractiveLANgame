@@ -10,15 +10,6 @@ export class MediaSystemDebugger {
    */
   static debugMediaId(question: any, mediaType: 'question' | 'answer') {
     const mediaId = `question_${question.id}_${mediaType}_media`;
-    console.log('[MediaSystemDebugger] Generated mediaId:', {
-      questionId: question.id,
-      mediaType,
-      mediaId,
-      hasMedia: !!question.media,
-      hasAnswerMedia: !!question.answerMedia,
-      mediaUrl: question.media?.url,
-      answerMediaUrl: question.answerMedia?.url
-    });
     return mediaId;
   }
 
@@ -32,11 +23,6 @@ export class MediaSystemDebugger {
     }
 
     const cachedMedia = window.mediaTransferCache.get(mediaId);
-    console.log('[MediaSystemDebugger] Cache check:', {
-      mediaId,
-      found: !!cachedMedia,
-      cachedMedia
-    });
 
     return !!cachedMedia;
   }
@@ -52,7 +38,6 @@ export class MediaSystemDebugger {
 
     try {
       new URL(url);
-      console.log('[MediaSystemDebugger] Valid URL:', { url, type });
       return true;
     } catch (err) {
       console.error('[MediaSystemDebugger] Invalid URL:', { url, type, error: err });
@@ -64,28 +49,11 @@ export class MediaSystemDebugger {
    * Debug active question media
    */
   static debugActiveQuestionMedia(activeQuestion: any) {
-    console.log('[MediaSystemDebugger] Active question media debug:', {
-      hasQuestion: !!activeQuestion,
-      questionId: activeQuestion?.id,
-      questionId2: activeQuestion?.questionId,
-      hasMedia: !!activeQuestion?.media,
-      hasAnswerMedia: !!activeQuestion?.answerMedia,
-      mediaUrl: activeQuestion?.media?.url,
-      mediaType: activeQuestion?.media?.type,
-      answerMediaUrl: activeQuestion?.answerMedia?.url,
-      answerMediaType: activeQuestion?.answerMedia?.type,
-      hasLocalFile: !!activeQuestion?.media?.localFile,
-      localFileId: activeQuestion?.media?.localFile?.mediaId
-    });
 
     if (activeQuestion?.id) {
       const questionMediaId = `question_${activeQuestion.id}_media`;
       const answerMediaId = `question_${activeQuestion.id}_answer_media`;
 
-      console.log('[MediaSystemDebugger] Expected media IDs:', {
-        questionMediaId,
-        answerMediaId
-      });
 
       this.checkMediaCache(questionMediaId);
       this.checkMediaCache(answerMediaId);
@@ -97,10 +65,6 @@ export class MediaSystemDebugger {
    */
   static async testBlobUrlCreation(base64Data: string, mimeType: string) {
     try {
-      console.log('[MediaSystemDebugger] Testing blob URL creation:', {
-        dataLength: base64Data.length,
-        mimeType
-      });
 
       const byteCharacters = atob(base64Data);
       const byteNumbers = new Array(byteCharacters.length);
@@ -113,11 +77,6 @@ export class MediaSystemDebugger {
       const blob = new Blob([byteArray], { type: mimeType });
       const blobUrl = URL.createObjectURL(blob);
 
-      console.log('[MediaSystemDebugger] Blob URL created successfully:', {
-        blobSize: blob.size,
-        blobUrl,
-        blobType: blob.type
-      });
 
       return blobUrl;
     } catch (error) {
@@ -141,16 +100,9 @@ export class MediaSystemDebugger {
     if (window.mediaTransferCache) {
       health.mediaTransferCache = true;
       health.mediaItems = window.mediaTransferCache.size;
-      console.log(`[MediaSystemDebugger] MediaTransferCache: ${health.mediaItems} items`);
 
       // Check each cached item
       window.mediaTransferCache.forEach((value, key) => {
-        console.log(`[MediaSystemDebugger] Cached item: ${key}`, {
-          type: value.type,
-          hasUrl: !!value.url,
-          hasFileData: !!value.fileData,
-          isYouTube: value.isYouTube
-        });
       });
     } else {
       health.issues.push('No mediaTransferCache found');
@@ -172,7 +124,6 @@ export class MediaSystemDebugger {
             const countRequest = objectStore.count();
 
             countRequest.onsuccess = () => {
-              console.log(`[MediaSystemDebugger] IndexedDB: ${countRequest.result} media files`);
             };
 
             countRequest.onerror = () => {
@@ -203,7 +154,6 @@ export class MediaSystemDebugger {
       health.issues.push('IndexedDB check failed');
     }
 
-    console.log('[MediaSystemDebugger] Health check result:', health);
     return health;
   }
 
@@ -218,13 +168,6 @@ export class MediaSystemDebugger {
 
     events.forEach(eventType => {
       element.addEventListener(eventType, (e) => {
-        console.log(`[MediaSystemDebugger] Media element event: ${eventType}`, {
-          mediaId,
-          element: element.tagName,
-          src: element.src,
-          readyState: element.readyState,
-          networkState: element.networkState
-        });
       });
     });
   }
@@ -233,5 +176,4 @@ export class MediaSystemDebugger {
 // Expose to window for easy debugging in console
 if (typeof window !== 'undefined') {
   (window as any).MediaSystemDebugger = MediaSystemDebugger;
-  console.log('[MediaSystemDebugger] Available at window.MediaSystemDebugger');
 }

@@ -3,7 +3,8 @@
  * Глобальная конфигурация для всех тестов
  */
 
-import { vi } from 'vitest';
+import { vi, afterEach } from 'vitest';
+import '@testing-library/jest-dom/vitest';
 
 // Mock console methods to reduce noise in test output
 global.console = {
@@ -16,15 +17,14 @@ global.console = {
   error: vi.fn(),
 };
 
-// Mock performance API for performance monitoring tests
-global.performance = {
-  ...performance,
-  memory: {
-    usedJSHeapSize: 50 * 1024 * 1024, // 50 MB
-    totalJSHeapSize: 100 * 1024 * 1024, // 100 MB
-    jsHeapSizeLimit: 200 * 1024 * 1024 // 200 MB
-  }
-} as unknown as Performance;
+// Add memory info for performance monitoring tests.
+// NOTE: do not replace the whole `performance` object - spreading it drops
+// prototype methods like performance.now().
+(global.performance as unknown as { memory: unknown }).memory = {
+  usedJSHeapSize: 50 * 1024 * 1024, // 50 MB
+  totalJSHeapSize: 100 * 1024 * 1024, // 100 MB
+  jsHeapSizeLimit: 200 * 1024 * 1024 // 200 MB
+};
 
 // Mock requestAnimationFrame for animations
 global.requestAnimationFrame = (callback: FrameRequestCallback) => {

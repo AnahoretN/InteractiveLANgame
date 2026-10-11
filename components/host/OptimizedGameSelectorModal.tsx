@@ -30,9 +30,9 @@ export interface GamePack {
     type: 'url' | 'file';
     value: string;
   };
-  gameType: GameType;
+  gameType?: GameType;
   questions?: Question[];
-  rounds?: Round[];
+  rounds: Round[];
   themes?: Theme[];
   createdAt: number;
   updatedAt?: number;
@@ -527,15 +527,12 @@ export const OptimizedGameSelectorModal = memo(({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    console.log('[OptimizedGameSelector] File selected for upload:', file.name);
 
     try {
       let pack: GamePack;
 
       if (isZipFile(file)) {
-        console.log('[OptimizedGameSelector] ZIP file detected, extracting...');
         pack = await loadPackFromZip(file);
-        console.log('[OptimizedGameSelector] ZIP pack loaded successfully:', pack.name);
       } else {
         const content = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -577,7 +574,6 @@ export const OptimizedGameSelectorModal = memo(({
         return newPacks;
       });
 
-      console.log('[OptimizedGameSelector] Pack added to list:', pack.name);
     } catch (error) {
       console.error('[OptimizedGameSelector] Error loading pack:', error);
       setAlertDialog({

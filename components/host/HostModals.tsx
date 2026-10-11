@@ -8,13 +8,8 @@ import type { GamePack, GameType } from './OptimizedGameSelectorModal';
 import { OptimizedGameSelectorModal } from './OptimizedGameSelectorModal';
 const SettingsModalLazy = lazy(() => import('./SettingsModal').then(m => ({ default: m.SettingsModal })));
 
-export interface ConfirmDialogState {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  type: 'info' | 'warning' | 'danger';
-  onConfirm: () => void;
-}
+import type { ConfirmDialogState } from '../../hooks/useHostModals';
+export type { ConfirmDialogState };
 
 export interface HostModalsProps {
   // Settings Modal

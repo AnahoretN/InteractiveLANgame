@@ -11,6 +11,7 @@ export async function testSignallingServer(serverUrl: string): Promise<{
   details?: string[];
 }> {
   const results = {
+    error: undefined as string | undefined,
     accessible: false,
     httpApi: false,
     webSocket: false,
@@ -120,41 +121,22 @@ export async function testSignallingServer(serverUrl: string): Promise<{
  * Run diagnostic tests and print results to console
  */
 export async function diagnoseSignallingServer(serverUrl: string): Promise<void> {
-  console.log('🔍 Starting signalling server diagnostics...');
-  console.log('📡 Server URL:', serverUrl);
-  console.log('');
 
   const results = await testSignallingServer(serverUrl);
 
-  console.log('📊 Diagnostic Results:');
-  console.log('   HTTP API:', results.httpApi ? '✅ Available' : '❌ Not available');
-  console.log('   WebSocket:', results.webSocket ? '✅ Available' : '❌ Not available');
-  console.log('   Overall:', results.accessible ? '✅ Ready for PeerJS' : '❌ Not ready for PeerJS');
 
   if (results.error) {
-    console.log('');
-    console.log('❌ Error:', results.error);
   }
 
   if (results.details && results.details.length > 0) {
-    console.log('');
-    console.log('📋 Details:');
     results.details.forEach(detail => console.log('   ' + detail));
   }
 
-  console.log('');
 
   if (!results.accessible) {
-    console.log('🔧 Recommendations:');
     if (!results.httpApi) {
-      console.log('   • Install and configure a proper PeerServer (npm install peer)');
-      console.log('   • Ensure HTTP API is accessible on the specified port');
-      console.log('   • Check CORS settings allow requests from your domain');
     }
     if (!results.webSocket) {
-      console.log('   • Ensure WebSocket support is enabled on the server');
-      console.log('   • Check firewall rules allow WebSocket connections');
     }
-    console.log('   • Try using the default public PeerJS server for testing');
   }
 }

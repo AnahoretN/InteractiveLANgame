@@ -67,23 +67,30 @@ graphify-out/
 
 ### Key Architectural Insights
 
-**God Nodes** (most connected components):
-- `P2PConnectionPool` (26 edges) - P2P connection management
-- `PerformanceMetricsTracker` (18 edges) - Performance monitoring
-- `SequencedMessageQueue` (18 edges) - Ordered message delivery
-- `BackgroundMediaPreloader` (17 edges) - Media preloading
-- `DemoScreenMediaHandler` (16 edges) - Demo screen media
+> ⚠️ The graph in `graphify-out/` was generated 2026-04 and predates the 2026-10
+> cleanup: the binary protocol, sequenced-message queue and ~40 dead files were deleted
+> since. Re-run graphify before trusting its communities/god-nodes. Current truth:
+> `PROJECT_MAP.md` and the docs below.
 
-**Major Communities** (16 named):
-1. Message Handlers & State Sync
-2. Media Streaming & Chunking
-3. Binary Protocol & Encoding
-4. Sequenced Message Queue
-5. Media Cache & File Management
-6. P2P Connection Management
-7. File System & Blob Handling
-8. Game State & Timer Logic
-9-15. UI Components, Hooks, Utilities
+**Current architecture (2026-10)**:
+- **Timers**: host-authoritative, deadline-based in `GamePlay.tsx`; snapshots carry
+  `{ phaseId, hostNowMs, phaseEndsAtHostMs }`; ScreenView anchors its local countdown to
+  them (no duration recomputation). See `docs/SYNC_FIX_PLAN.md`.
+- **Team statuses / clash**: single engine in `useTeamStatusManager` — HostView must NOT
+  resolve clashes or set `answeringTeamId` itself.
+- **P2P messaging**: plain JSON over PeerJS; no binary protocol, no sequence numbers.
+  Handler callbacks are invoked via `configRef` (always fresh closures).
+  Handler params are intentionally `any` (see `types.ts` note on `MessageHandler`).
+- **Docs**: `docs/NETWORKING.md` (setup, TURN, troubleshooting),
+  `docs/SYNC_FIX_PLAN.md` (sync architecture + fix journal),
+  `docs/MEDIA_STREAMING.md` (media pipeline).
+
+**Major functional groups**:
+1. Host game engine — `GamePlay.tsx` (timers, clash, scoring, broadcasts)
+2. Team status authority — `useTeamStatusManager`
+3. P2P transport — `useP2PHost` / `useP2PClient` / `p2pConnectionPool` / `messageQueue`
+4. Media pipeline — `syncMediaStreamer`, `media/`, `useDemoScreenMedia`, `demoScreenMediaHandler`
+5. UI — `HostView`, `ScreenView`, `MobileView`, `host/game/`, `packeditor/`
 
 ### Project Context
 
@@ -116,20 +123,24 @@ hooks/
 ├── useP2PHost.ts         # Host-side P2P
 ├── useP2PClient.ts       # Client-side P2P
 ├── useGamePlayState.ts   # Game state management
-└── useSequencedMessages.ts # Ordered message delivery
+└── useTeamStatusManager.ts # Single source of truth for team card states
 
 utils/
 ├── mediaManager.ts       # Media file handling
 ├── mediaStream.ts        # P2P media streaming
 ├── p2pConnectionPool.ts  # Connection pooling
-└── binaryProtocol.ts     # Binary message encoding
+└── messageQueue.ts       # Adaptive message batching (plain JSON over PeerJS)
 ```
 
-### Recent Optimizations (2026-04)
+### Recent Optimizations (2026-10)
 
-- Removed duplicate MediaStreamer variants (kept Enhanced)
-- Consolidated font utilities to `components/host/game/fontUtils.ts`
-- Token reduction: 71.5x vs reading raw files
+- Timer desync fixed at the root: deadline-based host timer + clock-anchored snapshots
+  + phaseId stale-message guard (previously the demo screen ran an independent timer)
+- Single clash engine (was: two engines picking different random winners)
+- Removed ~3,200 lines: dead message-queue/sequencer/binary-protocol layers, unused
+  components, 540 console.log statements (16 kept for field debugging)
+- P2P fixes: no broadcast truncation, deferred throttling, fresh handler closures,
+  zombie-client reaping, reconnect backoff, ICE failure logging
 
 ### Memory System
 

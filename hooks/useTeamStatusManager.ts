@@ -91,6 +91,8 @@ export interface TeamGameState {
   isAnswerRevealed: boolean;
   /** Current screen being displayed */
   currentScreen: string;
+  /** Team ID that should be blocked from activation (handicap) */
+  handicapTeamId?: string | null;
 }
 
 /**
@@ -205,27 +207,34 @@ function isValidTransition(
 }
 
 /**
- * Get CSS classes for a team card based on status
+ * Get CSS classes for a team card based on status.
+ * SHARED single source of truth: used by the host cards (via getTeamCardClasses) and
+ * by the demo screen (ScreenView) so the visual mapping cannot drift between them.
+ * Accepts plain strings because demo-screen data arrives as parsed JSON.
  */
-function getCardClassesForStatus(status: TeamStatus): string {
+export function getTeamCardClassesForStatus(status: string, clashSubStatus?: string): string {
   switch (status) {
     case TeamStatus.INACTIVE:
       return 'bg-gray-100/40 border-gray-300 shadow-[0_0_10px_rgba(255,255,255,0.3)] transition-all';
 
     case TeamStatus.ACTIVE:
-      return 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)] transition-all cursor-pointer hover:scale-105';
+      return 'bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)] transition-all';
 
     case TeamStatus.ANSWERING:
-      return 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-115 transition-all';
+      return 'bg-green-500/40 border-green-400 shadow-[0_0_20px_rgba(74,222,128,0.6)] scale-105 transition-all';
 
     case TeamStatus.PENALTY:
       return 'bg-red-500/30 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.5)] transition-all';
 
     case TeamStatus.CLASH:
-      return 'clash-card border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)] transition-all';
+      // Clash cards have special animation - different styling for first_clash vs simple_clash
+      if (clashSubStatus === ClashSubStatus.FIRST_CLASH) {
+        return 'clash-card bg-yellow-500/40 border-yellow-300 shadow-[0_0_25px_rgba(234,179,8,0.7)] transition-all';
+      }
+      return 'clash-card bg-yellow-500/30 border-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.6)] transition-all';
 
     default:
-      return 'bg-gray-100/40 border-gray-300';
+      return 'bg-gray-100/40 border-gray-300 transition-all';
   }
 }
 
@@ -309,7 +318,7 @@ export function useTeamStatusManager(
     prevTeamIdsRef.current = [...teamIds];
 
     setTeamStates(prev => {
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
 
       // Add new teams with default state
       teamIds.forEach(id => {
@@ -333,10 +342,6 @@ export function useTeamStatusManager(
   useEffect(() => {
     const currentAnswering = getAnsweringTeamFromStates(teamStates);
     if (currentAnswering !== prevAnsweringTeamRef.current) {
-      console.log('[TeamStatusManager] Answering team changed:', {
-        from: prevAnsweringTeamRef.current?.slice(0, 12),
-        to: currentAnswering?.slice(0, 12)
-      });
       prevAnsweringTeamRef.current = currentAnswering;
       onAnsweringTeamChange?.(currentAnswering);
     }
@@ -390,7 +395,6 @@ export function useTeamStatusManager(
    * Resolve clash phase - randomly pick winner among clash teams
    */
   const resolveClash = useCallback(() => {
-    console.log('[TeamStatusManager] Resolving clash phase');
     clashPhaseRef.current = 'resolving';
 
     setTeamStates(prev => {
@@ -414,7 +418,7 @@ export function useTeamStatusManager(
         isResponseTimerActive: gameState.isResponseTimerActive
       });
 
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
       const fallbackStatus = gameState.isResponseTimerActive
         ? TeamStatus.ACTIVE
         : TeamStatus.INACTIVE;
@@ -458,12 +462,6 @@ export function useTeamStatusManager(
     preservePrevious: boolean = false,
     force: boolean = false
   ) => {
-    console.log(`[TeamStatusManager] updateTeamStatus called:`, {
-      teamId: teamId.slice(0, 12),
-      from: 'unknown',
-      to: newStatus,
-      isResponseTimerActive: gameStateRef.current.isResponseTimerActive
-    });
 
     setTeamStates(prev => {
       const currentState = prev.get(teamId);
@@ -481,10 +479,9 @@ export function useTeamStatusManager(
       }
 
       const logPrefix = force ? '[TeamStatusManager] FORCE' : '[TeamStatusManager]';
-      console.log(`${logPrefix} Setting team ${teamId.slice(0, 12)} from ${currentState.status} to ${newStatus}`);
 
       // Update the target team's state
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
 
       // Only one team can be ANSWERING at a time - only clear if forced (host manual action)
       if (newStatus === TeamStatus.ANSWERING && force) {
@@ -495,7 +492,6 @@ export function useTeamStatusManager(
             const fallbackStatus = gameState.isResponseTimerActive
               ? TeamStatus.ACTIVE
               : TeamStatus.INACTIVE;
-            console.log(`[TeamStatusManager] Clearing ANSWERING from team ${id.slice(0, 12)} -> ${fallbackStatus}`);
             updated.set(id, {
               ...state,
               status: fallbackStatus,
@@ -505,7 +501,6 @@ export function useTeamStatusManager(
           }
         }
         if (clearedAny) {
-          console.log(`[TeamStatusManager] Cleared existing answering team(s), isResponseTimerActive: ${gameState.isResponseTimerActive}`);
         }
       }
       updated.set(teamId, {
@@ -539,7 +534,7 @@ export function useTeamStatusManager(
    */
   const setMultipleTeamStatuses = useCallback((updates: Map<string, TeamStatus>) => {
     setTeamStates(prev => {
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
       const gameState = gameStateRef.current;
 
       // First pass: validate all transitions and clear existing ANSWERING
@@ -602,13 +597,6 @@ export function useTeamStatusManager(
    */
   const getAnsweringTeam = useCallback((): string | null => {
     const result = getAnsweringTeamFromStates(teamStates);
-    console.log('[TeamStatusManager] getAnsweringTeam called:', {
-      result: result?.slice(0, 12),
-      allStates: Array.from(teamStates.entries()).map(([id, state]) => ({
-        id: id.slice(0, 12),
-        status: state.status
-      }))
-    });
     return result;
   }, [teamStates]);
 
@@ -631,19 +619,16 @@ export function useTeamStatusManager(
 
     // Can only buzz if ACTIVE and response timer is active
     if (currentState.status !== TeamStatus.ACTIVE) {
-      console.log(`[TeamStatusManager] Team ${teamId} cannot buzz - not ACTIVE (status: ${currentState.status})`);
       return false;
     }
 
     if (!gameState.isResponseTimerActive) {
-      console.log(`[TeamStatusManager] Team ${teamId} cannot buzz - response timer not active`);
       return false;
     }
 
     // Check if there's already an answering team - buzz cannot replace it
     const existingAnswering = getAnsweringTeamFromStates(teamStates);
     if (existingAnswering) {
-      console.log(`[TeamStatusManager] Team ${teamId} cannot buzz - team ${existingAnswering.slice(0, 12)} is already answering`);
       return false;
     }
 
@@ -656,14 +641,13 @@ export function useTeamStatusManager(
     if (simultaneousBuzzEnabled && simultaneousBuzzThreshold > 0) {
       if (currentPhase === 'idle') {
         // FIRST BUZZ - Start clash phase
-        console.log('[TeamStatusManager] FIRST BUZZ - Starting clash phase');
         clashPhaseRef.current = 'active';
         firstClashTimestampRef.current = now;
         firstClashTeamIdRef.current = teamId;
 
         // Set team to CLASH with FIRST_CLASH substatus
         setTeamStates(prev => {
-          const updated = new Map(prev);
+          const updated = new Map<string, TeamState>(prev);
           const teamState = updated.get(teamId);
           if (teamState) {
             updated.set(teamId, {
@@ -693,9 +677,8 @@ export function useTeamStatusManager(
         const timeSinceFirst = now - firstTimestamp;
         if (timeSinceFirst <= simultaneousBuzzThreshold * 1000) {
           // Within window - add to clash
-          console.log('[TeamStatusManager] BUZZ within clash window - Adding to clash');
           setTeamStates(prev => {
-            const updated = new Map(prev);
+            const updated = new Map<string, TeamState>(prev);
             const teamState = updated.get(teamId);
             if (teamState) {
               updated.set(teamId, {
@@ -734,7 +717,6 @@ export function useTeamStatusManager(
     const answeringTeam = getAnsweringTeamFromStates(teamStates);
 
     if (answeringTeam) {
-      console.log(`[TeamStatusManager] Correct answer by team ${answeringTeam}`);
     }
 
     // Reset all teams to INACTIVE
@@ -768,11 +750,10 @@ export function useTeamStatusManager(
       return;
     }
 
-    console.log(`[TeamStatusManager] Incorrect answer by team ${answeringTeam}`);
 
     // Set answering team to PENALTY
     setTeamStates(prev => {
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
       const currentState = updated.get(answeringTeam);
 
       if (currentState) {
@@ -792,7 +773,6 @@ export function useTeamStatusManager(
    * Reset all teams to INACTIVE
    */
   const resetAllTeams = useCallback(() => {
-    console.log('[TeamStatusManager] Resetting all teams to INACTIVE');
 
     // Clear clash phase
     if (clashTimerRef.current) {
@@ -805,6 +785,8 @@ export function useTeamStatusManager(
 
     // Reset response timer flag to allow re-activation on next question
     gameStateRef.current.isResponseTimerActive = false;
+    // Clear handicap so a stale team ID cannot suppress a team on the next question
+    gameStateRef.current.handicapTeamId = null;
 
     setTeamStates(prev => {
       const updated = new Map<string, TeamState>();
@@ -819,13 +801,14 @@ export function useTeamStatusManager(
    * Reset team states when a new question opens
    */
   const resetForNewQuestion = useCallback(() => {
-    console.log('[TeamStatusManager] Resetting for new question');
     gameStateRef.current.isAnswerRevealed = false;
     gameStateRef.current.isResponseTimerActive = false; // Reset for proper re-activation
+    // Clear handicap so a stale team ID cannot suppress a team on the next question
+    gameStateRef.current.handicapTeamId = null;
     // Immediately deactivate ALL teams to ensure they're INACTIVE for new question
     // This works even if isResponseTimerActive is already false
     setTeamStates(prev => {
-      const updated = new Map(prev);
+      const updated = new Map<string, TeamState>(prev);
       let deactivatedCount = 0;
       for (const [id, state] of updated.entries()) {
         if (state.status !== TeamStatus.INACTIVE) {
@@ -838,7 +821,6 @@ export function useTeamStatusManager(
         }
       }
       if (deactivatedCount > 0) {
-        console.log(`[TeamStatusManager] resetForNewQuestion - Deactivated ${deactivatedCount} teams`);
       }
       return updated;
     });
@@ -851,32 +833,31 @@ export function useTeamStatusManager(
     const previousState = { ...gameStateRef.current };
     gameStateRef.current = { ...gameStateRef.current, ...updates };
 
-    console.log('[TeamStatusManager] updateGameState called:', {
-      'updates.isResponseTimerActive': updates.isResponseTimerActive,
-      'previousState.isResponseTimerActive': previousState.isResponseTimerActive,
-      'current.isResponseTimerActive': gameStateRef.current.isResponseTimerActive,
-      'typeof updates.isResponseTimerActive': typeof updates.isResponseTimerActive,
-      'updates keys': Object.keys(updates),
-    });
 
-    // Handle response timer activation
-    // Activate teams when isResponseTimerActive is true and teams are in INACTIVE status
-    // Check the CURRENT state after update, not just what was in the updates object
+    // Handle response timer activation - IDEMPOTENT RECONCILIATION.
+    // We recompute the desired team statuses on EVERY call (not just on false→true
+    // edges): while the response timer is active, every INACTIVE team that is not
+    // the handicap team should be ACTIVE. This makes calls like
+    // updateGameState({ isResponseTimerActive: true, handicapTeamId: null }) after a
+    // handicap ends actually re-activate the previously skipped leader team, instead
+    // of being a no-op because the timer was already active.
     const isNowActive = gameStateRef.current.isResponseTimerActive;
     const wasActive = previousState.isResponseTimerActive;
+    // Reconcile when the timer flag flips OR when handicapTeamId changes while active
+    // (a changed handicap changes who should be skipped).
+    const handicapChanged = (updates.handicapTeamId !== undefined) &&
+      (updates.handicapTeamId ?? null) !== (previousState.handicapTeamId ?? null);
 
-    if (isNowActive && !wasActive) {
-      // Response timer started - activate all non-PENALTY, non-ANSWERING teams
-      console.log('[TeamStatusManager] Response timer active - activating teams');
+    if (isNowActive && (isNowActive !== wasActive || handicapChanged)) {
       setTeamStates(prev => {
         let activatedCount = 0;
-        const statusesBefore = Array.from(prev.entries()).map(([id, s]) => `${id.slice(0,8)}:${s.status}`);
-        console.log('[TeamStatusManager] Team statuses before activation:', statusesBefore);
-        const updated = new Map(prev);
+        const updated = new Map<string, TeamState>(prev);
         for (const [id, state] of updated.entries()) {
           // Activate all INACTIVE teams (even if they attempted before)
           // Skip PENALTY and ANSWERING teams
-          if (state.status === TeamStatus.INACTIVE) {
+          // Also skip handicap team if specified
+          const isHandicapTeam = gameStateRef.current.handicapTeamId === id;
+          if (state.status === TeamStatus.INACTIVE && !isHandicapTeam) {
             updated.set(id, {
               ...state,
               status: TeamStatus.ACTIVE,
@@ -885,15 +866,15 @@ export function useTeamStatusManager(
             activatedCount++;
           }
         }
-        const statusesAfter = Array.from(updated.entries()).map(([id, s]) => `${id.slice(0,8)}:${s.status}`);
-        console.log(`[TeamStatusManager] Activated ${activatedCount} teams. Statuses after:`, statusesAfter);
+        if (activatedCount > 0) {
+          const statusesAfter = Array.from(updated.entries()).map(([id, s]) => `${id.slice(0,8)}:${s.status}`);
+        }
         return updated;
       });
-    } else if (!isNowActive && wasActive) {
-      // Deactivate when transitioning from active to inactive
-      console.log('[TeamStatusManager] Response timer deactivated - deactivating teams');
+    } else if (!isNowActive && (isNowActive !== wasActive || handicapChanged)) {
+      // Deactivate when the timer is not active
       setTeamStates(prev => {
-        const updated = new Map(prev);
+        const updated = new Map<string, TeamState>(prev);
         let deactivatedCount = 0;
         for (const [id, state] of updated.entries()) {
           if (state.status === TeamStatus.ACTIVE) {
@@ -906,26 +887,21 @@ export function useTeamStatusManager(
           }
         }
         if (deactivatedCount > 0) {
-          console.log(`[TeamStatusManager] Deactivated ${deactivatedCount} teams`);
         }
         return updated;
       });
-    } else {
-      console.log('[TeamStatusManager] updateGameState - no activation/deactivation needed');
     }
 
     // Handle screen transitions that reset teams
     const resetScreens = ['cover', 'themes', 'round', 'lobby'];
     if (updates.currentScreen && resetScreens.includes(updates.currentScreen)) {
       if (!resetScreens.includes(previousState.currentScreen)) {
-        console.log(`[TeamStatusManager] Screen changed to ${updates.currentScreen} - resetting teams`);
         resetAllTeams();
       }
     }
 
     // Handle answer reveal
     if (updates.isAnswerRevealed && !previousState.isAnswerRevealed) {
-      console.log('[TeamStatusManager] Answer revealed - resetting teams');
       resetAllTeams();
     }
   }, [resetAllTeams]);
@@ -935,12 +911,17 @@ export function useTeamStatusManager(
    */
   const getTeamCardClasses = useCallback((teamId: string): string => {
     const status = getTeamStatus(teamId);
-    let classes = getCardClassesForStatus(status);
+    let classes = getTeamCardClassesForStatus(status);
 
     // For CLASH status, set animation duration based on simultaneous buzz threshold
     if (status === TeamStatus.CLASH && simultaneousBuzzThreshold > 0) {
       const duration = simultaneousBuzzThreshold.toFixed(2);
       classes = `clash-card [--clash-duration:${duration}s]`;
+    }
+
+    // Host-only interaction affordances (cards are clickable on the host screen)
+    if (status === TeamStatus.ACTIVE) {
+      classes += ' cursor-pointer hover:scale-105';
     }
 
     return classes;

@@ -1,5 +1,8 @@
 # Media Streaming System
 
+> Обновлено: 2026-10-11. Медиа передаются как plain JSON (base64) через PeerJS;
+> бинарный протокол удалён. Кэш демо-экрана: `window.mediaTransferCache` + `useDemoScreenMedia`.
+
 ## Overview
 Новая система трансляции медиафайлов с хоста на демо-экран через P2P соединение.
 
@@ -43,10 +46,12 @@
 - `fileToBase64()` - конвертирует файл в base64
 - `base64ToBlobUrl()` - конвертирует base64 обратно в blob URL
 
-#### Компонент MediaStreamer (`components/host/game/MediaStreamer.ts`)
-- Автоматически транслирует медиафайлы при открытии вопроса
+#### Трансляция на хосте (`utils/syncMediaStreamer.ts`)
+- `streamMediaFilesSynchronously()` вызывается из `GamePlay.broadcastGameState` перед
+  отправкой состояния игры — медиа приходят на демо-экран раньше состояния вопроса
 - Кэширует переданные файлы для предотвращения дублирования
-- Работает без UI (невидимый компонент)
+- Дополнительно есть ленивый компонент `components/host/game/EnhancedMediaStreamer.tsx`
+  (загружается динамически)
 
 #### Типы сообщений (`types.ts`)
 - `MediaTransferMessage` - сообщение для передачи медиа
@@ -83,7 +88,7 @@
 
 Для отладки используйте консоль браузера:
 
-- `[MediaStreamer]` - логи трансляции на хосте
+- `[syncMediaStreamer]` / `[GamePlay]` - логи трансляции на хосте
 - `[ScreenView]` - логи приема на демо-экране
 - `window.mediaTransferCache` - кэш медиа на демо-экране
 

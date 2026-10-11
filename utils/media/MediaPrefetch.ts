@@ -56,7 +56,6 @@ export async function prefetchNextQuestionsMedia(
 
     if (mediaIdsToPrefetch.length > 0) {
       await prefetchMediaFiles(mediaIdsToPrefetch);
-      console.log('[MediaPrefetch] ✅ Prefetched media for next questions:', mediaIdsToPrefetch.length);
     }
   } catch (error) {
     console.warn('[MediaPrefetch] ⚠️ Failed to prefetch next questions media:', error);
@@ -69,7 +68,6 @@ export async function prefetchNextQuestionsMedia(
 export async function prefetchMediaFiles(mediaIds: string[]): Promise<void> {
   if (!mediaIds.length) return;
 
-  console.log('[MediaPrefetch] 🎯 Prefetching media files:', mediaIds.length);
 
   // Get or create global cache instance
   const cache = getGlobalCache();
@@ -95,7 +93,6 @@ export async function bulkPrefetchMediaFiles(
     cache.put(mediaId, file);
   }
 
-  console.log(`[MediaPrefetch] 🎯 Bulk prefetch completed: ${result.succeeded.length} files cached`);
   return result;
 }
 

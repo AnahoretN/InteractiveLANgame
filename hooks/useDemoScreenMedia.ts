@@ -8,7 +8,7 @@
 import { useCallback, useRef } from 'react';
 import { processMediaTransfer } from '../utils/mediaStream';
 import { demoScreenMediaHandler } from '../utils/demoScreenMediaHandler';
-import type { P2PSMessage } from '../types';
+import { MessageCategory } from '../types';
 
 export interface MediaCacheItem {
   type: 'image' | 'video' | 'audio' | 'youtube';
@@ -47,19 +47,19 @@ export function useDemoScreenMedia() {
   /**
    * Process a media transfer message and cache the media
    */
-  const processMediaMessage = useCallback((message: P2PSMessage) => {
+  // Loosely typed - media message payloads are not declared on P2PSMessage members
+  // (see the note on MessageHandler in types.ts)
+  const processMediaMessage = useCallback((message: any) => {
     const payload = message.payload;
 
     if (message.type === 'MEDIA_TRANSFER' || message.payload?.type === 'MEDIA_TRANSFER') {
       const mediaPayload = message.payload?.type === 'MEDIA_TRANSFER' ? message.payload : payload;
 
-      console.log('[useDemoScreenMedia] Processing media transfer:', mediaPayload);
 
       const cache = getMediaCache();
 
       if (mediaPayload.isYouTube && mediaPayload.url) {
         // YouTube links - store directly
-        console.log('[useDemoScreenMedia] Caching YouTube URL:', mediaPayload.url);
         cache.set(mediaPayload.mediaId, {
           type: mediaPayload.mediaType,
           url: mediaPayload.url,
@@ -67,7 +67,6 @@ export function useDemoScreenMedia() {
         });
       } else if (mediaPayload.fileData && mediaPayload.fileType) {
         // Local files transferred as base64
-        console.log('[useDemoScreenMedia] Caching local file:', mediaPayload.fileName);
         cache.set(mediaPayload.mediaId, {
           type: mediaPayload.mediaType,
           url: null,
@@ -77,7 +76,6 @@ export function useDemoScreenMedia() {
         });
       } else if (mediaPayload.url) {
         // External URLs
-        console.log('[useDemoScreenMedia] Caching external URL:', mediaPayload.url);
         cache.set(mediaPayload.mediaId, {
           type: mediaPayload.mediaType,
           url: mediaPayload.url,
@@ -105,11 +103,10 @@ export function useDemoScreenMedia() {
     if (!question?.media?.url) return question;
 
     const cache = getMediaCache();
-    const questionMediaId = `question_${question.questionId || question.id || 'current'}_media`;
+    const questionMediaId = `question_${question.questionId || (question as any).id || 'current'}_media`;
     const cachedMedia = cache.get(questionMediaId);
 
     if (cachedMedia) {
-      console.log('[useDemoScreenMedia] Applying cached media:', questionMediaId);
 
       let updatedQuestion = { ...question };
 
@@ -127,7 +124,7 @@ export function useDemoScreenMedia() {
         try {
           const blobUrl = processMediaTransfer({
             id: 'cached',
-            category: 'state' as const,
+            category: MessageCategory.STATE,
             timestamp: Date.now(),
             senderId: 'host',
             type: 'MEDIA_TRANSFER',
@@ -137,7 +134,8 @@ export function useDemoScreenMedia() {
               fileName: 'media',
               fileType: cachedMedia.fileType,
               fileSize: 0,
-              fileData: cachedMedia.fileData
+              fileData: cachedMedia.fileData,
+              isYouTube: false
             }
           });
 
@@ -157,7 +155,7 @@ export function useDemoScreenMedia() {
 
       // Also check for answer media
       if (question.answerMedia?.url) {
-        const answerMediaId = `question_${question.questionId || question.id || 'current'}_answer_media`;
+        const answerMediaId = `question_${question.questionId || (question as any).id || 'current'}_answer_media`;
         const cachedAnswerMedia = cache.get(answerMediaId);
 
         if (cachedAnswerMedia?.url) {
@@ -188,7 +186,6 @@ export function useDemoScreenMedia() {
     cache.delete(questionMediaId);
     cache.delete(answerMediaId);
 
-    console.log('[useDemoScreenMedia] Cleared media cache for question:', questionId);
   }, [getMediaCache]);
 
   /**
@@ -205,7 +202,6 @@ export function useDemoScreenMedia() {
   const clearAllMedia = useCallback(() => {
     const cache = getMediaCache();
     cache.clear();
-    console.log('[useDemoScreenMedia] Cleared all media cache');
   }, [getMediaCache]);
 
   return {

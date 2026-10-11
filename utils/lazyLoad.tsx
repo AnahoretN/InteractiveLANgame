@@ -4,7 +4,7 @@
  * Utilities for lazy loading components with skeleton loading states
  */
 
-import React, { lazy, Suspense, ComponentType } from 'react';
+import { lazy, Suspense, ComponentType, Component, ReactNode } from 'react';
 import { SkeletonCard, SkeletonListItem, SkeletonTeamList } from '../components/shared/Skeleton';
 
 // Error boundary component for lazy loaded components
@@ -30,10 +30,10 @@ const LazyLoadError = ({ error, retry }: LazyLoadErrorProps) => (
 interface LoadingTimeoutProps {
   timeout: number;
   onTimeout: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
-class LoadingTimeout extends React.Component<LoadingTimeoutProps> {
+class LoadingTimeout extends Component<LoadingTimeoutProps> {
   timeoutId: NodeJS.Timeout | null = null;
 
   componentDidMount() {
@@ -107,9 +107,8 @@ export function lazyWithTimeout<P extends object>(
 }
 
 // Preload utility
-export function preloadComponent(
-  importFn: () => Promise<{ default: ComponentType<any> }>
-): void {
+export function preloadComponent(importFn: () => Promise<unknown>): void {
+  // Preloads a module chunk; the module namespace shape doesn't matter here
   importFn();
 }
 

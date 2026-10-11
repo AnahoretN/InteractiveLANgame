@@ -5,7 +5,7 @@
  * Only keeps the functions actually used in the codebase.
  */
 
-import { memo, useMemo } from 'react';
+import React, { memo, useMemo } from 'react';
 
 // Deep comparison utility for objects
 function deepEqual(a: any, b: any): boolean {
@@ -37,7 +37,7 @@ function shallowCompare(props: Record<string, any>, nextProps: Record<string, an
 // Custom memo with specific prop comparison
 export function memoWithProps<P extends object>(
   component: React.FC<P>,
-  compareKeys: (keyof P)[],
+  compareKeys: string[],
   deep: boolean = false
 ): React.FC<P> {
   return memo(component, (prevProps, nextProps) => {
@@ -60,8 +60,9 @@ export function withSmartMemo<P extends object>(
   component: React.FC<P>,
   options: {
     strategy?: 'shallow' | 'deep' | 'selective';
-    compareKeys?: (keyof P)[];
+    compareKeys?: string[];
     componentName?: string;
+    enablePerfMonitoring?: boolean;
   } = {}
 ): React.FC<P> {
   const {

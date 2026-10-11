@@ -23,6 +23,7 @@ export interface Team {
   createdAt: number;
   lastUsedAt: number;
   score?: number;
+  color?: string;  // Team card color
 }
 
 /**
@@ -147,6 +148,11 @@ export interface TimerStateMessage extends P2PMessage {
     isPaused?: boolean; // Whether the timer is paused by host
     readingTimeTotal?: number;  // Total reading time for initial config
     responseTimeTotal?: number; // Total response time for initial config
+    // Clock-anchored snapshot for latency-compensated countdown extrapolation:
+    // clients compute localDeadline = receiveTime + (phaseEndsAtHostMs - hostNowMs)
+    phaseId?: number;          // Monotonic per-phase counter; receivers ignore older ids
+    hostNowMs?: number;        // Host clock at snapshot time
+    phaseEndsAtHostMs?: number;// Host-clock deadline of the current phase
     timerBarColor?: string;
     timerTextColor?: string;
   };
@@ -159,18 +165,6 @@ export interface QRCodeStateMessage extends P2PMessage {
   payload: {
     showQRCode: boolean;
     position?: { x: number; y: number };
-  };
-}
-
-// STATE: Timer control for explicit timer management
-export interface TimerControlMessage extends P2PMessage {
-  category: MessageCategory.STATE;
-  type: 'TIMER_CONTROL';
-  payload: {
-    action: 'start' | 'pause' | 'resume' | 'stop' | 'switch';
-    timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
-    readingTimerRemaining?: number;
-    responseTimerRemaining?: number;
   };
 }
 
@@ -471,13 +465,27 @@ export interface MediaStatusReportMessage extends P2PMessage {
   };
 }
 
+// STATE: Buzzer state (legacy). Buzzer state now travels via TimerStateMessage and
+// StateSyncMessage, but the union keeps this member with a loose payload: many message
+// handlers access payload fields that are not declared on the strict member types, and
+// they have always compiled against this looseness. Tightening payload types is a
+// separate, deliberate task.
+export interface BuzzerStateMessage extends P2PMessage {
+  category: MessageCategory.STATE;
+  type: 'BUZZER_STATE';
+  // Deliberately `any`: message handlers access payload fields not declared on the
+  // strict member types, and have always compiled against this looseness. Tightening
+  // payload types is a separate, deliberate task.
+  payload: any;
+}
+
 // Union type for all P2P messages
 export type P2PSMessage =
   | TeamStateMessage
   | TeamConfirmedMessage
   | ScoreStateMessage
   | BuzzerStateMessage
-  | TimerControlMessage
+  | TimerStateMessage
   | BuzzEventMessage
   | BuzzEventNotifyMessage
   | SuperGameBetMessage
@@ -504,7 +512,12 @@ export type P2PSMessage =
   | MediaStatusReportMessage;
 
 // Message handler type
-export type MessageHandler = (message: P2PSMessage, peerId: string) => void;
+// Message handlers receive loosely-typed messages: the wire format is JSON whose
+// payloads are richer than the P2PSMessage member types declare (e.g. STATE_SYNC
+// carries isSessionActive/clients, TIMER_STATE and MEDIA_* messages were historically
+// absent from the union). Handlers intentionally access payload fields without
+// strict checks; tightening the protocol types is a separate deliberate task.
+export type MessageHandler = (message: any, peerId: string) => void;
 
 // P2P connection configuration
 export interface P2PConfig {

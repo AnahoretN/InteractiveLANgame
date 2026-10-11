@@ -3,6 +3,7 @@ import { ConnectionStatus, ConnectionQuality, MessageCategory, P2PSMessage, GetC
 import { Users, Loader2, RefreshCw, LogOut, X, Check, ChevronDown, ChevronUp, RotateCw, UserX } from 'lucide-react';
 import { Button } from './Button';
 import { useP2PClient, ClientConnectionState } from '../hooks/useP2PClient';
+import { useHashParams } from '../hooks/useURLParams';
 import { storage, STORAGE_KEYS } from '../hooks/useLocalStorage';
 
 export const MobileView: React.FC = () => {
@@ -77,6 +78,8 @@ export const MobileView: React.FC = () => {
     responseTimerRemaining: number;
     handicapActive: boolean;
     handicapTeamId?: string;
+    isPaused?: boolean;
+    superGamePhase?: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
   }>({
     active: false,
     timerPhase: 'inactive',
@@ -123,7 +126,7 @@ export const MobileView: React.FC = () => {
 
         let newReading = prev.readingTimerRemaining;
         let newResponse = prev.responseTimerRemaining;
-        let newPhase = prev.timerPhase;
+        let newPhase: 'reading' | 'response' | 'complete' | 'inactive' = prev.timerPhase;
 
         if (prev.timerPhase === 'reading') {
           newReading = Math.max(0, authoritativeBuzzerStateRef.current.readingTimerRemaining - elapsed);
@@ -167,7 +170,7 @@ export const MobileView: React.FC = () => {
   const [showAnswerModal, setShowAnswerModal] = useState<boolean>(false);
 
   const [retryCount, setRetryCount] = useState(0);
-  const [clientId] = useState<string>(() => {
+  const [clientId, setClientId] = useState<string>(() => {
     const saved = storage.get(STORAGE_KEYS.CLIENT_ID);
     if (saved) {
       return saved;
@@ -177,30 +180,29 @@ export const MobileView: React.FC = () => {
     return newId;
   });
 
-  // Get host ID from URL params or storage
+  // Get host ID and session from URL params - REACTIVE to hashchange (new QR in the
+  // same tab must switch to the new session, not keep the previous one)
+  const urlParams = useHashParams();
   const urlHostId = useMemo(() => {
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    return params.get('host') || storage.get(STORAGE_KEYS.LAST_HOST) || null;
-  }, []);
+    return urlParams.get('host') || storage.get(STORAGE_KEYS.LAST_HOST) || null;
+  }, [urlParams]);
 
   // Get session ID from URL params
   const sessionId = useMemo(() => {
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    return params.get('session') || null;
-  }, []);
+    return urlParams.get('session') || null;
+  }, [urlParams]);
 
   // Get signalling server URL (from URL params for LAN mode)
   // Only use LAN signalling if explicitly provided (for LAN mode)
   // For Internet mode, always use default public server
   const signallingUrl = useMemo(() => {
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    const lanServer = params.get('signalling');
+    const lanServer = urlParams.get('signalling');
     // Only use LAN server if explicitly specified - for Internet mode this will be undefined
     if (lanServer) {
       return `ws://${lanServer}:9000`;
     }
     return undefined; // Use default public server for Internet mode
-  }, []);
+  }, [urlParams]);
 
   // Use refs for values that change but shouldn't trigger p2pClient re-creation
   const waitForConfirmationRef = useRef(waitForHostConfirmation);
@@ -233,24 +235,34 @@ export const MobileView: React.FC = () => {
 
         // Only log on important transitions
         if (currentPhase !== previousPhase) {
-          console.log('📊 [MOBILE] Timer phase changed:', previousPhase, '->', currentPhase);
         }
         // Skip logging for frequent timer updates
       } else if (message.type === 'BROADCAST') {
         // Only log BROADCAST for important game state updates
         if (message.payload?.type === 'GAME_STATE_UPDATE') {
-          console.log('📨 [MOBILE] BROADCAST: Game state update');
         }
         // Skip logging for frequent timer updates
       } else {
-        console.log('📨 [MOBILE] Message received from host:', message.type, 'Category:', message.category);
       }
 
       switch (message.type) {
         case 'TIMER_STATE':
-          // Update buzzer state from host
-          console.log('📊 [MOBILE] TIMER_STATE received:', message.payload);
-          console.log('📊 [MOBILE] superGamePhase from host:', message.payload.superGamePhase);
+          // Update buzzer state from host (phase transitions are logged above;
+          // skip per-message payload dumps - hot path on mobile)
+          // Latency compensation: the host snapshot is (now - hostNowMs) old by the
+          // time it arrives; subtract the transport delay from the remaining values
+          // so the local countdown doesn't lag behind the host by the network delay.
+          {
+            const p = message.payload;
+            if (p.phaseEndsAtHostMs !== undefined && p.hostNowMs !== undefined) {
+              const latencySec = Math.max(0, Math.min(2, (Date.now() - p.hostNowMs) / 1000));
+              if (p.timerPhase === 'reading' && p.readingTimerRemaining !== undefined) {
+                p.readingTimerRemaining = Math.max(0, p.readingTimerRemaining - latencySec);
+              } else if (p.timerPhase === 'response' && p.responseTimerRemaining !== undefined) {
+                p.responseTimerRemaining = Math.max(0, p.responseTimerRemaining - latencySec);
+              }
+            }
+          }
           setBuzzerState(message.payload);
           // Update authoritative ref for local countdown
           authoritativeBuzzerStateRef.current = {
@@ -262,7 +274,6 @@ export const MobileView: React.FC = () => {
           };
           if (message.payload.superGamePhase) {
             setSuperGamePhase(message.payload.superGamePhase);
-            console.log('✅ [MOBILE] superGamePhase updated to:', message.payload.superGamePhase);
           }
           break;
         case 'STATE_SYNC':
@@ -407,7 +418,6 @@ export const MobileView: React.FC = () => {
           // Update teamId if provided (for newly created teams)
           // Only update if currentTeamId looks like a temp ID (doesn't start with 'team_')
           if (message.payload.teamId && currentTeam && (!currentTeamId || !currentTeamId.startsWith('team_'))) {
-            console.log('[MobileView] TEAM_CONFIRMED received with teamId:', message.payload.teamId, 'updating from:', currentTeamId);
             setCurrentTeamId(message.payload.teamId);
             storage.set(STORAGE_KEYS.CURRENT_TEAM_ID, message.payload.teamId);
           }
@@ -419,7 +429,6 @@ export const MobileView: React.FC = () => {
 
           // Handle KICK message - client was removed by host
           if (broadcastPayload?.message === 'KICKED') {
-            console.log('[MobileView] 🚫 Client was kicked by host:', broadcastPayload.reason);
             setWasKicked(true);
             setKickReason(broadcastPayload.reason || 'removed_by_host');
             setStatus(ConnectionStatus.ERROR);
@@ -504,27 +513,22 @@ export const MobileView: React.FC = () => {
       }
     },
     onConnectionChange: (state, quality) => {
-      console.log('[MobileView] onConnectionChange - P2P state:', state, 'ClientConnectionState.CONNECTED:', ClientConnectionState.CONNECTED, 'match:', state === ClientConnectionState.CONNECTED, 'quality:', quality);
       // Update connection quality
       setConnectionQuality(quality);
 
       // Map P2P state to ConnectionStatus
       switch (state) {
         case ClientConnectionState.CONNECTED:
-          console.log('[MobileView] Setting status to CONNECTED');
           setStatus(ConnectionStatus.CONNECTED);
           break;
         case ClientConnectionState.CONNECTING:
         case ClientConnectionState.RECONNECTING:
-          console.log('[MobileView] Setting status to CONNECTING');
           setStatus(ConnectionStatus.CONNECTING);
           break;
         case ClientConnectionState.DISCONNECTED:
-          console.log('[MobileView] Setting status to DISCONNECTED');
           setStatus(ConnectionStatus.DISCONNECTED);
           break;
         case ClientConnectionState.ERROR:
-          console.log('[MobileView] Setting status to ERROR');
           setStatus(ConnectionStatus.ERROR);
           break;
       }
@@ -535,12 +539,72 @@ export const MobileView: React.FC = () => {
     },
   });
 
-  // Auto-connect when we have host ID (but not if kicked)
+  // Auto-connect with exponential backoff when we have a host ID (but not if kicked).
+  // Backoff prevents a hot reconnect loop (battery drain + signalling hammering)
+  // when the host is down for an extended period.
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (urlHostId && !p2pClient.isConnected && !p2pClient.isConnecting && !wasKicked) {
-      p2pClient.connect();
+    if (p2pClient.isConnected) {
+      reconnectAttemptsRef.current = 0;
+      return;
     }
+    if (!urlHostId || p2pClient.isConnecting || wasKicked) {
+      return;
+    }
+
+    const attempt = reconnectAttemptsRef.current;
+    // First attempt immediate, then exponential backoff capped at 30s with jitter
+    const delay = attempt === 0 ? 0 : Math.min(30000, 1000 * Math.pow(2, attempt)) + Math.random() * 500;
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      reconnectAttemptsRef.current++;
+      p2pClient.connect();
+    }, delay);
+
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
   }, [urlHostId, p2pClient.isConnected, p2pClient.isConnecting, p2pClient.connect, wasKicked]);
+
+  // If the host changed (new session opened in the same tab), drop the old connection;
+  // the auto-connect effect above then reconnects to the new host
+  const prevMobileHostRef = useRef(urlHostId);
+  useEffect(() => {
+    if (prevMobileHostRef.current !== urlHostId) {
+      prevMobileHostRef.current = urlHostId;
+      if (p2pClient.isConnected || p2pClient.isConnecting) {
+        console.log('[MobileView] Host changed - dropping previous session connection');
+        p2pClient.disconnect();
+      }
+    }
+  }, [urlHostId, p2pClient]);
+
+  // Request full state sync automatically once connected (including after a
+  // reconnect, so scores/teams/commands are restored without a manual button press)
+  const previousMobileStatusRef = useRef<ConnectionStatus>(status);
+  useEffect(() => {
+    if (status !== previousMobileStatusRef.current) {
+      previousMobileStatusRef.current = status;
+      if (status === ConnectionStatus.CONNECTED && p2pClient.isConnected) {
+        p2pClient.send({
+          category: MessageCategory.SYNC,
+          type: 'GET_COMMANDS',
+          payload: {}
+        });
+        p2pClient.send({
+          category: MessageCategory.STATE,
+          type: 'STATE_SYNC_REQUEST',
+          payload: {}
+        });
+      }
+    }
+  }, [status, p2pClient]);
 
   // Check if this is a new session - if so, reset saved player state
   useEffect(() => {
@@ -549,7 +613,6 @@ export const MobileView: React.FC = () => {
 
       // If session ID changed, this is a new game session
       if (savedSessionVersion !== sessionId) {
-        console.log('[MobileView] New session detected:', sessionId, 'previous:', savedSessionVersion);
 
         // Reset player state for new session (including name)
         setUserName('');
@@ -562,7 +625,22 @@ export const MobileView: React.FC = () => {
         storage.remove(STORAGE_KEYS.USER_NAME);
         storage.remove(STORAGE_KEYS.CURRENT_TEAM);
         storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
+        // Fresh client identity: the host must see this as a NEW guest, not restore
+        // the previous session's team for it
+        const newClientId = 'client_' + Math.random().toString(36).substring(2, 10);
+        storage.set(STORAGE_KEYS.CLIENT_ID, newClientId);
+        setClientId(newClientId);
         storage.remove(STORAGE_KEYS.TEAM_SELECTED);
+        // A kick from the previous session must not block joining the new one
+        setWasKicked(false);
+
+        // Drop the current connection (required even when the host is the same
+        // machine) so the next connect sends a fresh handshake with the new identity;
+        // the auto-connect effect then reconnects automatically.
+        if (p2pClient.isConnected || p2pClient.isConnecting) {
+          console.log('[MobileView] New session - reconnecting with a clean identity');
+          p2pClient.disconnect();
+        }
 
         // Save new session ID
         storage.set(STORAGE_KEYS.HOST_SESSION_VERSION, sessionId);
@@ -611,8 +689,6 @@ export const MobileView: React.FC = () => {
 
   // Send buzz via P2P
   const sendBuzz = useCallback(() => {
-    console.log('🔔 [BUZZ] Button pressed! User:', userName, 'Team:', currentTeam, 'TeamId:', currentTeamId);
-    console.log('🔔 [BUZZ] Connection state:', p2pClient.connectionState, 'Is connected:', p2pClient.isConnected);
 
     if (!p2pClient.isConnected) {
       console.warn('⚠️ [BUZZ] Not connected, cannot buzz. State:', p2pClient.connectionState);
@@ -632,12 +708,10 @@ export const MobileView: React.FC = () => {
       }
     };
 
-    console.log('📤 [BUZZ] Sending buzz message to host:', buzzMessage);
 
     const sent = p2pClient.send(buzzMessage);
 
     if (sent) {
-      console.log('✅ [BUZZ] Buzz message sent successfully to host!');
     } else {
       console.error('❌ [BUZZ] Failed to send buzz message to host!');
     }
@@ -646,29 +720,20 @@ export const MobileView: React.FC = () => {
 
   // Handle buzz button press
   const handleBuzz = useCallback(() => {
-    console.log('🎯 [BUZZ] Button clicked!');
-    console.log('🎯 [BUZZ] Current superGamePhase:', superGamePhase);
-    console.log('🎯 [BUZZ] buzzerState.timerPhase:', buzzerState.timerPhase);
-    console.log('🎯 [BUZZ] buzzerState.active:', buzzerState.active);
 
     // Use buzzerState.superGamePhase if superGamePhase is not set
     const effectivePhase = buzzerState.superGamePhase || superGamePhase;
-    console.log('🎯 [BUZZ] Effective phase:', effectivePhase);
 
     if (effectivePhase === 'placeBets') {
-      console.log('💰 [BUZZ] Bet placement phase - showing bet modal');
       // Show bet selection modal
       setShowBetModal(true);
     } else if (effectivePhase === 'showQuestion') {
-      console.log('❓ [BUZZ] Question phase - showing answer modal');
       // Show answer input modal
       setShowAnswerModal(true);
     } else if (effectivePhase === 'idle' || effectivePhase === undefined) {
-      console.log('🔔 [BUZZ] Idle/undefined phase - sending buzz to host');
       // Regular buzz - no debounce, send immediately
       sendBuzz();
     } else {
-      console.log('⏸️ [BUZZ] Phase:', effectivePhase, '- buzz ignored');
     }
     // For 'showWinner' phase, do nothing
   }, [sendBuzz, superGamePhase, buzzerState]);
@@ -1092,20 +1157,14 @@ export const MobileView: React.FC = () => {
                 <div className="flex items-start justify-center pt-[20vh] w-full animate-in zoom-in duration-300">
                   <button
                     onClick={(e) => {
-                      console.log('🖱️ [BUTTON] BUZZ! onClick event fired');
-                      console.log('🖱️ [BUTTON] Event type:', e.type, 'Pointer type:', e.pointerType);
                     }}
                     onMouseDown={() => {
-                      console.log('🖱️ [BUTTON] BUZZ! onMouseDown event fired');
                       handleBuzz();
                     }}
                     onTouchStart={(e) => {
-                      console.log('📱 [BUTTON] BUZZ! onTouchStart event fired');
-                      console.log('📱 [BUTTON] Touches:', e.touches.length, 'Changed touches:', e.changedTouches.length);
                       handleBuzz();
                     }}
                     onContextMenu={(e) => {
-                      console.log('🖱️ [BUTTON] BUZZ! onContextMenu event fired (right-click)');
                       e.preventDefault();
                       handleBuzz();
                     }}

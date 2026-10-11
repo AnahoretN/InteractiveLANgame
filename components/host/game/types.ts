@@ -35,7 +35,7 @@ export interface SuperGameAnswer {
 
 export interface BuzzerState {
   active: boolean;
-  timerPhase: 'reading' | 'response' | 'complete' | 'inactive';
+  timerPhase?: 'reading' | 'response' | 'complete' | 'inactive';
   readingTimerRemaining: number;
   responseTimerRemaining: number;
   handicapActive: boolean;
@@ -43,6 +43,12 @@ export interface BuzzerState {
   isPaused?: boolean; // Whether the timer is paused by host
   readingTimeTotal?: number; // Total reading time for progress bar calculation
   responseTimeTotal?: number; // Total response time for progress bar calculation
+  // Clock-anchored snapshot passthrough (see TIMER_STATE in types.ts)
+  phaseId?: number;
+  hostNowMs?: number;
+  phaseEndsAtHostMs?: number;
+  // Super game phase piggybacked on mobile timer updates
+  superGamePhase?: 'idle' | 'placeBets' | 'showQuestion' | 'showWinner';
   // Color information from host (authoritative)
   timerColor?: 'yellow' | 'green' | 'gray';
   timerBarColor?: string;
@@ -50,7 +56,7 @@ export interface BuzzerState {
 }
 
 export interface GamePlayProps {
-  pack: import('../GameSelectorModal').GamePack;
+  pack: import('../OptimizedGameSelectorModal').GamePack;
   teams: import('../../../types').Team[];
   onBackToLobby?: () => void;
   onBuzzerStateChange: (state: BuzzerState) => void;

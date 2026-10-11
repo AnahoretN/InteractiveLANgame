@@ -1,164 +1,70 @@
-# Interactive LAN Game
+# InteractiveLANgame
 
-**Version:** 0.0.1
+**Version:** 0.1.3
 
-## Overview
+Мультиплатформенная викторина в стиле «Своя игра» для игры по локальной сети (LAN/Wi-Fi):
+ведущий с планшетом, большой экран для зрителей и игроки со смартфонами — всё синхронно,
+без интернета.
 
-Interactive LAN Game is a real-time cross-device latency testing application that uses Peer-to-Peer (P2P) WebRTC connections to measure network latency between multiple devices on the same local network.
+## Компоненты
 
-The application uses a **custom WebSocket signalling server** for reliable LAN communication without depending on external public servers.
+| Компонент | Файл | Роль |
+|---|---|---|
+| **Ведущий (Host)** | `#/` → `HostView` | Пульт ведущего: подсказки, правильные ответы, таймеры, баллы, управление игрой |
+| **Экран трансляции (Display Screen)** | `#/screen` → `ScreenView` | Большой монитор для игроков: вопросы, таймеры, карточки команд, текущий отвечающий — без подсказок и ответов |
+| **Игроки (Players)** | `#/mobile` → `MobileView` | Смартфоны: джойстик-бацзер, выбор команды, ставки «Супер-игры» |
 
-## Features
+Экран трансляции и пульт ведущего выглядят одинаково и синхронизируются в реальном
+времени; таймеры ведущий отсчитывает авторитетно и передаёт экрану снимки с временными
+метками (см. `docs/SYNC_FIX_PLAN.md`).
 
-- **Host-Client Architecture**: One computer acts as the "host" that generates a session, and mobile devices/tablets connect as "clients"
-- **QR Code Connection**: The host generates a QR code containing the connection details, which mobile devices can scan to join
-- **Team Management**: Users can create teams and join them, with latency tracking per team
-- **Real-time Latency Measurement**: The host can send ping requests to all connected devices, and clients respond to measure round-trip time
-- **Live Monitoring**: The host sees a real-time dashboard showing all connected devices, their teams, and latency statistics
-- **Custom Signalling Server**: Local WebSocket server for reliable P2P connections without external dependencies
+## Быстрый старт
 
-## Tech Stack
-
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| React | ^19.2.3 | Frontend framework |
-| TypeScript | ~5.8.2 | Type safety |
-| Vite | ^6.2.0 | Build tool |
-| WebRTC | Native API | P2P data channels |
-| WebSocket | ^8.18.0 | Signalling server |
-| Tailwind CSS | (via CDN) | UI styling |
-| qrcode.react | ^4.2.0 | QR code generation |
-| lucide-react | ^0.562.0 | Icons |
-| date-fns | ^4.1.0 | Date formatting |
-| concurrently | ^9.1.2 | Run multiple npm scripts |
-
-## Project Structure
-
-```
-interactive-lan-game/
-├── components/
-│   ├── Button.tsx              # Reusable button component
-│   ├── HostView.tsx            # Host interface (QR code, dashboard)
-│   └── MobileView.tsx          # Mobile client interface
-├── server/
-│   └── signalling-server.js    # WebSocket signalling server (port 9000)
-├── utils/
-│   ├── p2p.ts                  # WebRTC P2P manager
-│   └── messageQueue.ts         # Message queue for guaranteed delivery
-├── types.ts                    # TypeScript type definitions
-├── App.tsx                     # Main application router
-├── index.tsx                   # Entry point
-├── index.html                  # HTML template
-├── package.json                # Dependencies and scripts
-├── tsconfig.json               # TypeScript configuration
-├── vite.config.ts              # Vite configuration
-└── start.bat                   # Windows launcher script
-```
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js (v18 or higher)
-
-### Installation
-
-1. Install dependencies:
 ```bash
 npm install
+npm run start:all     # signalling-сервер (порт 9000) + dev-сервер Vite (порт 3000)
 ```
 
-2. Run the application (Windows):
-```bash
-start.bat
+1. Откройте `http://<ip-ведущего>:3000/` на компьютере ведущего.
+2. Введите IP в настройках LAN-режима — сформируется QR-код.
+3. Игроки сканируют QR-код смартфоном; ссылку на экран трансляции (`#/screen`)
+   откройте на большом мониторе.
+4. Выберите пак вопросов (встроенный редактор пакетов: `#/` → Pack Editor) и играйте.
+
+Сборка продакшена: `npm run build` → `dist/`.
+
+## Возможности
+
+- P2P-соединения WebRTC (PeerJS): LAN и интернет-режимы
+- Подключение по QR-коду, переподключение с сохранением личности игрока
+- Бацзер-система с окном одновременного нажатия (clash) и случайным выбором победителя
+- Гандикап для лидера, штрафы за неправильные ответы
+- Таймеры чтения/ответа с авторитетным сервером времени на хосте
+- Трансляция медиа (изображения, видео, аудио, YouTube) на демо-экран
+- Редактор паков вопросов с медиафайлами
+- «Супер-игра» со ставками и письменными ответами
+
+## Технологии
+
+React 19 · TypeScript 5.8 · Vite 6 · PeerJS (WebRTC) · Tailwind CSS · Node.js (signalling)
+
+## Структура
+
+```
+components/    HostView, ScreenView, MobileView + host/ (игра, редактор паков), shared/
+hooks/         useP2PHost, useP2PClient, useTeamStatusManager, ...
+utils/         p2pConnectionPool, messageQueue, media*, ...
+server/        signalling-server.cjs (PeerServer, порт 9000)
+docs/          NETWORKING.md, SYNC_FIX_PLAN.md, MEDIA_STREAMING.md
 ```
 
-This will start both servers:
-- **Signalling server** on `ws://localhost:9000`
-- **Web server** on `http://localhost:3000`
+Полная карта проекта: [PROJECT_MAP.md](PROJECT_MAP.md).
 
-3. Or run manually:
-```bash
-# Run both servers together
-npm run start:all
+## Документация
 
-# Or run separately
-npm run server   # Signalling server only
-npm run dev      # Web server only
-```
-
-4. Build for production:
-```bash
-npm run build
-```
-
-## Usage
-
-### Host Mode
-
-1. Run `start.bat` on your computer
-2. Open `http://localhost:3000` in your browser
-3. Enter your name and confirm your local IP address
-4. The app will generate a QR code
-5. Share the QR code with mobile devices to connect
-
-### Mobile Mode
-
-1. Open the URL displayed on the host screen on your mobile device
-2. The link includes `?host=HOST_ID` parameter for connection
-3. Enter your name
-4. Enter the host's IP address (the same one shown on host screen)
-5. Create or join a team
-6. Wait for ping requests from the host
-
-## How It Works
-
-1. **Signalling Server**: A local WebSocket server (port 9000) facilitates the initial WebRTC handshake between peers
-2. **Connection Setup**: The host registers with the signalling server and waits for clients
-3. **QR Code Generation**: The host ID and connection details are encoded into a QR code
-4. **Client Connection**: Mobile devices scan the QR code to get the host ID and establish a WebRTC connection
-5. **P2P Communication**: After the initial handshake, all communication happens directly between peers using WebRTC DataChannels
-6. **Latency Measurement**: The host sends timestamped ping messages; clients respond immediately
-7. **Statistics Display**: Round-trip time, jitter, packet loss, and health score are calculated and displayed
-
-## Key Components
-
-### App.tsx
-Handles URL routing between host (`#`) and mobile (`#/mobile`) views using hash-based navigation.
-
-### HostView.tsx
-- **Session Setup**: IP input, name entry, QR code generation, manages connected devices
-- **Team Management**: Create teams and assign clients to teams
-- **Live Dashboard**: Real-time latency monitoring with color-coded indicators (green/yellow/red)
-
-### MobileView.tsx
-- Three-screen flow: Name Entry → IP Input → Team Selection → Waiting Screen
-- Maintains persistent connection with heartbeat messages
-- Handles reconnection automatically with exponential backoff
-- Vibration feedback on button press
-
-### server/signalling-server.js
-WebSocket server that handles:
-- Host and client registration
-- WebRTC signalling (offer/answer/ICE candidates)
-- Connection tracking and broadcasting
-- Automatic cleanup of stale connections
-
-### utils/p2p.ts
-Pure WebRTC P2P manager that:
-- Manages peer connections without PeerJS dependency
-- Handles ICE candidate exchange
-- Creates and manages DataChannels
-- Implements reconnection logic
-
-## Use Cases
-
-- **Gaming Events**: Synchronization testing for multiplayer games on LAN
-- **Live Event Coordination**: Ensuring all devices are responsive in real-time scenarios
-- **Network Performance Testing**: Measuring real-world latency between devices
-- **IoT Device Testing**: Verifying communication latency with IoT devices
-- **Educational Purposes**: Demonstrating network concepts and latency measurement
-
-## License
-
-Private project.
+| Документ | Содержание |
+|---|---|
+| [docs/NETWORKING.md](docs/NETWORKING.md) | Сетевая топология, устранение проблем подключения, настройка TURN |
+| [docs/SYNC_FIX_PLAN.md](docs/SYNC_FIX_PLAN.md) | Архитектура синхронизации, журнал исправлений (таймеры, статусы команд, P2P) |
+| [docs/MEDIA_STREAMING.md](docs/MEDIA_STREAMING.md) | Как медиа попадают на демо-экран |
+| [PROJECT_MAP.md](PROJECT_MAP.md) | Карта кода: компоненты, хуки, сообщения, состояние |

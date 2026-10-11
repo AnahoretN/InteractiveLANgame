@@ -20,6 +20,7 @@ export const STORAGE_KEYS = {
   // Client keys - base prefixes (actual keys are generated with hostId)
   USER_NAME: 'ilan_username',
   LAST_HOST: 'ilan_last_host',
+  LAST_SESSION_ID: 'ilan_last_session_id',
   STATE_VERSION: 'ilan_state_version',
   HOST_SESSION_VERSION: 'ilan_host_session_version',
   LAST_IP: 'ilan_last_ip',
@@ -195,7 +196,6 @@ export const storage = {
 
     // Check and clean user name - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.USER_NAME) && storage.isExpired(STORAGE_KEYS.USER_NAME_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired USER_NAME (${now})`);
       storage.remove(STORAGE_KEYS.USER_NAME);
       storage.remove(STORAGE_KEYS.USER_NAME_TTL);
       cleaned = true;
@@ -203,7 +203,6 @@ export const storage = {
 
     // Check and clean team selection - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.TEAM_SELECTED) && storage.isExpired(STORAGE_KEYS.TEAM_SELECTED_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired TEAM_SELECTED (${now})`);
       storage.remove(STORAGE_KEYS.TEAM_SELECTED);
       storage.remove(STORAGE_KEYS.TEAM_SELECTED_TTL);
       cleaned = true;
@@ -211,7 +210,6 @@ export const storage = {
 
     // Check and clean current team - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.CURRENT_TEAM) && storage.isExpired(STORAGE_KEYS.CURRENT_TEAM_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired CURRENT_TEAM (${now})`);
       storage.remove(STORAGE_KEYS.CURRENT_TEAM);
       storage.remove(STORAGE_KEYS.CURRENT_TEAM_TTL);
       cleaned = true;
@@ -219,7 +217,6 @@ export const storage = {
 
     // Check and clean current team ID - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.CURRENT_TEAM_ID) && storage.isExpired(STORAGE_KEYS.CURRENT_TEAM_ID_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired CURRENT_TEAM_ID (${now})`);
       storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID);
       storage.remove(STORAGE_KEYS.CURRENT_TEAM_ID_TTL);
       cleaned = true;
@@ -227,7 +224,6 @@ export const storage = {
 
     // Check and clean client ID - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.CLIENT_ID) && storage.isExpired(STORAGE_KEYS.CLIENT_ID_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired CLIENT_ID (${now})`);
       storage.remove(STORAGE_KEYS.CLIENT_ID);
       storage.remove(STORAGE_KEYS.CLIENT_ID_TTL);
       cleaned = true;
@@ -235,7 +231,6 @@ export const storage = {
 
     // Check and clean last host - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.LAST_HOST) && storage.isExpired(STORAGE_KEYS.LAST_HOST_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired LAST_HOST (${now})`);
       storage.remove(STORAGE_KEYS.LAST_HOST);
       storage.remove(STORAGE_KEYS.LAST_HOST_TTL);
       cleaned = true;
@@ -243,7 +238,6 @@ export const storage = {
 
     // Check and clean last IP - only if TTL exists and is expired
     if (storage.get(STORAGE_KEYS.LAST_IP) && storage.isExpired(STORAGE_KEYS.LAST_IP_TTL, CLIENT_DATA_TTL)) {
-      console.log(`[Storage] Cleaning up expired LAST_IP (${now})`);
       storage.remove(STORAGE_KEYS.LAST_IP);
       storage.remove(STORAGE_KEYS.LAST_IP_TTL);
       cleaned = true;
@@ -252,7 +246,6 @@ export const storage = {
     // Check and clean super game state - shorter TTL (30 minutes) as game state changes frequently
     const SUPER_GAME_TTL = 30 * 60 * 1000; // 30 minutes
     if (storage.get(STORAGE_KEYS.SUPER_GAME_PHASE) && storage.isExpired(STORAGE_KEYS.SUPER_GAME_TTL, SUPER_GAME_TTL)) {
-      console.log(`[Storage] Cleaning up expired SUPER_GAME_STATE (${now})`);
       storage.remove(STORAGE_KEYS.SUPER_GAME_PHASE);
       storage.remove(STORAGE_KEYS.SUPER_GAME_THEME);
       storage.remove(STORAGE_KEYS.SUPER_GAME_MAX_BET);
@@ -266,7 +259,6 @@ export const storage = {
     }
 
     if (cleaned) {
-      console.log('[Storage] Expired client data cleaned up successfully');
     }
   },
 
@@ -296,7 +288,6 @@ export const storage = {
     ];
 
     keysToRemove.forEach(key => storage.remove(key));
-    console.log(`[Storage] Cleared all data for PREVIOUS host: ${previousHostId}`);
   },
 
   /**

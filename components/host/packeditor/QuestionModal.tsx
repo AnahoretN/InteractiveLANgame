@@ -106,14 +106,6 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
         ...(multimediaLocalFile ? { localFile: multimediaLocalFile } : {})
       };
 
-      console.log('🎬 Saving media:', {
-        type: multimediaType,
-        originalUrl: multimediaUrl,
-        processedUrl: processedUrl,
-        hasLocalFile: !!multimediaLocalFile,
-        localFileName: multimediaLocalFile?.fileName,
-        mediaData: mediaData
-      });
     }
 
     const saveData = {
@@ -152,8 +144,7 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
       } : {}),
     };
 
-    console.log('💾 Saving question data:', saveData);
-    onSave(saveData);
+    onSave(saveData as any);
     onClose();
   }, [text, hasAnswers, answers, correctAnswer, points, multimediaType, multimediaUrl, multimediaLocalFile, answerText, answerMediaUrl, answerMediaLocalFile, hintText, hintHasAnswers, hintAnswers, hintCorrectAnswer, hintMediaUrl, hintMediaLocalFile, onSave, onClose]);
 
@@ -265,11 +256,9 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
               onChange={setMultimediaUrl}
               accept={multimediaType === 'image' ? 'image/*' : multimediaType === 'video' ? 'video/*' : 'audio/*'}
               onFileDetected={(detectedType) => {
-                console.log('🎯 Detected file type:', detectedType);
                 setMultimediaType(detectedType);
               }}
               onLocalFile={(file, blobUrl) => {
-                console.log('💾 Local file selected (ZIP system will handle):', file.name);
                 // ZIP система обработает сохранение при сохранении пака
               }}
               placeholder={
@@ -362,7 +351,6 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
             onChange={setAnswerMediaUrl}
             accept="image/*"
             onLocalFile={(file, blobUrl) => {
-              console.log('💾 Saving answer local file info:', file.name);
               setAnswerMediaLocalFile(createLocalFileInfo(file));
             }}
             placeholder="https://example.com/answer.jpg"
@@ -443,7 +431,6 @@ export const QuestionModal = memo(({ isOpen, onClose, onSave, question }: Questi
             onChange={setHintMediaUrl}
             accept="image/*"
             onLocalFile={(file, blobUrl) => {
-              console.log('💾 Saving hint local file info:', file.name);
               setHintMediaLocalFile(createLocalFileInfo(file));
             }}
             placeholder="https://example.com/hint.jpg"

@@ -83,12 +83,6 @@ export function createBlobWithFileInfo(file: File): {
   const blobUrl = URL.createObjectURL(file);
   const localFileInfo = createLocalFileInfo(file);
 
-  console.log('📁 Created blob URL with file info:', {
-    fileName: file.name,
-    blobUrl: blobUrl.slice(0, 50) + '...',
-    fileSize: file.size,
-    fileType: file.type
-  });
 
   return { blobUrl, localFileInfo };
 }
@@ -107,7 +101,6 @@ export function restoreBlobFromBase64(base64: string, fileName: string, mimeType
   try {
     const file = base64ToFile(base64, fileName, mimeType);
     const blobUrl = URL.createObjectURL(file);
-    console.log('✅ Blob URL восстановлен из base64:', fileName);
     return blobUrl;
   } catch (error) {
     console.error('❌ Ошибка восстановления из base64:', error);
@@ -120,7 +113,6 @@ export function restoreBlobFromBase64(base64: string, fileName: string, mimeType
  * Восстанавливает blob URL для всех медиа элементов в паке
  */
 export async function restorePackBlobUrls(pack: GamePack): Promise<void> {
-  console.log('🔄 Начинаем восстановление blob URL для пака:', pack.name);
 
   let restoredCount = 0;
   let skippedCount = 0;
@@ -200,5 +192,4 @@ export async function restorePackBlobUrls(pack: GamePack): Promise<void> {
     }
   }
 
-  console.log(`✅ Восстановление blob URL завершено: ${restoredCount} восстановлено, ${skippedCount} пропущено`);
 }

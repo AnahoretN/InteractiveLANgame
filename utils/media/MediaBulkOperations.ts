@@ -65,7 +65,6 @@ export async function bulkSaveMediaFiles(
 
     transaction.oncomplete = () => {
       const duration = Date.now() - startTime;
-      console.log(`✅ Bulk save completed: ${succeeded.length}/${files.length} files in ${duration}ms`);
       resolve({
         success: failed.length === 0,
         succeeded,
@@ -127,7 +126,6 @@ export async function bulkLoadMediaFiles(
 
     Promise.all(pendingRequests).then(() => {
       const duration = Date.now() - startTime;
-      console.log(`✅ Bulk load completed: ${succeeded.length}/${mediaIds.length} files in ${duration}ms`);
       resolve({
         success: failed.length === 0,
         succeeded,
@@ -167,7 +165,6 @@ export async function bulkDeleteMediaFiles(
 
     transaction.oncomplete = () => {
       const duration = Date.now() - startTime;
-      console.log(`✅ Bulk delete completed: ${succeeded.length}/${mediaIds.length} files in ${duration}ms`);
       resolve({
         success: failed.length === 0,
         succeeded,
@@ -220,7 +217,6 @@ export async function bulkLoadPackMedia(
         cursor.continue();
       } else {
         const duration = Date.now() - startTime;
-        console.log(`✅ Bulk pack load completed: ${succeeded.length} files in ${duration}ms`);
         resolve({
           success: true,
           succeeded,
@@ -281,7 +277,6 @@ export async function bulkTransferMediaFiles(
         cursor.continue();
       } else {
         const duration = Date.now() - startTime;
-        console.log(`✅ Bulk transfer completed: ${succeeded.length}/${totalCount} files in ${duration}ms`);
         resolve({
           success: failed.length === 0,
           succeeded,

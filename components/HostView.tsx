@@ -96,7 +96,7 @@ export const HostView: React.FC = () => {
   const updateClients = useCallback((updater: (prev: Map<string, ConnectedClient>) => void) => {
     setClients(prev => {
       // Create new Map from prev to ensure React detects changes
-      const newMap = new Map(prev);
+      const newMap = new Map<string, ConnectedClient>(prev);
       // Apply updates to newMap
       updater(newMap);
       return newMap;
@@ -258,7 +258,6 @@ export const HostView: React.FC = () => {
   // - persistent client ID (client.id) when called from UI button
   // - peerId when called from onClientDisconnected
   const removeClient = useCallback((clientId: string) => {
-    console.log('[HostView] removeClient called for ID:', clientId);
 
     setClients((prev: Map<string, ConnectedClient>) => {
       // First, check if clientId is already a peerId (key in the Map)
@@ -287,7 +286,6 @@ export const HostView: React.FC = () => {
         return prev; // Return unchanged if not found
       }
 
-      console.log('[HostView] Removing client - ID:', clientId, 'name:', clientName, 'peerId:', peerIdToRemove);
 
       // Send disconnect message to client BEFORE removing from state
       // Only send KICKED message if this was initiated by host (not natural disconnect)
@@ -318,7 +316,7 @@ export const HostView: React.FC = () => {
       }
 
       // Remove from clients Map (using peerId as key)
-      const updated = new Map(prev);
+      const updated = new Map<string, ConnectedClient>(prev);
       updated.delete(peerIdToRemove);
       return updated;
     });
@@ -347,7 +345,8 @@ export const HostView: React.FC = () => {
     isHost: true,
     isLanMode: isLanMode,
     signallingServer: getSignallingServer(),
-    onMessage: useCallback((message: P2PSMessage, peerId: string) => {
+    // Loosely typed - see the note on MessageHandler in types.ts
+    onMessage: useCallback((message: any, peerId: string) => {
       // Update lastSeen timestamp for ANY message from this client
       // This prevents active clients from being marked as stale and disconnected
       updateClients((prev: Map<string, ConnectedClient>) => {
@@ -364,17 +363,10 @@ export const HostView: React.FC = () => {
           const teamId = buzzMsg.payload.teamId;
           const buzzTime = buzzMsg.payload.buzzTime;
 
-          console.log('🔔 [HOST] BUZZ received!');
-          console.log('🔔 [HOST] Client:', buzzMsg.payload.clientName, '(ID:', buzzMsg.payload.clientId + ')');
-          console.log('🔔 [HOST] Team:', buzzMsg.payload.teamName, '(ID:', teamId + ')');
-          console.log('🔔 [HOST] Buzz time:', new Date(buzzTime).toLocaleTimeString());
-          console.log('🔔 [HOST] From peer:', peerId);
 
           // Use ref to get current buzzer state (not stale closure value)
           const currentBuzzerState = buzzerStateRef.current;
 
-          console.log('🎮 [HOST] Current buzzer state:', currentBuzzerState.timerPhase);
-          console.log('🎮 [HOST] Super game phase:', currentBuzzerState.superGamePhase);
 
           // Check if we're in response phase (green timer active)
           const isResponsePhase = currentBuzzerState.timerPhase === 'response';
@@ -385,13 +377,11 @@ export const HostView: React.FC = () => {
           // Check if buzzer is allowed for this team (response phase AND not blocked by handicap)
           const isBuzzerAllowed = isResponsePhase && !isTeamBlockedByHandicap;
 
-          console.log('✅ [HOST] Buzzer allowed:', isBuzzerAllowed, '(response phase:', isResponsePhase, ', not blocked:', !isTeamBlockedByHandicap + ')');
 
           // Track buzzed clients using peerId (same as useP2PMessageHandlers)
           // peerId is used as key in clients Map and matches client.id in STATE_SYNC
           setBuzzedClients((prev: Map<string, number>) => {
-            const newMap = new Map(prev).set(peerId, buzzTime);
-            console.log('📝 [HOST] Updated buzzed clients, total:', newMap.size);
+            const newMap = new Map<string, number>(prev).set(peerId, buzzTime);
             return newMap;
           });
 
@@ -416,12 +406,6 @@ export const HostView: React.FC = () => {
             }
           }
 
-          console.log('[HostView] BUZZ - Team status check:', {
-            teamId: teamId?.slice(0, 12),
-            isTeamActive,
-            shouldSkipBuzzerLogic,
-            isBuzzerAllowed
-          });
 
           // Apply visual effects for inactive/answering teams
           if (!isTeamActive && teamId) {
@@ -436,161 +420,25 @@ export const HostView: React.FC = () => {
           }
 
           // Game logic only proceeds if buzzer is allowed and team is active
-          if (isBuzzerAllowed && teamId) {
-            if (shouldSkipBuzzerLogic) {
-              // Skip game logic for inactive/answering teams, but BUZZ_EVENT will be sent below
-            } else {
-
-            // CLASH MODE LOGIC (simplified)
-            // Only use simultaneous threshold if BOTH collisionEnabled AND simultaneousBuzzEnabled are true
-            const simultaneousThreshold = (sessionSettings.collisionEnabled && sessionSettings.simultaneousBuzzEnabled)
-              ? (sessionSettings.simultaneousBuzzThreshold * 1000) // Convert to ms
-              : 0;
-            const isClashModeEnabled = sessionSettings.collisionEnabled;
-
-            console.log('[HostView] BUZZ - Clash check:', {
-              collisionEnabled: sessionSettings.collisionEnabled,
-              simultaneousBuzzEnabled: sessionSettings.simultaneousBuzzEnabled,
-              isClashModeEnabled,
-              simultaneousThreshold,
-              clashOccurred: clashOccurredForQuestion
-            });
-
-            // Clash mode is only active when: collisionEnabled AND (simultaneousBuzzEnabled is false OR threshold is 0)
-            // If collisionEnabled=true but simultaneousBuzzEnabled=false, use immediate mode (no clash window)
-            if (simultaneousThreshold > 0 && !clashOccurredForQuestion && !currentAnsweringTeamId) {
-              const currentFirstBuzzTimestamp = firstBuzzTimestampRef.current;
-              const currentClashPhase = clashPhaseRef.current;
-              const currentClashingTeamIds = clashingTeamIdsRef.current;
-
-              // Check if this buzz is within the simultaneous press window
-              const isWithinSimultaneousWindow = currentFirstBuzzTimestamp !== null &&
-                (buzzTime - currentFirstBuzzTimestamp) <= simultaneousThreshold;
-
-              if (currentFirstBuzzTimestamp === null && currentClashPhase === 'idle') {
-                // FIRST PRESS - Start the simultaneous press window
-                console.log('[HostView] CLASH - First press, starting window');
-                setFirstBuzzTimestamp(buzzTime);
-                setClashPhase('waiting');
-                setClashingTeamIds(new Set([teamId]));
-
-                // Set visual indicator - violet flash with "?" (not answering team yet)
-                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
-                setTimeout(() => {
-                  setBuzzedTeamIds(prev => {
-                    const newSet = new Set(prev);
-                    newSet.delete(teamId);
-                    return newSet;
-                  });
-                }, 500);
-
-                // Set timeout to end simultaneous press window and resolve clash
-                setTimeout(() => {
-                  const finalClashingTeamIds = clashingTeamIdsRef.current;
-                  console.log('[HostView] CLASH - Window ended, teams in clash:', Array.from(finalClashingTeamIds));
-
-                  if (finalClashingTeamIds.size > 1) {
-                    // CLASH DETECTED - Multiple teams pressed simultaneously
-                    const teamIdsArray = Array.from(finalClashingTeamIds);
-
-                    // Select ONE random answering team from all clashing teams
-                    const shuffledForAnswer = [...teamIdsArray].sort(() => Math.random() - 0.5);
-                    const selectedAnsweringTeam = shuffledForAnswer[0];
-
-                    console.log('[HostView] CLASH DETECTED - Teams:', teamIdsArray, 'Selected:', selectedAnsweringTeam);
-
-                    // Only set answering team if none exists yet (prevent hijacking)
-                    if (!currentAnsweringTeamId) {
-                      setAnsweringTeamId(selectedAnsweringTeam);
-                      // DON'T deactivate teams yet - wait for clash window to end
-                      console.log('[HostView] CLASH - Answering team selected, but NOT deactivating yet');
-                    }
-
-                    // Mark that Clash occurred for this question
-                    setClashOccurredForQuestion(true);
-
-                    // Clear clash state - show answering team, not order numbers
-                    setFirstBuzzTimestamp(null);
-                    setClashingTeamIds(new Set());
-                    setClashPhase('idle');
-
-                    // NOW deactivate all teams after clash window ends
-                    console.log('[HostView] CLASH - Window ended, deactivating all teams');
-                    setActiveTeamIds(new Set());
-
-                  } else if (finalClashingTeamIds.size === 1) {
-                    // NO CLASH - Only one team pressed during window, they get to answer
-                    const singleTeamId = Array.from(finalClashingTeamIds)[0];
-
-                    // Only set answering team if none exists yet (prevent hijacking)
-                    if (!currentAnsweringTeamId) {
-                      setAnsweringTeamId(singleTeamId);
-                      // DON'T deactivate teams yet - wait for clash window to end
-                      console.log('[HostView] CLASH - Answering team selected, but NOT deactivating yet');
-                    }
-
-                    // Mark that Clash window occurred for this question (even without actual clash)
-                    setClashOccurredForQuestion(true);
-
-                    // Reset clash state
-                    setFirstBuzzTimestamp(null);
-                    setClashingTeamIds(new Set());
-                    setClashPhase('idle');
-
-                    // NOW deactivate all teams after clash window ends
-                    console.log('[HostView] CLASH - Window ended, deactivating all teams');
-                    setActiveTeamIds(new Set());
-
-                  } else {
-                    // No teams in clash window - reset
-                    setFirstBuzzTimestamp(null);
-                    setClashingTeamIds(new Set());
-                    setClashPhase('idle');
-                  }
-                }, simultaneousThreshold);
-
-              } else if (isWithinSimultaneousWindow && currentClashPhase === 'waiting') {
-                // WITHIN SIMULTANEOUS WINDOW - Another team pressed
-                console.log('[HostView] CLASH - Within window, adding team:', teamId);
-                setClashingTeamIds(prev => new Set(prev).add(teamId));
-
-                // Set visual indicator - violet flash with "?"
-                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
-                setTimeout(() => {
-                  setBuzzedTeamIds(prev => {
-                    const newSet = new Set(prev);
-                    newSet.delete(teamId);
-                    return newSet;
-                  });
-                }, 500);
-              }
-            } else {
-              // NO CLASH MODE (or clash disabled/threshold=0 or answering team exists) - First active team to press becomes answering team
-              // Only proceed if no answering team exists yet
-              if (!currentAnsweringTeamId) {
-                console.log('[HostView] NO CLASH MODE - Setting answering team:', teamId);
-                setAnsweringTeamId(teamId);
-                // Deactivate all teams when someone becomes answering
-                setActiveTeamIds(new Set());
-                // Mark that we processed a buzz for this question (prevents reprocessing)
-                setClashOccurredForQuestion(true);
-
-                // Visual feedback - green flash for answering team
-                setBuzzedTeamIds(prev => new Set(prev).add(teamId));
-                setTimeout(() => {
-                  setBuzzedTeamIds(prev => {
-                    const newSet = new Set(prev);
-                    newSet.delete(teamId);
-                    return newSet;
-                  });
-                }, 500);
-              } else {
-                console.log('[HostView] NO CLASH MODE - Answering team already exists:', currentAnsweringTeamId, 'ignoring buzz from:', teamId);
-              }
-            }
-          }
+          if (isBuzzerAllowed && teamId && !shouldSkipBuzzerLogic) {
+            // SINGLE SOURCE OF TRUTH: clash resolution and answering-team selection live
+            // ONLY in teamStatusManager (useTeamStatusManager), fed via the buzzedTeamIds
+            // set → GamePlay.handleTeamBuzz. This handler previously ran its OWN clash
+            // window with its OWN random winner pick, which desynced host panel vs demo
+            // screen (two engines, two different winners). The manager resolves the
+            // winner and reports back via onAnsweringTeamChange / onUpdateActiveTeamIds.
+            // Here we only feed the buzz and provide the 500ms visual flash.
+            setBuzzedTeamIds(prev => new Set(prev).add(teamId));
+            setTimeout(() => {
+              setBuzzedTeamIds(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(teamId);
+                return newSet;
+              });
+            }, 500);
           } else {
-            // Buzz during non-response phase or when team is blocked by handicap - just visual flash
+            // Buzz during non-response phase, when blocked by handicap, or from an
+            // inactive/answering team - just visual flash (the manager will reject it)
             if (teamId) {
               setBuzzedTeamIds(prev => new Set(prev).add(teamId));
               setTimeout(() => {
@@ -607,17 +455,6 @@ export const HostView: React.FC = () => {
           const client = clients.get(peerId);
           const clientIdForDisplay = client?.id || peerId; // Use persistent ID if available, fallback to peerId
 
-          console.log('[HostView] BUZZ_EVENT sending:', {
-            peerId,
-            clientId: client?.id,
-            peerIdInClient: client?.peerId,
-            clientIdForDisplay,
-            clientName: buzzMsg.payload.clientName,
-            teamId,
-            isTeamActive, // Add isTeamActive to log
-            clientsMapSize: clients.size,
-            screenViewPeerId: screenViewPeerIdRef.current
-          });
 
           // Add clientId to buzzingClientIds for lobby list visual flash effect (clears after 500ms)
           setBuzingClientIds(prev => new Set(prev).add(clientIdForDisplay));
@@ -641,17 +478,9 @@ export const HostView: React.FC = () => {
           if (currentScreenViewPeerId) {
             const sent = p2pHost.sendToClient(currentScreenViewPeerId, buzzEvent);
             if (sent) {
-              console.log('[HostView] BUZZ_EVENT sent to demo screen:', currentScreenViewPeerId);
             } else {
-              console.log('[HostView] BUZZ_EVENT not sent - sendToClient returned false', {
-                screenViewPeerId: currentScreenViewPeerId,
-                activeConnections: p2pHost.getActiveConnections?.() || []
-              });
             }
           } else {
-            console.log('[HostView] BUZZ_EVENT not sent - no demo screen peerId', {
-              screenViewPeerId: currentScreenViewPeerId
-            });
           }
 
           setTimeout(() => {
@@ -666,12 +495,10 @@ export const HostView: React.FC = () => {
         case 'JOIN_TEAM': {
           // Client joined a team - update client if already exists, or add new one
           const { clientName, teamId } = message.payload;
-          console.log('[HostView] JOIN_TEAM received from', peerId, 'name:', clientName, 'team:', teamId);
           updateClients((prev: Map<string, ConnectedClient>) => {
             const existingClient = prev.get(peerId);
             if (existingClient) {
               // Client exists (was added at handshake), update with NEW object to trigger React re-render
-              console.log('[HostView] Updating existing client team:', existingClient.name, 'to:', teamId);
               const updatedClient: ConnectedClient = {
                 ...existingClient,
                 teamId: teamId,
@@ -681,7 +508,6 @@ export const HostView: React.FC = () => {
               prev.set(peerId, updatedClient);
             } else {
               // Client doesn't exist yet (shouldn't happen with new handshake logic, but kept for compatibility)
-              console.log('[HostView] Creating new client for JOIN_TEAM:', clientName);
               const newClient: ConnectedClient = {
                 id: peerId,
                 peerId: peerId,
@@ -704,7 +530,6 @@ export const HostView: React.FC = () => {
           setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(peerId, teamId || ''));
           // Trigger lobby sync to demo screen (player joined team)
           setStateSyncTrigger(prev => prev + 1);
-          console.log('[HostView] Queued TEAM_CONFIRMED for', peerId);
           break;
         }
         case 'TEAM_UPDATE': {
@@ -728,7 +553,6 @@ export const HostView: React.FC = () => {
         case 'CREATE_TEAM': {
           // Client creates a new team and joins it
           const { clientId, clientName, teamName } = message.payload;
-          console.log('[HostView] CREATE_TEAM received from', peerId, 'clientName:', clientName, 'teamName:', teamName);
 
           // Generate a unique team ID
           const newTeamId = 'team_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
@@ -744,9 +568,7 @@ export const HostView: React.FC = () => {
               lastUsedAt: Date.now()
             };
             setTeams(prev => [...prev, newTeam]);
-            console.log('[HostView] Created new team:', newTeam.name, 'id:', newTeamId);
           } else {
-            console.log('[HostView] Team already exists:', existingTeam.name);
           }
 
           // Add client to lobby with the new team
@@ -786,7 +608,6 @@ export const HostView: React.FC = () => {
           setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(peerId, newTeamId));
           // Trigger lobby sync to demo screen (team created)
           setStateSyncTrigger(prev => prev + 1);
-          console.log('[HostView] Queued TEAM_CONFIRMED for CREATE_TEAM', peerId, 'teamId:', newTeamId);
           break;
         }
         case 'GET_COMMANDS': {
@@ -831,7 +652,6 @@ export const HostView: React.FC = () => {
           // Use ref to get current state without stale closure issues
           const currentPhase = buzzerStateRef.current?.timerPhase;
           if (message.payload.fromPhase === 'reading' && message.payload.toPhase === 'response' && currentPhase === 'reading') {
-            console.log('[HostView] Processing timer phase switch from demo screen');
 
             // Trigger the phase switch in GamePlay via signal
             setSwitchToResponsePhaseSignal(prev => prev + 1);
@@ -841,7 +661,6 @@ export const HostView: React.FC = () => {
           break;
         }
         case 'STATE_SYNC_REQUEST': {
-          console.log('[HostView] STATE_SYNC_REQUEST received from:', peerId);
           // Client requested full state sync
           setStateSyncTrigger(prev => prev + 1);
 
@@ -873,7 +692,6 @@ export const HostView: React.FC = () => {
         }
         case 'MODERATOR_ACTION': {
           // Handle moderator control actions
-          console.log('[HostView] Moderator action received:', message.payload);
           const { action, data } = message.payload;
 
           // Handle different moderator actions
@@ -881,7 +699,6 @@ export const HostView: React.FC = () => {
             case 'correct_answer':
               // Award points to answering team
               if (answeringTeamId) {
-                console.log('[HostView] Moderator: Correct answer for team', answeringTeamId);
                 // Trigger correct answer logic in GameSession via state change
                 // This will be handled by GameSession component
               }
@@ -889,19 +706,16 @@ export const HostView: React.FC = () => {
             case 'incorrect_answer':
               // Deduct points from answering team
               if (answeringTeamId) {
-                console.log('[HostView] Moderator: Incorrect answer for team', answeringTeamId);
               }
               break;
             case 'show_answer':
               // Show the correct answer
-              console.log('[HostView] Moderator: Show answer requested');
               break;
             case 'start_question':
             case 'skip_question':
             case 'award_points':
             case 'deduct_points':
             case 'timer_control':
-              console.log('[HostView] Moderator action:', action, data);
               break;
           }
           break;
@@ -910,13 +724,6 @@ export const HostView: React.FC = () => {
                       }
                   }, [updateClients, superGameBets, superGameAnswers, isSessionActive, buzzerState, teams, clients, answeringTeamId, activeTeamIds, answeringTeamLockedIn, sessionSettings, clashOccurredForQuestion]),
     onClientConnected: useCallback((clientId: string, data: { name: string; teamId?: string; persistentClientId?: string }) => {
-      console.log('[HostView] Client connected via handshake:', clientId, 'name:', data.name, 'persistentId:', data.persistentClientId, 'teamId:', data.teamId);
-      console.log('[HostView] Is ScreenView check:', {
-        isScreenViewName: data.name === 'ScreenView',
-        hasPersistentId: !!data.persistentClientId,
-        persistentIdStartsWithScreen: data.persistentClientId?.startsWith('screen_'),
-        willAddToScreenView: data.name === 'ScreenView' || (data.persistentClientId && data.persistentClientId.startsWith('screen_'))
-      });
 
           // Check if this is a ScreenView - track separately and send initial state
       if (data.name === 'ScreenView' || (data.persistentClientId && data.persistentClientId.startsWith('screen_'))) {
@@ -945,11 +752,6 @@ export const HostView: React.FC = () => {
               healthScore: 100
             }
           });
-          console.log('[HostView] ScreenView added to clients Map:', {
-            peerId: clientId,
-            persistentId: data.persistentClientId,
-            totalClients: clientsMap.size
-          });
         });
         // Initial state will be sent by useEffect below
         return;
@@ -973,7 +775,6 @@ export const HostView: React.FC = () => {
         }
 
         if (existingClient && oldPeerId) {
-          console.log('[HostView] Returning client detected:', existingClient.name, 'old peerId:', oldPeerId, 'new peerId:', clientId, 'teamId:', data.teamId);
 
           // Update existing client's peer ID and last seen
           updateClients((prev: Map<string, ConnectedClient>) => {
@@ -999,7 +800,6 @@ export const HostView: React.FC = () => {
           if (data.teamId && data.teamId.startsWith('team_')) {
             setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
           } else if (data.teamId && !data.teamId.startsWith('team_')) {
-            console.log('[HostView] Skipping team confirmation for returning client with temporary team ID:', data.teamId);
           }
 
           // CRITICAL: Restore team if it doesn't exist (after host page reload)
@@ -1009,7 +809,6 @@ export const HostView: React.FC = () => {
           if (data.teamId && data.name && data.teamId.startsWith('team_')) {
             const teamExists = teams.some(t => t.id === data.teamId);
             if (!teamExists) {
-              console.log('[HostView] Restoring missing team for reconnecting client:', data.teamId, 'name:', data.name);
               setTeams((prev: Team[]) => {
                 // Check if team was already added (avoid duplicates during rapid reconnects)
                 if (prev.some(t => t.id === data.teamId)) {
@@ -1026,14 +825,12 @@ export const HostView: React.FC = () => {
               });
             }
           } else if (data.teamId && !data.teamId.startsWith('team_')) {
-            console.log('[HostView] Skipping team restoration for temporary team ID:', data.teamId, '- client will receive proper ID through normal flow');
           }
 
           return;
         }
 
         // New client with persistent ID - add immediately for reconnection support
-        console.log('[HostView] New client with persistent ID, adding to client list:', data.name, 'persistentId:', data.persistentClientId);
         updateClients((prev: Map<string, ConnectedClient>) => {
           const newClient: ConnectedClient = {
             id: data.persistentClientId!,
@@ -1058,7 +855,6 @@ export const HostView: React.FC = () => {
         if (data.teamId && data.teamId.startsWith('team_')) {
           setPendingConfirmations((prev: Map<string, string>) => new Map(prev).set(clientId, data.teamId!));
         } else if (data.teamId && !data.teamId.startsWith('team_')) {
-          console.log('[HostView] Skipping team confirmation for temporary team ID:', data.teamId);
         }
 
         // CRITICAL: Restore team if it doesn't exist (after host page reload)
@@ -1068,7 +864,6 @@ export const HostView: React.FC = () => {
         if (data.teamId && data.name && data.teamId.startsWith('team_')) {
           const teamExists = teams.some(t => t.id === data.teamId);
           if (!teamExists) {
-            console.log('[HostView] Restoring missing team for new client with persistent ID:', data.teamId, 'name:', data.name);
             setTeams((prev: Team[]) => {
               // Check if team was already added (avoid duplicates during rapid reconnects)
               if (prev.some(t => t.id === data.teamId)) {
@@ -1085,7 +880,6 @@ export const HostView: React.FC = () => {
             });
           }
         } else if (data.teamId && !data.teamId.startsWith('team_')) {
-          console.log('[HostView] Skipping team restoration for temporary team ID:', data.teamId, '- client will receive proper ID through normal flow');
         }
 
         return;
@@ -1093,7 +887,6 @@ export const HostView: React.FC = () => {
 
       // New client without persistent ID - add to lobby with peerId as id
       // This allows BUZZ events to work before JOIN_TEAM
-      console.log('[HostView] New client without persistent ID, adding to lobby with peerId:', clientId);
       updateClients((prev: Map<string, ConnectedClient>) => {
         const newClient: ConnectedClient = {
           id: clientId, // Use peerId as id for now
@@ -1111,7 +904,6 @@ export const HostView: React.FC = () => {
           }
         };
         prev.set(clientId, newClient);
-        console.log('[HostView] Client added to Map, total clients:', prev.size);
       });
     }, [clients, updateClients, setPendingConfirmations]),
                 onClientDisconnected: useCallback((clientId: string) => {
@@ -1157,10 +949,8 @@ export const HostView: React.FC = () => {
   // Send pending TEAM_CONFIRMED messages when p2pHost is ready
   useEffect(() => {
     if (p2pHost.isReady && pendingConfirmations.size > 0) {
-      console.log('[HostView] Sending pending confirmations:', pendingConfirmations.size);
       pendingConfirmations.forEach((teamId: string, clientId: string) => {
         const conn = p2pHost.connectedClients.find(id => id === clientId);
-        console.log('[HostView] Sending TEAM_CONFIRMED to', clientId, 'connection open:', !!conn, 'payload:', { clientId, teamId });
         p2pHost.sendToClient(clientId, {
           category: MessageCategory.STATE,
           type: 'TEAM_CONFIRMED',
@@ -1169,7 +959,6 @@ export const HostView: React.FC = () => {
             teamId: teamId
           }
         });
-        console.log('[HostView] Sent TEAM_CONFIRMED to', clientId, 'with teamId:', teamId);
       });
       // Clear the queue after sending
       setPendingConfirmations(new Map());
@@ -1216,20 +1005,18 @@ export const HostView: React.FC = () => {
     // Add to teams array (commands will be synced automatically via useEffect)
     setTeams(prev => [...prev, newTeam]);
 
-    console.log('[HostView] Created team:', newTeam.name, 'id:', teamId);
   }, []);
 
   // Update command name (rename) - updates teams, commands are synced automatically
   const handleRenameCommand = useCallback((commandId: string, newName: string) => {
     setTeams(prev => prev.map(t => t.id === commandId ? { ...t, name: newName } : t));
-    console.log('[HostView] Renamed team/command:', commandId, 'to', newName);
   }, []);
 
   // Delete command - removes from teams, commands are synced automatically
   const handleDeleteCommand = useCallback((commandId: string) => {
     // Remove teamId from clients
     setClients(clientsPrev => {
-      const updated = new Map(clientsPrev);
+      const updated = new Map<string, ConnectedClient>(clientsPrev);
       updated.forEach((client) => {
         if (client.teamId === commandId) {
           client.teamId = undefined;
@@ -1239,7 +1026,6 @@ export const HostView: React.FC = () => {
     });
     // Remove from teams array (commands will be synced automatically via useEffect)
     setTeams(prev => prev.filter(t => t.id !== commandId));
-    console.log('[HostView] Deleted team/command:', commandId);
   }, []);
 
   // Note: Teams and commands storage/broadcast effects are now handled by useSyncEffects hook
@@ -1282,10 +1068,6 @@ export const HostView: React.FC = () => {
 
     screenViewPeerIds.forEach(screenViewPeerId => {
       if (p2pHost.connectedClients.includes(screenViewPeerId)) {
-        console.log('[HostView] Sending COMMANDS_LIST to demo screen:', {
-          commandsCount: currentCommands.length,
-          screenViewPeerId
-        });
         p2pHost.sendToClient(screenViewPeerId, commandsSync);
       }
     });
@@ -1301,19 +1083,16 @@ export const HostView: React.FC = () => {
     const clientsArray = Array.from(clients.values())
       .filter((client: ConnectedClient) => !client.id.startsWith('screen_'));
 
-    console.log('[HostView] Syncing lobby state to demo screen:', {
-      isSessionActive,
-      clientsCount: clientsArray.length,
-      clients: clientsArray.map(c => ({ id: c.id, peerId: c.peerId, name: c.name, teamId: c.teamId })),
-      p2pConnectedClients: p2pHost.connectedClients
-    });
 
     const stateSync: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'> = {
       category: MessageCategory.SYNC,
       type: 'STATE_SYNC',
       payload: {
         isSessionActive: isSessionActive,
-        buzzerState: buzzerState,
+        // Read from the ref (always current) instead of adding buzzerState to the
+        // dependency array - a buzzerState change must NOT re-ship the full lobby
+        // snapshot to the demo screen (~every 300ms during an active timer).
+        buzzerState: buzzerStateRef.current,
         teams: teams || [],
         clients: clientsArray.map((client: ConnectedClient) => ({
           id: client.id,
@@ -1335,30 +1114,15 @@ export const HostView: React.FC = () => {
       .filter(([_, client]) => client.name === 'ScreenView' || client.id.startsWith('screen_'))
       .map(([peerId, _]) => peerId);
 
-    console.log('[HostView] Found screenViewPeerIds:', screenViewPeerIds);
-
     screenViewPeerIds.forEach(screenViewPeerId => {
       const isInConnected = p2pHost.connectedClients.includes(screenViewPeerId);
-      console.log('[HostView] Checking demo screen:', {
-        screenViewPeerId,
-        isInConnected,
-        allConnectedClients: p2pHost.connectedClients
-      });
       if (isInConnected) {
-        const sent = p2pHost.sendToClient(screenViewPeerId, stateSync);
-        console.log('[HostView] STATE_SYNC send result:', {
-          screenViewPeerId,
-          sent,
-          isSessionActive
-        });
+        p2pHost.sendToClient(screenViewPeerId, stateSync);
       } else {
-        console.warn('[HostView] Demo screen not in connectedClients:', {
-          screenViewPeerId,
-          connectedClients: p2pHost.connectedClients
-        });
+        console.warn('[HostView] Demo screen not in connectedClients:', screenViewPeerId);
       }
     });
-  }, [clients.size, teams.length, stateSyncTrigger, p2pHost.isReady, isSessionActive, p2pHost.connectedClients, buzzerState]);
+  }, [clients.size, teams.length, stateSyncTrigger, p2pHost.isReady, isSessionActive, p2pHost.connectedClients]);
 
   // Update invitation URL when settings change
   useEffect(() => {
@@ -1532,7 +1296,7 @@ export const HostView: React.FC = () => {
     const interval = setInterval(() => {
       const now = Date.now(); // Пересчитываем now при каждом вызове интервала
       setBuzzedClients(prev => {
-        const updated = new Map(prev);
+        const updated = new Map<string, number>(prev);
         for (const [clientId, timestamp] of prev.entries()) {
           if (now - timestamp > BUZZ_DURATION) {
             updated.delete(clientId);
@@ -1554,22 +1318,20 @@ export const HostView: React.FC = () => {
       const connectedPeerIds = new Set(p2pHost?.connectedClients || []);
 
       setClients(prev => {
-        const updated = new Map(prev);
+        const updated = new Map<string, ConnectedClient>(prev);
         for (const [peerId, client] of updated.entries()) {
           const isStale = now - client.lastSeen > DISCONNECT_TIMEOUT;
           const isP2PConnected = connectedPeerIds.has(peerId);
 
-          // Only remove if BOTH stale AND not in P2P connected list
-          // This prevents removing active clients that are sending PING messages
-          if (isStale && !isP2PConnected) {
-            console.log('[HostView] Removing stale client:', client.name, 'peerId:', peerId,
-              '(lastSeen:', now - client.lastSeen, 'ms ago, P2P connected:', isP2PConnected, ')');
+          // Remove when stale - actual message activity (incl. heartbeats forwarded
+          // from useP2PHost) is the source of truth for liveness. A peer the pool
+          // still lists as "connected" but that has sent nothing for 60s is a zombie
+          // (half-open TCP), so we also force-close its data connection.
+          if (isStale) {
             updated.delete(peerId);
-          } else if (isStale && isP2PConnected) {
-            // Client is stale but P2P layer says they're connected - this is a sync issue
-            // Update lastSeen to prevent false disconnection
-            console.log('[HostView] Stale client but P2P connected, updating lastSeen:', client.name, 'peerId:', peerId);
-            client.lastSeen = now;
+            if (isP2PConnected) {
+              p2pHost.disconnectClient(peerId);
+            }
           }
         }
         return updated;
@@ -1577,48 +1339,7 @@ export const HostView: React.FC = () => {
     }, 5000); // Check every 5 seconds
 
     return () => clearInterval(interval);
-  }, [p2pHost?.connectedClients]);
-
-  // Update lastSeen for all connected clients periodically
-  // This runs regardless of session state to keep connections alive
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setClients(prev => {
-        const connectedPeerIds = new Set(p2pHost?.connectedClients || []);
-        const now = Date.now();
-        let hasChanges = false;
-
-        // Check if any client needs updating
-        for (const [peerId, client] of prev.entries()) {
-          if (connectedPeerIds.has(peerId)) {
-            // Only update if lastSeen would actually change (avoid unnecessary updates)
-            if (now - client.lastSeen > 1000) { // Only update if last changed > 1s ago
-              hasChanges = true;
-              break;
-            }
-          }
-        }
-
-        if (!hasChanges) return prev; // No changes, return same reference
-
-        // Create updated map only if there are changes
-        const updated = new Map(prev);
-        for (const [peerId, client] of updated.entries()) {
-          // Update lastSeen for clients that are still connected
-          // This prevents active clients from being marked as stale
-          if (connectedPeerIds.has(peerId) && now - client.lastSeen > 1000) {
-            updated.set(peerId, {
-              ...client,
-              lastSeen: now
-            });
-          }
-        }
-        return updated;
-      });
-    }, 5000); // Update every 5 seconds
-
-    return () => clearInterval(interval);
-  }, [p2pHost]);
+  }, [p2pHost?.connectedClients, p2pHost]);
 
   // Save host ID
   useEffect(() => {
@@ -1703,7 +1424,6 @@ export const HostView: React.FC = () => {
         ) {
           e.preventDefault();
           setShowQRCode(prev => !prev);
-          console.log(!showQRCode ? '📱 Showing QR code' : '❌ Hiding QR code');
         }
       }
     };
@@ -1728,14 +1448,14 @@ export const HostView: React.FC = () => {
 
   // Calculate stats (excluding ScreenView)
   const clientStats = useMemo(() => {
-    const clientsArray = Array.from(clients.values()).filter(client => !client.id.startsWith('screen_')) as ConnectedClient[];
+    const clientsArray = Array.from(clients.values()).filter((client: ConnectedClient) => !client.id.startsWith('screen_'));
     const active = clientsArray.length;
     const avgQuality = 100; // Default quality when no network
     return { active, total: clientsArray.length, avgQuality: Math.round(avgQuality) };
   }, [clients]);
 
   // Helper function to sync buzzer state via broadcast
-  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused?: boolean; readingTimeTotal?: number; responseTimeTotal?: number; timerBarColor?: string; timerTextColor?: string }) => {
+  const handleBuzzerStateChange = useCallback((state: { active: boolean; timerPhase?: 'reading' | 'response' | 'complete' | 'inactive'; readingTimerRemaining: number; responseTimerRemaining: number; handicapActive: boolean; handicapTeamId?: string; isPaused?: boolean; readingTimeTotal?: number; responseTimeTotal?: number; timerBarColor?: string; timerTextColor?: string; phaseId?: number; hostNowMs?: number; phaseEndsAtHostMs?: number }) => {
     const timerPhase = state.timerPhase || 'inactive';
     const isPaused = state.isPaused ?? false;
 
@@ -1770,13 +1490,6 @@ export const HostView: React.FC = () => {
 
     if (!significantChange) {
       // Skip broadcast - no significant change
-      console.log('[HostView] TIMER_STATE skipped (no significant change):', {
-        timerPhase,
-        readingTime: state.readingTimerRemaining,
-        responseTime: state.responseTimerRemaining,
-        readingDiff,
-        responseDiff
-      });
       // IMMEDIATELY update buzzerStateRef for use in message handlers
       buzzerStateRef.current = {
         active: state.active,
@@ -1800,16 +1513,6 @@ export const HostView: React.FC = () => {
       return;
     }
 
-    console.log('[HostView] TIMER_STATE broadcasting:', {
-      timerPhase,
-      readingTime: state.readingTimerRemaining,
-      responseTime: state.responseTimerRemaining,
-      readingTimeTotal: state.readingTimeTotal,
-      responseTimeTotal: state.responseTimeTotal,
-      isPaused: state.isPaused,
-      action,
-      reason: phaseChanged ? 'phase changed' : activeChanged ? 'active changed' : pausedChanged ? 'paused changed' : 'timer changed'
-    });
 
     // Calculate colors based on timer phase
     const timerBarColor = state.timerBarColor || (timerPhase === 'reading' ? 'bg-yellow-500' : timerPhase === 'response' ? 'bg-green-500' : 'bg-gray-500');
@@ -1859,10 +1562,17 @@ export const HostView: React.FC = () => {
         isPaused: state.isPaused,
         handicapActive: state.handicapActive,
         handicapTeamId: state.handicapTeamId,
+        // Clock-anchored snapshot for client countdown extrapolation; fall back to
+        // computing the deadline from the remaining value if the source didn't stamp it
+        phaseId: state.phaseId,
+        hostNowMs: state.hostNowMs ?? Date.now(),
+        phaseEndsAtHostMs: state.phaseEndsAtHostMs ??
+          Date.now() + Math.max(0, state.timerPhase === 'reading'
+            ? state.readingTimerRemaining
+            : state.responseTimerRemaining) * 1000,
         timerBarColor,
         timerTextColor
       };
-      console.log('[HostView] Broadcasting TIMER_STATE payload:', payload);
       p2pHost.broadcast({
         category: MessageCategory.STATE,
         type: 'TIMER_STATE',
@@ -1898,7 +1608,6 @@ export const HostView: React.FC = () => {
     const currentIds = Array.from(activeTeamIds).sort().join(',');
     const newIds = Array.from(teamIds).sort().join(',');
     if (currentIds !== newIds) {
-      console.log('[HostView] ✅ Updating activeTeamIds:', Array.from(teamIds));
       // Use setTimeout to avoid setState during render
       setTimeout(() => setActiveTeamIds(teamIds), 0);
     }
@@ -1906,7 +1615,6 @@ export const HostView: React.FC = () => {
 
   // Helper function to broadcast arbitrary message (kept for interface compatibility)
   const broadcastMessage = useCallback((message: unknown) => {
-    console.log('[HostView] broadcastMessage called with:', message);
 
     // Broadcast via P2P to all connected clients
     if (p2pHost.isReady) {
@@ -1917,10 +1625,8 @@ export const HostView: React.FC = () => {
         payload: message
       };
 
-      console.log('[HostView] Broadcasting BROADCAST message:', broadcastMsg);
       p2pHost.broadcast(broadcastMsg);
     } else {
-      console.log('[HostView] P2P host not ready, broadcast skipped');
     }
   }, [p2pHost.isReady, p2pHost.broadcast]);
 
@@ -1936,7 +1642,7 @@ export const HostView: React.FC = () => {
   const deleteTeam = useCallback((teamId: string) => {
     // Remove team from all clients FIRST (before updating teams)
     setClients(clientsPrev => {
-      const updated = new Map(clientsPrev);
+      const updated = new Map<string, ConnectedClient>(clientsPrev);
       updated.forEach((client) => {
         if (client.teamId === teamId) {
           client.teamId = undefined;
@@ -1968,7 +1674,7 @@ export const HostView: React.FC = () => {
       const client = prev.get(clientId);
       if (client && client.teamId !== targetTeamId) {
         // Create new Map only if teamId actually changed
-        const updated = new Map(prev);
+        const updated = new Map<string, ConnectedClient>(prev);
         const updatedClient = updated.get(clientId);
         if (updatedClient) {
           updatedClient.teamId = targetTeamId;
@@ -2185,7 +1891,7 @@ export const HostView: React.FC = () => {
                    </h2>
                    <div className="flex items-center gap-2">
                      <div className="bg-gray-800 px-6 py-3 rounded-full text-base font-mono text-blue-400 border border-blue-500/20">
-                       {Array.from(clients.values()).filter(client => !client.id.startsWith('screen_')).length} Ready
+                       {Array.from(clients.values()).filter((client: ConnectedClient) => !client.id.startsWith('screen_')).length} Ready
                      </div>
                    </div>
                 </div>

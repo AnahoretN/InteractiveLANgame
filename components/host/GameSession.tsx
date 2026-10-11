@@ -12,11 +12,12 @@ import React, { memo, useState, useCallback } from 'react';
 import { Wifi, Gamepad2 } from 'lucide-react';
 import { Team } from '../../types';
 import type { GamePack } from './OptimizedGameSelectorModal';
+import type { ConnectedClient } from './OptimizedListItems';
 import type { Round, Theme } from './PackEditor';
 import type { BuzzerState } from './game';
 import { GamePlay } from './GamePlay';
 
-// TeamPlayer interface - used internally for client data structure
+// (TeamPlayer removed - GameSession receives ConnectedClient map from HostView)
 interface TeamPlayer {
   id: string;
   name: string;
@@ -26,7 +27,8 @@ interface TeamPlayer {
 
 interface GameSessionProps {
   teams: Team[];
-  clients: Map<string, TeamPlayer>;
+  clients: Map<string, ConnectedClient>;
+  onPhaseSwitchComplete?: () => void;  // Reset demo-screen phase switch signal
   buzzedClients: Map<string, number>;
   buzzedTeamIds: Set<string>;  // Teams that recently buzzed (for visual flash)
   lateBuzzTeamIds?: Set<string>;  // Teams that buzzed after answering team was set (blue flash)
@@ -68,6 +70,7 @@ export const GameSession = memo(({
   sessionSettings,
   onBackToLobby,
   onClearBuzz,
+  onPhaseSwitchComplete,
   gameType = 'custom',
   mergedPack,
   onBuzzerStateChange,
@@ -154,6 +157,7 @@ export const GameSession = memo(({
       onBuzzerStateChange={handleBuzzerStateChange}
       onBuzzTriggered={setTriggeredTeamId}
       onClearBuzzes={onClearBuzz}
+      onPhaseSwitchComplete={onPhaseSwitchComplete}
       buzzedTeamId={triggeredTeamId}
       buzzedTeamIds={buzzedTeamIds}
       lateBuzzTeamIds={lateBuzzTeamIds}

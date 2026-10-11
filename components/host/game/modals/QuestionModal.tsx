@@ -90,16 +90,6 @@ export const QuestionModal = withSmartMemo(({
 
   // Debug logging - only log when question changes
   useEffect(() => {
-    console.log('🎮 Game Question Modal - Question changed:', {
-      questionId: question.id,
-      questionText: question.text?.slice(0, 50),
-      mediaType: mediaType,
-      mediaUrl: mediaUrl?.slice(0, 100),
-      hasQuestionMedia: hasQuestionMedia,
-      hasAnswerMedia: hasAnswerMedia,
-      showAnswer: showAnswer,
-      fullMediaObject: question.media
-    });
   }, [question.id]); // Only log when question ID changes
 
   // Calculate reading time based on question text length (letters only, excluding spaces and punctuation)
@@ -183,12 +173,11 @@ export const QuestionModal = withSmartMemo(({
     // Reset hint state via parent callback
     onShowHint?.(false);
 
-    console.log('🔄 Question reset - starting with pause:', shouldStartPaused);
 
     // Send initial timer state to demo screen - timer state depends on host
     const initialState = {
       active: true,  // Timer is active when question opens
-      timerPhase: newReadingTime > 0 ? 'reading' : 'response',
+      timerPhase: (newReadingTime > 0 ? 'reading' : 'response') as 'reading' | 'response',
       readingTimerRemaining: newReadingTime,
       responseTimerRemaining: responseWindow,
       handicapActive: false,
@@ -198,14 +187,6 @@ export const QuestionModal = withSmartMemo(({
       responseTimeTotal: responseWindow
     };
 
-    console.log('🎬 Sending initial timer state to demo screen:', {
-      readingTime: newReadingTime,
-      responseTime: responseWindow,
-      isPaused: shouldStartPaused,
-      timerPhase: newReadingTime > 0 ? 'reading' : 'response',
-      active: true,
-      fullState: initialState
-    });
 
     onBuzzerStateChange?.(initialState);
   }, [question.id, readingTime, questionTextLetters, readingTimePerLetter, responseWindow, mediaType, hasQuestionMedia, onBuzzerStateChange]);
@@ -219,7 +200,6 @@ export const QuestionModal = withSmartMemo(({
   // Auto-show answer when correct answer is given
   useEffect(() => {
     if (scoreChangeType === 'correct' && !showAnswer && onShowAnswer) {
-      console.log('✅ Correct answer given - auto-showing answer');
       onShowAnswer();
     }
   }, [scoreChangeType, showAnswer]); // Removed onShowAnswer from dependencies to prevent infinite re-renders
@@ -228,7 +208,6 @@ export const QuestionModal = withSmartMemo(({
   useEffect(() => {
     // Stop timer if answer shown
     if (showAnswer) {
-      console.log('[QuestionModal] Answer shown - stopping timer and media');
       setTimerPhase('complete');
       setReadingTimerRemaining(0);
       setResponseTimerRemaining(0);
@@ -251,7 +230,6 @@ export const QuestionModal = withSmartMemo(({
             player.pauseVideo();
           }
         } catch (e) {
-          console.log('Failed to pause YouTube:', e);
         }
       }
 
@@ -312,7 +290,6 @@ export const QuestionModal = withSmartMemo(({
 
     if (showAnswer || timerPhase === 'complete') return;
 
-    console.log('🔄 Timer phase changed:', timerPhase, '- sending immediate update with current values from ref');
     // Use current values from ref to avoid stale closure issues
     onBuzzerStateChange?.({
       active: true,
@@ -373,9 +350,7 @@ export const QuestionModal = withSmartMemo(({
           // If manually resuming timer, stop waiting for first media play
           if (!newState) {
             setWaitingForFirstMediaPlay(false);
-            console.log('▶️ Timer manually resumed - no longer waiting for media');
           } else {
-            console.log('⏸️ Timer manually paused');
           }
           return newState;
         });
@@ -393,11 +368,9 @@ export const QuestionModal = withSmartMemo(({
   // Auto-play media when question opens
   useEffect(() => {
     if (hasQuestionMedia && !showAnswer) {
-      console.log('🎬 Auto-playing media:', { mediaType, mediaUrl: mediaUrl?.slice(0, 50) });
 
       // Check if URL exists
       if (!mediaUrl || mediaUrl.length < 5) {
-        console.log('⚠️ No media URL, skipping autoplay');
         return;
       }
 
@@ -405,21 +378,16 @@ export const QuestionModal = withSmartMemo(({
       const autoplayDelay = setTimeout(async () => {
         // Auto-play video
         if (mediaType === 'video' && videoRef.current) {
-          console.log('🎬 Attempting to auto-play video');
           videoRef.current.play().catch(err => {
-            console.log('❌ Video auto-play failed:', err.name);
           });
         }
         // Auto-play audio
         if (mediaType === 'audio' && audioRef.current) {
-          console.log('🎵 Attempting to auto-play audio');
           audioRef.current.play().catch(err => {
-            console.log('❌ Audio auto-play failed:', err.name);
           });
         }
         // For YouTube, autoplay is handled via URL parameter (no extra action needed)
         if (mediaType === 'youtube') {
-          console.log('📺 YouTube video with autoplay enabled via URL');
         }
       }, 500); // 500ms delay to ensure media is ready
 
@@ -433,7 +401,6 @@ export const QuestionModal = withSmartMemo(({
     if (!video) return;
 
     const handlePlay = () => {
-      console.log('🎬 Video started playing');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
       // Unmute video after it starts playing (autoplay requires muted)
@@ -443,12 +410,10 @@ export const QuestionModal = withSmartMemo(({
     };
 
     const handlePause = () => {
-      console.log('⏸️ Video paused');
       setIsMediaPaused(true);
     };
 
     const handleEnded = () => {
-      console.log('✅ Video ended - resuming timer');
       setIsMediaPlaying(false);
       setIsMediaPaused(false);
     };
@@ -470,18 +435,15 @@ export const QuestionModal = withSmartMemo(({
     if (!audio) return;
 
     const handlePlay = () => {
-      console.log('🎵 Audio started playing');
       setIsMediaPlaying(true);
       setIsMediaPaused(false);
     };
 
     const handlePause = () => {
-      console.log('⏸️ Audio paused');
       setIsMediaPaused(true);
     };
 
     const handleEnded = () => {
-      console.log('✅ Audio ended');
       setIsMediaPlaying(false);
       setIsMediaPaused(false);
     };
@@ -529,7 +491,6 @@ export const QuestionModal = withSmartMemo(({
         return;
       }
 
-      console.log('🎬 Initializing YouTube player for video:', videoId);
 
       // Create new player
       const player = new window.YT.Player(youtubeRef.current, {
@@ -542,14 +503,12 @@ export const QuestionModal = withSmartMemo(({
         },
         events: {
           onReady: () => {
-            console.log('✅ YouTube player ready');
           },
           onError: (event) => {
             console.error('❌ YouTube player error:', event.data);
           },
           onStateChange: (event) => {
             const state = event.data;
-            console.log('🎬 YouTube player state changed:', state);
 
             // YouTube Player API states:
             // -1: unstarted
@@ -562,18 +521,14 @@ export const QuestionModal = withSmartMemo(({
             if (state === window.YT.PlayerState.PLAYING) {
               setIsMediaPlaying(true);
               setIsMediaPaused(false);
-              console.log('▶️ YouTube video started playing');
             } else if (state === window.YT.PlayerState.PAUSED) {
               setIsMediaPlaying(false);
               setIsMediaPaused(true);
-              console.log('⏸️ YouTube video paused');
             } else if (state === window.YT.PlayerState.ENDED) {
               setIsMediaPlaying(false);
               setIsMediaPaused(false);
-              console.log('🏁 YouTube video ended');
             } else if (state === window.YT.PlayerState.BUFFERING) {
               // Buffering - keep playing state
-              console.log('⏳ YouTube video buffering');
             }
           }
         }
@@ -589,7 +544,6 @@ export const QuestionModal = withSmartMemo(({
       initializePlayer();
     } else {
       // API not loaded yet, wait for it
-      console.log('⏳ Waiting for YouTube API to load...');
       window.onYouTubeIframeAPIReady = initializePlayer;
     }
 
@@ -598,7 +552,6 @@ export const QuestionModal = withSmartMemo(({
       if (youtubeRef.current && (youtubeRef.current as any)._player) {
         const player = (youtubeRef.current as any)._player;
         if (player.destroy) {
-          console.log('🧹 Cleaning up YouTube player');
           player.destroy();
         }
       }
@@ -819,10 +772,8 @@ export const QuestionModal = withSmartMemo(({
                           muted
                           className="w-full h-auto object-contain rounded-lg shadow-xl"
                           onLoadedData={() => {
-                            console.log('🎬 Video loaded, ready to play');
                           }}
                           onError={(e) => {
-                            console.log('❌ Video failed to load:', (e.target as HTMLVideoElement).error);
                           }}
                         />
                       )}
@@ -840,10 +791,8 @@ export const QuestionModal = withSmartMemo(({
                             autoPlay
                             className="w-full"
                             onLoadedData={() => {
-                              console.log('🎵 Audio loaded, ready to play');
                             }}
                             onError={(e) => {
-                              console.log('❌ Audio failed to load:', (e.target as HTMLAudioElement).error);
                             }}
                           />
                         </div>
@@ -1035,12 +984,9 @@ export const QuestionModal = withSmartMemo(({
             {/* Show Answer / Close button */}
             <button
               onClick={() => {
-                console.log('[QuestionModal] Show Answer button clicked, current showAnswer:', showAnswer);
                 if (showAnswer) {
-                  console.log('[QuestionModal] Closing question modal');
                   _onClose();
                 } else {
-                  console.log('[QuestionModal] Calling onShowAnswer callback');
                   onShowAnswer?.();
                 }
               }}

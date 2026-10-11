@@ -3,7 +3,7 @@
  * Тесты для системы буззера с автоочисткой
  */
 
-import { renderHook, act, waitFor } from '@testing-library/react-hooks';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { useBuzz } from './useBuzz';
 
@@ -98,10 +98,8 @@ describe('useBuzz', () => {
       vi.advanceTimersByTime(3500);
     });
 
-    // Wait for async cleanup
-    await waitFor(() => {
-      expect(result.current.hasBuzzed('client-1')).toBe(false);
-    });
+    // Cleanup interval fires synchronously under fake timers
+    expect(result.current.hasBuzzed('client-1')).toBe(false);
   });
 
   it('should not clear recent buzzes', () => {

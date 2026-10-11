@@ -24,7 +24,6 @@ const fileHandlesStore = new Map<string, FileSystemFileHandle>();
  */
 export function storeFileHandle(key: string, handle: FileSystemFileHandle): void {
   fileHandlesStore.set(key, handle);
-  console.log('💾 FileSystemHandle сохранен:', key);
 }
 
 /**
@@ -123,7 +122,6 @@ export function supportsFileSystemAccessAPI(): boolean {
  */
 export async function saveFileWithHandle(file: File, key: string): Promise<void> {
   if (!supportsFileSystemAccessAPI()) {
-    console.log('⚠️ File System Access API не поддерживается');
     return;
   }
 
@@ -145,7 +143,6 @@ export async function saveFileWithHandle(file: File, key: string): Promise<void>
     // Сохраняем handle для будущего использования
     storeFileHandle(key, handle);
 
-    console.log('✅ Файл сохранен через File System Access API:', file.name);
   } catch (error) {
     console.error('❌ Ошибка сохранения файла:', error);
     // Пользователь мог отменить сохранение - это не ошибка
@@ -170,7 +167,6 @@ export async function restoreFileFromHandle(key: string): Promise<File | null> {
 
   try {
     const file = await handle.getFile();
-    console.log('✅ Файл восстановлен из handle:', file.name);
     return file;
   } catch (error) {
     console.error('❌ Ошибка восстановления файла из handle:', error);
@@ -202,7 +198,6 @@ export async function createBlobUrlWithHandle(
   if (saveToPack) {
     try {
       base64 = await fileToBase64(file);
-      console.log('💾 Файл конвертирован в base64 для сохранения в паке:', file.name);
     } catch (error) {
       console.error('❌ Ошибка конвертации в base64:', error);
     }
@@ -213,11 +208,6 @@ export async function createBlobUrlWithHandle(
     storeFileHandle(key, file);
   }
 
-  console.log('🔗 Создан blob URL с handle:', {
-    fileName: file.name,
-    hasBase64: !!base64,
-    hasHandle: supportsFileSystemAccessAPI()
-  });
 
   return { blobUrl, base64, localFileInfo };
 }
@@ -251,10 +241,9 @@ export async function restoreMediaBlobUrl(
   // Если есть base64 данные, восстанавливаем из них
   if (media.base64 && media.localFile) {
     try {
-      const mimeType = media.localFile.fileType || getMimeTypeFromBase64(media.base64, media.localFile.fileName);
+      const mimeType = media.localFile.fileType || getMimeTypeFromBase64(media.base64);
       const file = base64ToFile(media.base64, media.localFile.fileName, mimeType);
       const newBlobUrl = URL.createObjectURL(file);
-      console.log('✅ Blob URL восстановлен из base64:', media.localFile.fileName);
       return newBlobUrl;
     } catch (error) {
       console.error('❌ Ошибка восстановления из base64:', error);
@@ -266,7 +255,6 @@ export async function restoreMediaBlobUrl(
     const file = await restoreFileFromHandle(key);
     if (file) {
       const newBlobUrl = URL.createObjectURL(file);
-      console.log('✅ Blob URL восстановлен из handle:', file.name);
       return newBlobUrl;
     }
   }

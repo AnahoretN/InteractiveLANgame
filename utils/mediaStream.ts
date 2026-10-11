@@ -6,7 +6,7 @@
  */
 
 import { convertYouTubeToEmbed } from './mediaUtils';
-import type { MediaTransferMessage } from '../types';
+import { MessageCategory, type MediaTransferMessage } from '../types';
 
 export interface MediaInfo {
   mediaId: string;
@@ -229,10 +229,8 @@ export async function createMediaInfo(
   let mediaType: 'image' | 'video' | 'audio' | 'youtube';
   if (explicitType) {
     mediaType = explicitType;
-    console.log('[createMediaInfo] Using explicit media type:', explicitType);
   } else {
     mediaType = detectMediaType(url, localFile?.type);
-    console.log('[createMediaInfo] Detected media type:', mediaType, 'from URL and file');
   }
 
   const mediaInfo: MediaInfo = {
@@ -265,7 +263,7 @@ export async function createMediaInfo(
 export function createMediaTransferMessage(mediaInfo: MediaInfo, senderId: string): MediaTransferMessage {
   return {
     id: `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    category: 'state' as const,
+    category: MessageCategory.STATE,
     timestamp: Date.now(),
     senderId,
     type: 'MEDIA_TRANSFER',
@@ -301,7 +299,7 @@ export function base64ToBlobUrl(base64: string, mimeType: string): string {
 /**
  * Process received media transfer message and return usable URL
  */
-export async function processMediaTransfer(message: MediaTransferMessage): Promise<string | null> {
+export function processMediaTransfer(message: MediaTransferMessage): string | null {
   const { payload } = message;
 
   if (payload.isYouTube && payload.url) {
@@ -333,11 +331,5 @@ export async function processMediaTransfer(message: MediaTransferMessage): Promi
  */
 export function needsMediaTransfer(url: string): boolean {
   const result = isBlobUrl(url); // Only blob URLs need transfer
-  console.log('[needsMediaTransfer] Check:', {
-    url,
-    isBlob: isBlobUrl(url),
-    needsTransfer: result,
-    urlPrefix: url?.substring(0, 20)
-  });
   return result;
 }

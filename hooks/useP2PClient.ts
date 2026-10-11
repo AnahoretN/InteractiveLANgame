@@ -33,7 +33,8 @@ export interface P2PClientResult {
   isConnecting: boolean;
   connect: () => void;
   disconnect: () => void;
-  send: (message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => boolean;
+  // Loosely typed - see the note on MessageHandler in types.ts
+  send: (message: any) => boolean;
   connectionRef: React.MutableRefObject<DataConnection | null>;
   qualityReport: QualityReport | null;
   getQualityReport: () => QualityReport;
@@ -130,7 +131,8 @@ interface P2PClientConfig {
   persistentClientId?: string;  // Stored client ID for reconnection
   currentTeamId?: string;        // Current team ID (if any)
   isModerator?: boolean;         // Special flag for moderator connection
-  onMessage?: (message: P2PSMessage) => void;
+  // Loosely typed - see the note on MessageHandler in types.ts
+  onMessage?: (message: any) => void;
   onConnectionChange?: (state: ClientConnectionState, quality: ConnectionQuality) => void;
   onError?: (error: Error) => void;
 }
@@ -348,12 +350,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
         peerConfig.port = parseInt(url.port);
         peerConfig.secure = false; // WebSocket, not WebSocket Secure
         peerConfig.path = '/peerjs'; // Default PeerServer path
-        console.log('[P2P Client] Using custom signalling server:', {
-          host: peerConfig.host,
-          port: peerConfig.port,
-          secure: peerConfig.secure,
-          path: peerConfig.path
-        });
       } catch (e) {
         console.warn('[P2P Client] Failed to parse signalling server URL, using defaults:', signallingServer, e);
       }
@@ -364,17 +360,10 @@ export const useP2PClient = (config: P2PClientConfig) => {
         peerConfig.port = parseInt(url.port) || 443;
         peerConfig.secure = true; // WebSocket Secure
         peerConfig.path = '/peerjs'; // Default PeerServer path
-        console.log('[P2P Client] Using secure signalling server:', {
-          host: peerConfig.host,
-          port: peerConfig.port,
-          secure: peerConfig.secure,
-          path: peerConfig.path
-        });
       } catch (e) {
         console.warn('[P2P Client] Failed to parse signalling server URL, using defaults:', signallingServer, e);
       }
     } else {
-      console.log('[P2P Client] Using default public PeerJS server');
     }
 
     // Create peer for this client
@@ -383,7 +372,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
     peerRef.current = peer;
 
     peer.on('open', (id) => {
-      console.log('[P2P Client] Peer opened with ID:', id);
 
       // Connect to host
       const conn = peer.connect(configRefs.current.hostId, {
@@ -391,6 +379,14 @@ export const useP2PClient = (config: P2PClientConfig) => {
       });
 
       connectionRef.current = conn;
+
+      // ICE state observability: 'failed' usually means WebRTC could not connect at all
+      // (typically missing TURN on networks with AP/client isolation) - see docs/NETWORKING.md
+      conn.on('iceStateChanged', (state) => {
+        if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          console.warn(`[P2P Client] ICE state '${state}' - connection to host degraded or dead`);
+        }
+      });
 
       conn.on('open', () => {
         console.log('[P2P Client] Connection opened to host');
@@ -422,7 +418,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
 
           // Handle handshake response
           if (message.type === 'HANDSHAKE_RESPONSE') {
-            console.log('[P2P Client] Handshake confirmed, setting state to CONNECTED');
 
             // Reset backoff on successful connection
             backoffRef.current.reset();
@@ -431,7 +426,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
             startPingInterval();
             // Notify connection state change with current quality
             notifyConnectionChange(ClientConnectionState.CONNECTED, connectionQuality);
-            console.log('[P2P Client] State set to CONNECTED, connection.open:', conn.open);
           } else if (message.type === 'PONG') {
             // Handle pong - calculate RTT
             const pong = message as PongMessage;
@@ -460,7 +454,6 @@ export const useP2PClient = (config: P2PClientConfig) => {
       });
 
       conn.on('close', () => {
-        console.log('[P2P Client] Connection closed');
         setConnectionState(ClientConnectionState.DISCONNECTED);
         stopPingInterval();
         // Notify connection state change
@@ -516,10 +509,15 @@ export const useP2PClient = (config: P2PClientConfig) => {
         const delay = backoffRef.current.getNextDelay();
 
         if (delay > 0) {
-          console.log('[P2P Client] 🔄 Reconnecting in', delay, 'ms (attempt', backoffRef.current.getCurrentRetry(), ')');
           setConnectionState(ClientConnectionState.RECONNECTING);
 
-          setTimeout(() => {
+          // Track the timer so disconnect() can cancel it (otherwise a stale
+          // reconnect fires on a destroyed peer after an identity reset)
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+          }
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
             if (peer && !peer.destroyed) {
               peer.reconnect();
             }
@@ -560,10 +558,8 @@ export const useP2PClient = (config: P2PClientConfig) => {
   }, [stopPingInterval]);
 
   // Send message to host
-  const send = useCallback((message: Omit<P2PSMessage, 'id' | 'timestamp' | 'senderId'>) => {
+  const send = useCallback((message: any) => {
     const conn = connectionRef.current;
-    console.log('📡 [P2P SEND] Attempting to send message:', message.type);
-    console.log('📡 [P2P SEND] Connection exists:', !!conn, 'Connection open:', conn?.open, 'Peer exists:', !!peerRef.current);
 
     if (!conn || !conn.open || !peerRef.current) {
       console.warn('❌ [P2P SEND] Not connected, cannot send message. Connection state:', {
@@ -582,18 +578,11 @@ export const useP2PClient = (config: P2PClientConfig) => {
       senderId: peerRef.current?.id || ''
     } as P2PSMessage;
 
-    console.log('📤 [P2P SEND] Sending full message:', {
-      id: fullMessage.id,
-      type: fullMessage.type,
-      category: fullMessage.category,
-      timestamp: fullMessage.timestamp,
-      senderId: fullMessage.senderId,
-      payload: fullMessage.payload
-    });
+    // Compact per-message log - NEVER dump full payloads here (hot path;
+    // console serialization of large payloads is expensive on mobile WebViews)
 
     try {
       conn.send(fullMessage);
-      console.log('✅ [P2P SEND] Message sent successfully via WebRTC!');
       return true;
     } catch (err) {
       console.error('❌ [P2P SEND] Error sending message:', err);

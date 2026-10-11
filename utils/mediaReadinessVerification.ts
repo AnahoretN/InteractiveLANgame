@@ -43,13 +43,12 @@ class MediaReadinessVerifier {
    */
   async queryMediaReadiness(
     mediaIds: string[],
-    sendQuery: (query: P2PSMessage) => void,
+    sendQuery: (query: any) => void,
     timeout?: number
   ): Promise<MediaReadinessResponse> {
     const queryId = `query_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const queryTimeout = timeout || this.responseTimeout;
 
-    console.log(`[MediaReadinessVerifier] Querying readiness for ${mediaIds.length} media items`);
 
     return new Promise((resolve, reject) => {
       // Set up timeout
@@ -106,7 +105,6 @@ class MediaReadinessVerifier {
     // Remove from pending queries
     this.pendingQueries.delete(payload.queryId);
 
-    console.log(`[MediaReadinessVerifier] Received readiness response for query ${payload.queryId}`);
 
     return true;
   }
@@ -116,7 +114,7 @@ class MediaReadinessVerifier {
    */
   async isMediaReady(
     mediaId: string,
-    sendQuery: (query: P2PSMessage) => void,
+    sendQuery: (query: any) => void,
     timeout?: number
   ): Promise<boolean> {
     const response = await this.queryMediaReadiness([mediaId], sendQuery, timeout);
@@ -128,7 +126,7 @@ class MediaReadinessVerifier {
    */
   async getMediaReadinessReport(
     mediaIds: string[],
-    sendQuery: (query: P2PSMessage) => void,
+    sendQuery: (query: any) => void,
     timeout?: number
   ): Promise<MediaReadinessReport[]> {
     const response = await this.queryMediaReadiness(mediaIds, sendQuery, timeout);
@@ -152,11 +150,10 @@ class MediaReadinessVerifier {
  * Media Readiness Reporter (Demo Screen Side)
  */
 class MediaReadinessReporter {
-  private onSendResponse?: (response: P2PSMessage) => void;
+  private onSendResponse?: (response: any) => void;
 
-  initialize(onSendResponse: (response: P2PSMessage) => void) {
+  initialize(onSendResponse: (response: any) => void) {
     this.onSendResponse = onSendResponse;
-    console.log('[MediaReadinessReporter] Initialized');
   }
 
   /**
@@ -168,7 +165,6 @@ class MediaReadinessReporter {
     }
 
     const { payload } = message;
-    console.log(`[MediaReadinessReporter] Received readiness query for ${payload.mediaIds.length} items`);
 
     // Check readiness for each media item
     const readinessStatus: Record<string, boolean> = {};
@@ -191,7 +187,6 @@ class MediaReadinessReporter {
         }
       });
 
-      console.log(`[MediaReadinessReporter] Sent readiness response for query ${payload.queryId}`);
     }
 
     return true;
@@ -209,7 +204,6 @@ class MediaReadinessReporter {
 
     if (reports.length === 0) return;
 
-    console.log(`[MediaReadinessReporter] Proactively reporting status for ${reports.length} media items`);
 
     this.onSendResponse({
       id: `report_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -245,7 +239,6 @@ class MediaReadinessMonitor {
       this.onMediaReadyCallbacks.delete(mediaId);
     }
 
-    console.log(`[MediaReadinessMonitor] Media ready: ${mediaId}`);
   }
 
   /**

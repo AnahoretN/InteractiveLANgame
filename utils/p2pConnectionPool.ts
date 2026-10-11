@@ -101,13 +101,11 @@ export class P2PConnectionPool {
 
     // Check if pool is full
     if (this.connections.size >= this.config.maxConnections) {
-      console.log('[P2PConnectionPool] Pool is full, cannot add connection:', connectionId);
       return false;
     }
 
     // Check if connection already exists
     if (this.connections.has(connectionId)) {
-      console.log('[P2PConnectionPool] Connection already exists in pool:', connectionId);
       return false;
     }
 
@@ -123,7 +121,6 @@ export class P2PConnectionPool {
     };
 
     this.connections.set(connectionId, pooledConnection);
-    console.log('[P2PConnectionPool] Connection added to pool:', connectionId, 'Total:', this.connections.size);
 
     // Set up connection event handlers
     this.setupConnectionHandlers(pooledConnection);
@@ -133,34 +130,16 @@ export class P2PConnectionPool {
 
   /**
    * Set up event handlers for a connection
+   *
+   * CRITICAL: deliberately does NOT wrap conn.send for statistics. PeerJS's internal
+   * chunking (_sendChunks) calls this.send() for EVERY chunk of a large message, so a
+   * wrapper here recurses infinitely for any payload larger than PeerJS's chunk size
+   * (~16 KB) — RangeError: Maximum call stack size exceeded — and the message is never
+   * delivered (symptom: the demo screen stuck on the themes screen). Per-send statistics
+   * are updated in sendTo() instead, which is the pool's single send choke point.
    */
   private setupConnectionHandlers(pooledConn: PooledConnection): void {
     const conn = pooledConn.connection;
-
-    // Track data sent
-    const originalSend = conn.send.bind(conn);
-    conn.send = (data: any) => {
-      try {
-        const result = originalSend(data);
-
-        // Update statistics
-        pooledConn.lastUsed = Date.now();
-        pooledConn.messageCount++;
-        const dataSize = this.estimateSize(data);
-        pooledConn.bytesTransferred += dataSize;
-        this.statsManager.recordMessageSent(dataSize);
-
-        // Positive health update for successful send
-        this.healthMonitor.updateHealth(pooledConn.id, 5);
-
-        return result;
-      } catch (error) {
-        // Negative health update for failed send
-        this.healthMonitor.updateHealth(pooledConn.id, -20);
-        this.statsManager.recordFailure();
-        throw error;
-      }
-    };
 
     // Handle connection close
     conn.on('close', () => {
@@ -241,38 +220,36 @@ export class P2PConnectionPool {
   }
 
   /**
-   * Send message to specific connection with retry logic
+   * Send message to specific connection
+   * Note: WebRTC DataConnection.send is fire-and-forget; a synchronous retry loop
+   * cannot help (the connection state won't change within the same tick), so we
+   * attempt once and report failure honestly so callers can fall back.
    */
   sendTo(connectionId: string, data: any): boolean {
     const conn = this.connections.get(connectionId);
     if (!conn || !conn.connection.open) {
-      console.log('[P2PConnectionPool] sendTo failed for', connectionId, ': conn exists=', !!conn, ', conn.open=', conn?.connection.open || false, ', total connections=', this.connections.size);
       return false;
     }
 
-    let retries = 0;
-    while (retries <= this.config.maxRetries) {
-      try {
-        conn.connection.send(data);
-        if (retries > 0) {
-          this.statsManager.addRetries(retries);
-        }
-        return true;
-      } catch (error) {
-        retries++;
-        if (retries <= this.config.maxRetries) {
-          this.log(`Send failed for ${connectionId}, retrying (${retries}/${this.config.maxRetries})`);
-          // Wait before retry
-          this.delay(this.config.retryDelay * retries); // Exponential backoff
-        } else {
-          this.log(`Send failed for ${connectionId} after ${retries} retries`);
-          this.healthMonitor.updateHealth(connectionId, -30);
-          return false;
-        }
-      }
-    }
+    try {
+      conn.connection.send(data);
 
-    return false;
+      // Per-send statistics (see setupConnectionHandlers - the send wrapper was removed
+      // because it recursed infinitely with PeerJS chunking)
+      const dataSize = this.estimateSize(data);
+      conn.lastUsed = Date.now();
+      conn.messageCount++;
+      conn.bytesTransferred += dataSize;
+      this.statsManager.recordMessageSent(dataSize);
+      this.healthMonitor.updateHealth(connectionId, 5);
+
+      return true;
+    } catch (error) {
+      this.log(`Send failed for ${connectionId}`);
+      this.healthMonitor.updateHealth(connectionId, -30);
+      this.statsManager.recordFailure();
+      return false;
+    }
   }
 
   /**
@@ -312,47 +289,17 @@ export class P2PConnectionPool {
   }
 
   /**
-   * Broadcast with load balancing - distribute load across connections
+   * Broadcast with load balancing
+   * IMPORTANT: a broadcast must reach EVERY connected client, so this intentionally
+   * does not cap or slice the target list (the previous .slice(0, maxConcurrent)
+   * silently dropped clients beyond the first 10, and they were not reported as
+   * failures so no fallback resend could reach them).
    */
   broadcastLoadBalanced(data: any, options?: {
     skipIds?: string[];
     maxConcurrent?: number;
   }): SendResult {
-    if (!this.config.enableLoadBalancing) {
-      return this.broadcast(data, options);
-    }
-
-    const skipIds = new Set(options?.skipIds ?? []);
-    const maxConcurrent = options?.maxConcurrent ?? 10;
-
-    // Get healthy connections sorted by health score and last used
-    const targets = Array.from(this.connections.values())
-      .filter(conn => !skipIds.has(conn.id) && conn.connection.open)
-      .sort((a, b) => {
-        // Prioritize health, then recent usage
-        const healthDiff = this.healthMonitor.getHealthScore(b.id) - this.healthMonitor.getHealthScore(a.id);
-        if (Math.abs(healthDiff) > 10) return healthDiff;
-        return b.lastUsed - a.lastUsed;
-      })
-      .slice(0, maxConcurrent);
-
-    let sentTo = 0;
-    const failedToSend: string[] = [];
-
-    for (const conn of targets) {
-      if (this.sendTo(conn.id, data)) {
-        sentTo++;
-      } else {
-        failedToSend.push(conn.id);
-      }
-    }
-
-    return {
-      success: sentTo > 0,
-      sentTo,
-      failedToSend,
-      retries: this.statsManager.getTotalRetries()
-    };
+    return this.broadcast(data, options);
   }
 
   /**
@@ -539,21 +486,36 @@ export class P2PConnectionPool {
   }
 
   /**
-   * Estimate size of data in bytes
+   * Estimate size of data in bytes WITHOUT full serialization.
+   * JSON.stringify on every send doubled the serialization cost of every message;
+   * this walk measures strings/binary directly and recurses shallowly over objects.
    */
-  private estimateSize(data: any): number {
-    try {
-      return JSON.stringify(data).length * 2; // Rough estimate (UTF-16)
-    } catch {
-      return 1024; // Default estimate
+  private estimateSize(data: any, depth: number = 3): number {
+    if (data == null) return 4;
+    const type = typeof data;
+    if (type === 'string') return data.length * 2; // UTF-16
+    if (type === 'number' || type === 'boolean') return 8;
+    if (type === 'object') {
+      if (data instanceof ArrayBuffer) return data.byteLength;
+      if (ArrayBuffer.isView(data)) return (data as ArrayBufferView).byteLength;
+      if (depth <= 0) return 64; // Cap recursion - rough estimate for deep objects
+      let size = 0;
+      try {
+        if (Array.isArray(data)) {
+          for (const item of data) size += this.estimateSize(item, depth - 1);
+        } else {
+          for (const key in data) {
+            if (Object.prototype.hasOwnProperty.call(data, key)) {
+              size += key.length * 2 + this.estimateSize(data[key], depth - 1);
+            }
+          }
+        }
+      } catch {
+        return 256; // Default estimate for exotic objects
+      }
+      return size;
     }
-  }
-
-  /**
-   * Delay helper
-   */
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return 16; // Functions, symbols, etc.
   }
 
   /**
@@ -561,7 +523,6 @@ export class P2PConnectionPool {
    */
   private log(...args: any[]): void {
     if (this.config.debug) {
-      console.log('[P2PConnectionPool]', ...args);
     }
   }
 

@@ -6,7 +6,6 @@
 
 // Storage
 export { mediaStorage } from './MediaStorage';
-export type { MediaStorageOptions } from './MediaStorage';
 
 // Cache
 export { MediaFileCache } from './MediaFileCache';

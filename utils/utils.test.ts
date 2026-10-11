@@ -68,7 +68,7 @@ describe('generateUUID', () => {
   it('should generate IDs with consistent format', () => {
     const id = generateUUID();
 
-    expect(id1).toMatch(/^[a-z0-9_-]+$/);
+    expect(id).toMatch(/^[a-z0-9_-]+$/);
     expect(id.length).toBeGreaterThan(10);
   });
 
@@ -135,10 +135,10 @@ describe('Utility Integration Tests', () => {
   });
 
   it('should provide consistent health scoring', () => {
-    const scores = [100, 75, 50, 25, 0];
+    const scores = [100, 85, 60, 30, 0];
     const colors = scores.map(getHealthBgColor);
 
-    // Each score should map to correct color
+    // Thresholds: >=80 green, >=50 yellow, <50 red
     expect(colors[0]).toContain('green');
     expect(colors[1]).toContain('green');
     expect(colors[2]).toContain('yellow');

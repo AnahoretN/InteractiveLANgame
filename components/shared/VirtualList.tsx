@@ -49,7 +49,6 @@ export function VirtualList<T>({
 
   // Видимые элементы
   const visibleItems = useMemo(() => {
-    const { visibleRange } = visibleRange;
     return items.slice(visibleRange.start, visibleRange.end + 1);
   }, [items, visibleRange]);
 

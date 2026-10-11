@@ -82,12 +82,6 @@ export const FileUpload = memo(({ value, onChange, accept = 'image/*', placehold
       }
     }
 
-    console.log('📁 File upload detected:', {
-      fileName: file.name,
-      mimeType: mimeType,
-      detectedType: detectedType,
-      size: file.size
-    });
 
     // Notify parent component of detected file type
     if (detectedType && onFileDetected) {
@@ -96,7 +90,6 @@ export const FileUpload = memo(({ value, onChange, accept = 'image/*', placehold
 
     // Создаем простой blob URL (ZIP система обработает сохранение)
     const blobUrl = URL.createObjectURL(file);
-    console.log('🔗 Created blob URL:', blobUrl.slice(0, 50) + '...');
     onChange(blobUrl);
 
     // Notify parent component about local file (для отслеживания)

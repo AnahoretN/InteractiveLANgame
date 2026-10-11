@@ -3,7 +3,7 @@
  * Provides easy access to URL search parameters
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 
 /**
  * Hook for parsing and accessing URL search parameters
@@ -46,4 +46,20 @@ export function useURLParamsMap<K extends string>(keys: K[]): Partial<Record<K, 
     }
     return result;
   }, [params, keys]);
+}
+
+
+/**
+ * Hash-query parameters for the app's hash routing (#/route?key=value).
+ * Reactive: updates on hashchange, so navigating the same tab to a new session's
+ * link (new QR code) produces fresh params without a page reload.
+ */
+export function useHashParams(): URLSearchParams {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  return useMemo(() => new URLSearchParams(hash.split('?')[1] || ''), [hash]);
 }

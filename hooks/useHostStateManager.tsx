@@ -93,7 +93,6 @@ export const useHostStateManager = ({
 
   // P2P Message handling
   const handleMessage = useCallback((message: P2PSMessage, peerId: string) => {
-    console.log('[useHostStateManager] Received message from', peerId, message.type);
 
     switch (message.type) {
       case 'BUZZ': {
@@ -177,7 +176,6 @@ export const useHostStateManager = ({
         break;
       }
       default:
-        console.log('[useHostStateManager] Unhandled message type:', message.type);
     }
   }, [teams, superGameBets, superGameAnswers, updateClients, setTeams, setPendingConfirmations, setSuperGameBets, setSuperGameAnswers, markBuzzed]);
 

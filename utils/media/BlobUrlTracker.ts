@@ -63,7 +63,6 @@ export class BlobUrlTracker {
       }
     });
     this.blobUrls.clear();
-    console.log(`[BlobUrlTracker] Revoked ${count} blob URLs`);
   }
 
   /**

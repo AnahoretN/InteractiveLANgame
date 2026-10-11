@@ -76,7 +76,7 @@ export function checkPerformanceBudget(
 
   const violations: string[] = [];
 
-  for (const [metric, threshold] of Object.entries(budget.metrics)) as Array<[string, number]>) {
+  for (const [metric, threshold] of Object.entries(budget.metrics) as Array<[string, number]>) {
     if (actualMetrics[metric as keyof PerformanceBudget['metrics']] && actualMetrics[metric as keyof PerformanceBudget['metrics']]! > threshold) {
       violations.push(`${metric}: ${actualMetrics[metric as keyof PerformanceBudget['metrics']]}ms exceeds threshold of ${threshold}ms`);
     }

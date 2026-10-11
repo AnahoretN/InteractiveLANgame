@@ -6,7 +6,7 @@
 import React, { memo, useMemo } from 'react';
 import { Edit2, Trash2, ImageIcon } from 'lucide-react';
 import { VirtualList } from '../../shared';
-import type { Question } from '../types';
+import type { Question } from './types';
 
 interface QuestionsListProps {
   questions: Question[];
